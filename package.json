@@ -1,0 +1,43 @@
+{
+  "name": "codealongai",
+  "displayName": "CodeAlongAI",
+  "description": "A model-free hackathon prototype for collaborating with an AI companion in the editor.",
+  "version": "0.0.1",
+  "publisher": "krishnakartik1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onCommand:codealongai.askPair"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codealongai.askPair",
+        "title": "CodeAlongAI: Ask pair"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && vscode-test",
+    "test:headless": "npm run build && xvfb-run -a vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.18.3",
+    "@types/vscode": "^1.103.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "typescript": "^5.9.2"
+  }
+}
