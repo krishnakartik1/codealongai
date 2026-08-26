@@ -2,21 +2,26 @@ import assert from 'node:assert/strict';
 import * as vscode from 'vscode';
 
 suite('CodeAlongAI extension', () => {
-  test('activates and executes Ask pair', async () => {
+  test('opens the demo workspace', () => {
+    assert.deepEqual(
+      vscode.workspace.workspaceFolders?.map((folder) => folder.name),
+      ['demo-workspace']
+    );
+  });
+
+  test('activates when Ask pair executes', async () => {
     const extension = vscode.extensions.getExtension('krishnakartik1.codealongai');
 
     assert.ok(extension, 'CodeAlongAI extension should be installed in the test host');
-
-    await extension.activate();
-
-    assert.equal(extension.isActive, true);
-    assert.ok(
-      (await vscode.commands.getCommands(true)).includes('codealongai.askPair'),
-      'Ask pair should be registered'
-    );
+    assert.equal(extension.isActive, false, 'CodeAlongAI should start inactive');
     assert.deepEqual(
       await vscode.commands.executeCommand('codealongai.askPair'),
       { status: 'ready' }
+    );
+    assert.equal(extension.isActive, true, 'Ask pair should activate CodeAlongAI');
+    assert.ok(
+      (await vscode.commands.getCommands(true)).includes('codealongai.askPair'),
+      'Ask pair should be registered after activation'
     );
   });
 });
