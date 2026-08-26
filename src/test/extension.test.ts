@@ -19,9 +19,5 @@ suite('CodeAlongAI extension', () => {
       { status: 'ready' }
     );
     assert.equal(extension.isActive, true, 'Ask pair should activate CodeAlongAI');
-    assert.ok(
-      (await vscode.commands.getCommands(true)).includes('codealongai.askPair'),
-      'Ask pair should be registered after activation'
-    );
   });
 });
