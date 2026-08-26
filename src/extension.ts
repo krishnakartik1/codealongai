@@ -11,16 +11,29 @@ export interface AskPairStartedResult {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  const replay = new ReplayController(deterministicReplayFixture.events);
+
   const askPair = vscode.commands.registerCommand(
     'codealongai.askPair',
     (): AskPairStartedResult => {
-      const replay = new ReplayController(deterministicReplayFixture.events);
-
+      replay.reset();
       return { status: 'started', event: replay.start() };
     }
   );
+  const advanceReplay = vscode.commands.registerCommand(
+    'codealongai.replay.advance',
+    (): ReplayEvent | undefined => replay.advance()
+  );
+  const cancelReplay = vscode.commands.registerCommand(
+    'codealongai.replay.cancel',
+    (): void => replay.cancel()
+  );
+  const resetReplay = vscode.commands.registerCommand(
+    'codealongai.replay.reset',
+    (): void => replay.reset()
+  );
 
-  context.subscriptions.push(askPair);
+  context.subscriptions.push(askPair, advanceReplay, cancelReplay, resetReplay);
 }
 
 export function deactivate(): void {}
