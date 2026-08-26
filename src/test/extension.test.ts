@@ -16,7 +16,19 @@ suite('CodeAlongAI extension', () => {
     assert.equal(extension.isActive, false, 'CodeAlongAI should start inactive');
     assert.deepEqual(
       await vscode.commands.executeCommand('codealongai.askPair'),
-      { status: 'ready' }
+      {
+        status: 'started',
+        event: {
+          kind: 'point',
+          target: {
+            document: 'checkout.ts',
+            range: {
+              start: { line: 4, character: 31 },
+              end: { line: 4, character: 39 }
+            }
+          }
+        }
+      }
     );
     assert.equal(extension.isActive, true, 'Ask pair should activate CodeAlongAI');
   });

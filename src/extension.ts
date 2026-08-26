@@ -1,16 +1,22 @@
 import * as vscode from 'vscode';
+import {
+  deterministicReplayFixture,
+  ReplayController,
+  type ReplayEvent
+} from './replay';
 
-export interface AskPairReadyResult {
-  status: 'ready';
+export interface AskPairStartedResult {
+  status: 'started';
+  event: ReplayEvent | undefined;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   const askPair = vscode.commands.registerCommand(
     'codealongai.askPair',
-    (): AskPairReadyResult => {
-      void vscode.window.showInformationMessage('CodeAlongAI: your pair is ready.');
+    (): AskPairStartedResult => {
+      const replay = new ReplayController(deterministicReplayFixture.events);
 
-      return { status: 'ready' };
+      return { status: 'started', event: replay.start() };
     }
   );
 
