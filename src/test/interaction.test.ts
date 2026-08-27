@@ -3,7 +3,7 @@ import {
   deterministicReplayFixture,
   type DocumentRange
 } from '../replay';
-import { InteractionController } from '../interaction';
+import { InteractionController, type ProposalCapture } from '../interaction';
 import type { ProposalAcceptanceResult } from '../proposalAcceptance';
 
 const humanSelection: DocumentRange = {
@@ -16,7 +16,7 @@ const humanSelection: DocumentRange = {
 
 function stageKnownProposal(
   interaction: InteractionController,
-  capture: { target: DocumentRange; baseDocumentVersion: number; stagedContents: string }
+  capture: ProposalCapture
 ) {
   interaction.start(humanSelection);
   interaction.advance();
@@ -186,6 +186,8 @@ suite('shared attention interaction', () => {
         range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
       },
       baseDocumentVersion: 23,
+      baseContents: 'export function subtotal() { return total - price; }',
+      replacement: '+',
       stagedContents: 'export function subtotal() { return total + price; }'
     });
 
@@ -195,6 +197,8 @@ suite('shared attention interaction', () => {
         range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
       },
       baseDocumentVersion: 23,
+      baseContents: 'export function subtotal() { return total - price; }',
+      replacement: '+',
       stagedContents: 'export function subtotal() { return total + price; }',
       review: 'ready'
     });
@@ -207,6 +211,8 @@ suite('shared attention interaction', () => {
     stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
     const rejected = interaction.rejectProposal();
@@ -230,6 +236,8 @@ suite('shared attention interaction', () => {
     stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
     const accepted = interaction.requestProposalAcceptance();
@@ -237,12 +245,16 @@ suite('shared attention interaction', () => {
     assert.deepEqual(accepted.proposal, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only',
       review: 'accept-requested'
     });
     assert.deepEqual(accepted.mutationRequest, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
   });
@@ -253,15 +265,35 @@ suite('shared attention interaction', () => {
     stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
     interaction.requestProposalAcceptance();
-    const result: ProposalAcceptanceResult = { outcome: 'stale' };
-    const stale = interaction.completeProposalAcceptance(result);
+    const acceptanceResult: ProposalAcceptanceResult = { outcome: 'stale' };
+    const stale = interaction.completeProposalAcceptance(acceptanceResult);
 
     assert.equal(stale.proposal?.review, 'stale');
     assert.equal(stale.mutationRequest, undefined);
     assert.equal(stale.proposalStaleMessage, 'The proposal is stale. Replay or restage it before accepting.');
+  });
+
+  test('clears an applied proposal after the authority completes it', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    stageKnownProposal(interaction, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
+      stagedContents: 'staged only'
+    });
+    interaction.requestProposalAcceptance();
+    const completed = interaction.completeProposalAcceptance({ outcome: 'applied' });
+
+    assert.equal(completed.proposal, undefined);
+    assert.equal(completed.mutationRequest, undefined);
+    assert.equal(completed.proposalStaleMessage, undefined);
   });
 
   test('makes rejection and reset terminal no-mutation paths for an acceptance request', () => {
@@ -274,6 +306,8 @@ suite('shared attention interaction', () => {
     interaction.stageProposal({
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
     interaction.requestProposalAcceptance();
@@ -288,6 +322,8 @@ suite('shared attention interaction', () => {
     interaction.stageProposal({
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
       stagedContents: 'staged only'
     });
     interaction.requestProposalAcceptance();

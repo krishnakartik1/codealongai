@@ -8,6 +8,8 @@ const proposal: ProposalCapture = {
     range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
   },
   baseDocumentVersion: 23,
+  baseContents: 'export function subtotal() { return total - price; }',
+  replacement: '+',
   stagedContents: 'export function subtotal() { return total + price; }'
 };
 
@@ -47,7 +49,7 @@ suite('proposal acceptance authority', () => {
     assert.equal(contents, originalContents);
   });
 
-  test('cancels an in-flight acceptance before the document gateway can mutate', async () => {
+  test('cancels an acceptance before the document gateway can mutate', async () => {
     let releaseGateway: (() => void) | undefined;
     let gatewayWouldMutate = false;
     const authority = new ProposalAcceptanceAuthority({
@@ -67,5 +69,28 @@ suite('proposal acceptance authority', () => {
 
     assert.deepEqual(result, { outcome: 'cancelled' });
     assert.equal(gatewayWouldMutate, false);
+  });
+
+  test('waits for a submitted document edit instead of reporting it as a cancelled no-op', async () => {
+    let releaseEdit: (() => void) | undefined;
+    let contents = proposal.baseContents;
+    const authority = new ProposalAcceptanceAuthority({
+      applyIfVersionMatches: async (candidate, _current, beginApplication) => {
+        assert.equal(beginApplication(), true);
+        await new Promise<void>((resolve) => { releaseEdit = resolve; });
+        contents = candidate.stagedContents;
+        return { outcome: 'applied' };
+      }
+    });
+
+    authority.beginAcceptance(proposal);
+    const acceptance = authority.accept();
+    const cancellation = authority.cancelAcceptance();
+    assert.ok(releaseEdit);
+    releaseEdit();
+
+    assert.deepEqual(await acceptance, { outcome: 'applied' });
+    await cancellation;
+    assert.equal(contents, proposal.stagedContents);
   });
 });

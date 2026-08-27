@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   InteractionController,
+  staleProposalMessage,
   type InteractionState,
   type ProposalCapture,
   type StagedProposal
@@ -65,7 +66,7 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
 
 async function captureKnownProposal(
   target: DocumentRange
-): Promise<{ baseDocumentVersion: number; stagedContents: string }> {
+): Promise<{ baseDocumentVersion: number; baseContents: string; replacement: string; stagedContents: string }> {
   const workspace = vscode.workspace.workspaceFolders?.[0];
   const isKnownTarget = target.document === 'pricing.ts' &&
     target.range.start.line === 1 &&
@@ -87,7 +88,7 @@ async function captureKnownProposal(
   lines[1] = knownLine.slice(0, 47) + '+' + knownLine.slice(48);
   const stagedContents = lines.join('\n');
 
-  return { baseDocumentVersion: document.version, stagedContents };
+  return { baseDocumentVersion: document.version, baseContents: source, replacement: '+', stagedContents };
 }
 
 async function openProposalDiff(
@@ -114,15 +115,19 @@ function isTabOpen(tab: vscode.Tab): boolean {
 }
 
 function liveProposalDocuments(): LiveProposalDocument {
-  return { async applyIfVersionMatches(proposal: ProposalCapture, current) {
+  return { async applyIfVersionMatches(proposal: ProposalCapture, isAcceptanceCurrent, beginApplication) {
     const workspace = vscode.workspace.workspaceFolders?.[0];
-    if (!workspace || proposal.target.document !== 'pricing.ts' || !current()) return { outcome: 'cancelled' };
+    if (!workspace || proposal.target.document !== 'pricing.ts' || !isAcceptanceCurrent()) return { outcome: 'cancelled' };
     const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, proposal.target.document));
-    if (!current()) return { outcome: 'cancelled' };
-    const editor = await vscode.window.showTextDocument(document, { preserveFocus: true });
-    if (!current()) return { outcome: 'cancelled' };
-    if (document.version !== proposal.baseDocumentVersion) return { outcome: 'stale' };
-    return await editor.edit((edit) => edit.replace(new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), proposal.stagedContents))
+    if (!isAcceptanceCurrent()) return { outcome: 'cancelled' };
+    const editor = vscode.window.visibleTextEditors.find(
+      (visibleEditor) => visibleEditor.document.uri.toString() === document.uri.toString()
+    ) ?? await vscode.window.showTextDocument(document);
+    if (!isAcceptanceCurrent()) return { outcome: 'cancelled' };
+    if (document.version !== proposal.baseDocumentVersion || document.getText() !== proposal.baseContents) return { outcome: 'stale' };
+    const targetRange = toRange(proposal.target);
+    if (!beginApplication()) return { outcome: 'cancelled' };
+    return await editor.edit((edit) => edit.replace(targetRange, proposal.replacement))
       ? { outcome: 'applied' } : { outcome: 'stale' };
   } };
 }
@@ -190,7 +195,7 @@ export function activate(context: vscode.ExtensionContext): void {
           stagedProposalTab = tab;
           return false;
         }
-        cancelClosedProposalReview();
+        await cancelClosedProposalReview();
         return true;
       }
     }
@@ -201,7 +206,7 @@ export function activate(context: vscode.ExtensionContext): void {
     return true;
   };
   const invalidateProposalReview = async (): Promise<boolean> => {
-    proposalAuthority.cancelAcceptance();
+    await proposalAuthority.cancelAcceptance();
     if (proposalInvalidation !== undefined) {
       return proposalInvalidation;
     }
@@ -229,8 +234,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     stagedProposalTab = undefined;
   };
-  const cancelClosedProposalReview = (): void => {
-    proposalAuthority.cancelAcceptance();
+  const cancelClosedProposalReview = async (): Promise<void> => {
+    await proposalAuthority.cancelAcceptance();
     proposalGeneration += 1;
     discardProposalContents();
     render(interaction.rejectProposal());
@@ -295,7 +300,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const target = state.proposalCaptureTarget;
         const generation = proposalGeneration;
         try {
-          let capture: { baseDocumentVersion: number; stagedContents: string };
+          let capture: { baseDocumentVersion: number; baseContents: string; replacement: string; stagedContents: string };
           try {
             capture = await captureKnownProposal(target);
           } catch (error) {
@@ -361,19 +366,18 @@ export function activate(context: vscode.ExtensionContext): void {
     return render(state);
   };
   const cancelProposal = async (): Promise<InteractionState> => {
-    proposalAuthority.cancelAcceptance();
     if (!await invalidateProposalReview()) return visibleState;
-    return render(interaction.cancelProposal());
+    return render(interaction.rejectProposal());
   };
   const requestProposalAcceptance = async (): Promise<InteractionState> => {
     let state = interaction.requestProposalAcceptance();
     render(state);
     if (state.mutationRequest !== undefined) {
       proposalAuthority.beginAcceptance(state.mutationRequest);
-      const result = await proposalAuthority.accept();
-      state = render(interaction.completeProposalAcceptance(result));
-      if (result.outcome === 'stale') void vscode.window.showWarningMessage('The proposal is stale. Replay or restage it before accepting.');
-      if (result.outcome === 'applied') await closeStagedProposalTab();
+      const acceptanceResult = await proposalAuthority.accept();
+      state = render(interaction.completeProposalAcceptance(acceptanceResult));
+      if (acceptanceResult.outcome === 'stale') void vscode.window.showWarningMessage(state.proposalStaleMessage ?? staleProposalMessage);
+      if (acceptanceResult.outcome === 'applied') await closeStagedProposalTab();
     }
     return state;
   };
@@ -387,7 +391,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
     vscode.window.tabGroups.onDidChangeTabs(() => {
       if (stagedProposalTab !== undefined && !isTabOpen(stagedProposalTab)) {
-        cancelClosedProposalReview();
+        void cancelClosedProposalReview();
       }
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),

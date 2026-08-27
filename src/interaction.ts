@@ -12,6 +12,8 @@ export interface AnchoredExplanation {
 export interface ProposalCapture {
   target: DocumentRange;
   baseDocumentVersion: number;
+  baseContents: string;
+  replacement: string;
   stagedContents: string;
 }
 export interface StagedProposal extends ProposalCapture {
@@ -28,6 +30,8 @@ export interface InteractionState {
   mutationRequest: ProposalCapture | undefined;
   proposalStaleMessage: string | undefined;
 }
+
+export const staleProposalMessage = 'The proposal is stale. Replay or restage it before accepting.';
 
 function clearAiCues(state: InteractionState): InteractionState {
   return {
@@ -149,8 +153,8 @@ export class InteractionController {
       followTarget: undefined,
       proposalCaptureTarget: undefined,
       proposal: undefined,
-      mutationRequest: undefined
-      ,proposalStaleMessage: undefined
+      mutationRequest: undefined,
+      proposalStaleMessage: undefined
     };
     return this.current;
   }
@@ -212,12 +216,17 @@ export class InteractionController {
     return this.current;
   }
 
-  public cancelProposal(): InteractionState { return this.rejectProposal(); }
-
-  public completeProposalAcceptance(result: ProposalAcceptanceResult): InteractionState {
+  public completeProposalAcceptance(acceptanceResult: ProposalAcceptanceResult): InteractionState {
     this.current = { ...this.current, mutationRequest: undefined };
-    if (result.outcome === 'stale' && this.current.proposal) {
-      this.current = { ...this.current, proposal: { ...this.current.proposal, review: 'stale' }, proposalStaleMessage: 'The proposal is stale. Replay or restage it before accepting.' };
+    if (acceptanceResult.outcome === 'applied') {
+      this.current = { ...this.current, proposal: undefined, proposalStaleMessage: undefined };
+    }
+    if (acceptanceResult.outcome === 'stale' && this.current.proposal) {
+      this.current = {
+        ...this.current,
+        proposal: { ...this.current.proposal, review: 'stale' },
+        proposalStaleMessage: staleProposalMessage
+      };
     }
     return this.current;
   }
