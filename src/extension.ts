@@ -125,6 +125,13 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   let stagedProposalTab: vscode.Tab | undefined;
 
+  const closeStagedProposalTab = async (): Promise<void> => {
+    if (stagedProposalTab !== undefined) {
+      await vscode.window.tabGroups.close(stagedProposalTab, true);
+      stagedProposalTab = undefined;
+    }
+  };
+
   const followAi = async (): Promise<InteractionState> => {
     const state = interaction.acceptFollow();
     if (state.followTarget !== undefined) {
@@ -204,18 +211,12 @@ export function activate(context: vscode.ExtensionContext): void {
     return render(interaction.breakAway());
   };
   const resetReplay = async (): Promise<InteractionState> => {
-    if (stagedProposalTab !== undefined) {
-      await vscode.window.tabGroups.close(stagedProposalTab, true);
-      stagedProposalTab = undefined;
-    }
+    await closeStagedProposalTab();
     const state = interaction.reset();
     return render(state);
   };
   const rejectProposal = async (): Promise<InteractionState> => {
-    if (stagedProposalTab !== undefined) {
-      await vscode.window.tabGroups.close(stagedProposalTab, true);
-      stagedProposalTab = undefined;
-    }
+    await closeStagedProposalTab();
     const state = interaction.rejectProposal();
     return render(state);
   };
