@@ -150,8 +150,12 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       const closed = await vscode.window.tabGroups.close(tab, true);
       if (!closed) {
-        stagedProposalTab = tab;
-        return false;
+        if (isTabOpen(tab)) {
+          stagedProposalTab = tab;
+          return false;
+        }
+        cancelClosedProposalReview();
+        return true;
       }
     }
     if (stagedProposalUri !== undefined) {
