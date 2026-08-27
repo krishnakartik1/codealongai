@@ -130,6 +130,17 @@ suite('CodeAlongAI extension', () => {
     assert.equal(rejected.mutationRequest, undefined);
   });
 
+  test('cancels a staged proposal through the public command before closing its review', async () => {
+    await stageKnownProposal();
+
+    const cancelled = await vscode.commands.executeCommand(
+      'codealongai.proposal.cancel'
+    ) as { proposal: undefined; mutationRequest: undefined };
+
+    assert.equal(cancelled.proposal, undefined);
+    assert.equal(cancelled.mutationRequest, undefined);
+  });
+
   test('applies only the staged target when the live document still matches', async () => {
     const workspace = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspace, 'the demo workspace should be open');
@@ -199,13 +210,13 @@ suite('CodeAlongAI extension', () => {
     ) as {
       proposal: { review: string };
       mutationRequest: undefined;
-      proposalStaleMessage: string;
+      proposalAcceptance: { message: string };
     };
     subscription.dispose();
 
     assert.equal(refused.proposal.review, 'stale');
     assert.equal(refused.mutationRequest, undefined);
-    assert.equal(refused.proposalStaleMessage, 'The proposal is stale. Replay or restage it before accepting.');
+    assert.equal(refused.proposalAcceptance.message, 'The proposal is stale. Replay or restage it before accepting.');
     assert.equal(documentChanges.length, 0);
     await editor.edit((edit) => edit.replace(
       new vscode.Range(editedDocument.positionAt(0), editedDocument.positionAt(editedDocument.getText().length)),

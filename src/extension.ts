@@ -2,7 +2,6 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   InteractionController,
-  staleProposalMessage,
   type InteractionState,
   type ProposalCapture,
   type StagedProposal
@@ -145,7 +144,7 @@ export function activate(context: vscode.ExtensionContext): void {
     proposalCaptureTarget: undefined,
     proposal: undefined,
     mutationRequest: undefined,
-    proposalStaleMessage: undefined
+    proposalAcceptance: { message: undefined, closeReview: false }
   };
   const render = (state: InteractionState): InteractionState => {
     visibleState = state;
@@ -358,26 +357,29 @@ export function activate(context: vscode.ExtensionContext): void {
     const state = interaction.reset();
     return render(state);
   };
-  const rejectProposal = async (): Promise<InteractionState> => {
-    if (!await invalidateProposalReview()) {
-      return visibleState;
-    }
-    const state = interaction.rejectProposal();
-    return render(state);
+  const dismissProposal = async (): Promise<InteractionState> => {
+    const state = render(interaction.rejectProposal());
+    const cancellation = proposalAuthority.cancelAcceptance();
+    proposalGeneration += 1;
+    await cancellation;
+    await closeStagedProposalTab();
+    return state;
   };
-  const cancelProposal = async (): Promise<InteractionState> => {
-    if (!await invalidateProposalReview()) return visibleState;
-    return render(interaction.rejectProposal());
-  };
+  const rejectProposal = dismissProposal;
+  const cancelProposal = dismissProposal;
   const requestProposalAcceptance = async (): Promise<InteractionState> => {
     let state = interaction.requestProposalAcceptance();
     render(state);
     if (state.mutationRequest !== undefined) {
-      proposalAuthority.beginAcceptance(state.mutationRequest);
-      const acceptanceResult = await proposalAuthority.accept();
-      state = render(interaction.completeProposalAcceptance(acceptanceResult));
-      if (acceptanceResult.outcome === 'stale') void vscode.window.showWarningMessage(state.proposalStaleMessage ?? staleProposalMessage);
-      if (acceptanceResult.outcome === 'applied') await closeStagedProposalTab();
+      const request = state.mutationRequest;
+      if (proposalAuthority.beginAcceptance(request)) {
+        const acceptanceResult = await proposalAuthority.accept(request);
+        state = render(interaction.completeProposalAcceptance(request, acceptanceResult));
+        if (state.proposalAcceptance.message !== undefined) {
+          void vscode.window.showWarningMessage(state.proposalAcceptance.message);
+        }
+        if (state.proposalAcceptance.closeReview) await closeStagedProposalTab();
+      }
     }
     return state;
   };

@@ -19,6 +19,13 @@ export interface ProposalCapture {
 export interface StagedProposal extends ProposalCapture {
   review: 'ready' | 'accept-requested' | 'stale';
 }
+export interface ProposalMutationRequest extends ProposalCapture {
+  requestId: number;
+}
+export interface ProposalAcceptanceEffect {
+  message: string | undefined;
+  closeReview: boolean;
+}
 export interface InteractionState {
   humanSelection: DocumentRange | undefined;
   aiAttention: AiAttention | undefined;
@@ -27,11 +34,12 @@ export interface InteractionState {
   followTarget: DocumentRange | undefined;
   proposalCaptureTarget: DocumentRange | undefined;
   proposal: StagedProposal | undefined;
-  mutationRequest: ProposalCapture | undefined;
-  proposalStaleMessage: string | undefined;
+  mutationRequest: ProposalMutationRequest | undefined;
+  proposalAcceptance: ProposalAcceptanceEffect;
 }
 
 export const staleProposalMessage = 'The proposal is stale. Replay or restage it before accepting.';
+const noProposalAcceptanceEffect: ProposalAcceptanceEffect = { message: undefined, closeReview: false };
 
 function clearAiCues(state: InteractionState): InteractionState {
   return {
@@ -43,7 +51,17 @@ function clearAiCues(state: InteractionState): InteractionState {
     proposalCaptureTarget: undefined,
     proposal: undefined,
     mutationRequest: undefined,
-    proposalStaleMessage: undefined
+    proposalAcceptance: noProposalAcceptanceEffect
+  };
+}
+
+function clearProposal(state: InteractionState): InteractionState {
+  return {
+    ...state,
+    proposalCaptureTarget: undefined,
+    proposal: undefined,
+    mutationRequest: undefined,
+    proposalAcceptance: noProposalAcceptanceEffect
   };
 }
 
@@ -77,14 +95,15 @@ function stageInteractionProposal(
 }
 
 function requestAcceptance(
-  proposal: StagedProposal | undefined
-): { proposal: StagedProposal; mutationRequest: ProposalCapture } | undefined {
+  proposal: StagedProposal | undefined,
+  requestId: number
+): { proposal: StagedProposal; mutationRequest: ProposalMutationRequest } | undefined {
   if (proposal?.review !== 'ready') {
     return undefined;
   }
 
   const { review: _review, ...mutationRequest } = proposal;
-  return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest };
+  return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest: { ...mutationRequest, requestId } };
 }
 
 function humanSelectionDocument(state: InteractionState): string | undefined {
@@ -125,6 +144,7 @@ function advanceState(
 export class InteractionController {
   private readonly replay: ReplayController;
   private pendingExplanation: AnchoredExplanation | undefined;
+  private nextMutationRequestId = 1;
   private current: InteractionState = {
     humanSelection: undefined,
     aiAttention: undefined,
@@ -134,7 +154,7 @@ export class InteractionController {
     proposalCaptureTarget: undefined,
     proposal: undefined,
     mutationRequest: undefined,
-    proposalStaleMessage: undefined
+    proposalAcceptance: noProposalAcceptanceEffect
   };
 
   public constructor(events: readonly ReplayEvent[]) {
@@ -154,7 +174,7 @@ export class InteractionController {
       proposalCaptureTarget: undefined,
       proposal: undefined,
       mutationRequest: undefined,
-      proposalStaleMessage: undefined
+      proposalAcceptance: noProposalAcceptanceEffect
     };
     return this.current;
   }
@@ -207,33 +227,44 @@ export class InteractionController {
   }
 
   public rejectProposal(): InteractionState {
-    this.current = {
-      ...this.current,
-      proposalCaptureTarget: undefined,
-      proposal: undefined,
-      mutationRequest: undefined
-    };
+    this.current = clearProposal(this.current);
     return this.current;
   }
 
-  public completeProposalAcceptance(acceptanceResult: ProposalAcceptanceResult): InteractionState {
-    this.current = { ...this.current, mutationRequest: undefined };
+  public completeProposalAcceptance(
+    request: ProposalMutationRequest,
+    acceptanceResult: ProposalAcceptanceResult
+  ): InteractionState {
+    if (this.current.mutationRequest?.requestId !== request.requestId) {
+      return this.current;
+    }
     if (acceptanceResult.outcome === 'applied') {
-      this.current = { ...this.current, proposal: undefined, proposalStaleMessage: undefined };
+      this.current = { ...clearProposal(this.current), proposalAcceptance: { message: undefined, closeReview: true } };
     }
     if (acceptanceResult.outcome === 'stale' && this.current.proposal) {
       this.current = {
         ...this.current,
+        mutationRequest: undefined,
         proposal: { ...this.current.proposal, review: 'stale' },
-        proposalStaleMessage: staleProposalMessage
+        proposalAcceptance: { message: staleProposalMessage, closeReview: false }
+      };
+    }
+    if (acceptanceResult.outcome === 'cancelled') {
+      this.current = clearProposal(this.current);
+    }
+    if (acceptanceResult.outcome === 'failed') {
+      this.current = {
+        ...clearProposal(this.current),
+        proposalAcceptance: { message: 'CodeAlongAI could not accept the proposal. Restage it and try again.', closeReview: false }
       };
     }
     return this.current;
   }
 
   public requestProposalAcceptance(): InteractionState {
-    const request = requestAcceptance(this.current.proposal);
+    const request = requestAcceptance(this.current.proposal, this.nextMutationRequestId);
     if (request) {
+      this.nextMutationRequestId += 1;
       this.current = { ...this.current, ...request };
     }
     return this.current;

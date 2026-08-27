@@ -1,8 +1,8 @@
-import type { ProposalCapture } from './interaction';
+import type { ProposalMutationRequest } from './interaction';
 
 export interface LiveProposalDocument {
   applyIfVersionMatches(
-    proposal: ProposalCapture,
+    proposal: ProposalMutationRequest,
     isAcceptanceCurrent: () => boolean,
     beginApplication: () => boolean
   ): Promise<ProposalAcceptanceResult>;
@@ -11,56 +11,75 @@ export interface LiveProposalDocument {
 export type ProposalAcceptanceResult =
   | { outcome: 'applied' }
   | { outcome: 'stale' }
-  | { outcome: 'cancelled' };
+  | { outcome: 'cancelled' }
+  | { outcome: 'failed' };
 
 export class ProposalAcceptanceAuthority {
-  private proposal: ProposalCapture | undefined;
-  private acceptanceFinished: Promise<void> | undefined;
-  private applicationSubmitted = false;
+  private active: {
+    request: ProposalMutationRequest;
+    completion: Promise<ProposalAcceptanceResult> | undefined;
+    applicationSubmitted: boolean;
+  } | undefined;
+  private completed: { requestId: number; result: Promise<ProposalAcceptanceResult> } | undefined;
 
   public constructor(private readonly documents: LiveProposalDocument) {}
 
-  public beginAcceptance(proposal: ProposalCapture): void {
-    this.proposal = proposal;
+  public beginAcceptance(request: ProposalMutationRequest): boolean {
+    if (this.completed?.requestId === request.requestId) return true;
+    if (this.active !== undefined) return this.active.request.requestId === request.requestId;
+    this.active = { request, completion: undefined, applicationSubmitted: false };
+    return true;
   }
 
-  public cancelAcceptance(): Promise<void> {
-    if (this.acceptanceFinished !== undefined && this.applicationSubmitted) {
-      return this.acceptanceFinished;
+  public async cancelAcceptance(): Promise<void> {
+    const active = this.active;
+    if (active === undefined) return;
+    if (active.completion !== undefined && active.applicationSubmitted) {
+      await active.completion;
+      return;
     }
-    this.proposal = undefined;
-    return Promise.resolve();
+    if (active.completion === undefined) {
+      this.completed = { requestId: active.request.requestId, result: Promise.resolve({ outcome: 'cancelled' }) };
+    }
+    if (this.active === active) this.active = undefined;
   }
 
-  public async accept(): Promise<ProposalAcceptanceResult> {
-    const proposal = this.proposal;
-    if (proposal === undefined) {
-      return { outcome: 'cancelled' };
+  public accept(request: ProposalMutationRequest): Promise<ProposalAcceptanceResult> {
+    if (this.completed?.requestId === request.requestId) return this.completed.result;
+    const active = this.active;
+    if (active === undefined || active.request.requestId !== request.requestId) {
+      return Promise.resolve({ outcome: 'cancelled' });
     }
-    let finishAcceptance: (() => void) | undefined;
-    this.applicationSubmitted = false;
-    this.acceptanceFinished = new Promise<void>((resolve) => { finishAcceptance = resolve; });
+    if (active.completion !== undefined) return active.completion;
+    active.completion = this.apply(active);
+    this.completed = { requestId: request.requestId, result: active.completion };
+    return active.completion;
+  }
+
+  private async apply(active: NonNullable<ProposalAcceptanceAuthority['active']>): Promise<ProposalAcceptanceResult> {
     try {
       const acceptanceResult = await this.documents.applyIfVersionMatches(
-        proposal,
-        () => this.proposal === proposal,
+        active.request,
+        () => this.active === active,
         () => {
-          if (this.proposal !== proposal) {
+          if (this.active !== active) {
             return false;
           }
-          this.applicationSubmitted = true;
+          active.applicationSubmitted = true;
           return true;
         }
       );
-      if (this.proposal !== proposal) {
+      if (this.active !== active) {
         return { outcome: 'cancelled' };
       }
-      this.proposal = undefined;
+      this.active = undefined;
       return acceptanceResult;
+    } catch {
+      if (this.active !== active) return { outcome: 'cancelled' };
+      this.active = undefined;
+      return { outcome: 'failed' };
     } finally {
-      finishAcceptance?.();
-      this.acceptanceFinished = undefined;
-      this.applicationSubmitted = false;
+      if (this.active === active) this.active = undefined;
     }
   }
 }

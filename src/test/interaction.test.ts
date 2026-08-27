@@ -255,7 +255,8 @@ suite('shared attention interaction', () => {
       baseDocumentVersion: 23,
       baseContents: 'staged base',
       replacement: '+',
-      stagedContents: 'staged only'
+      stagedContents: 'staged only',
+      requestId: 1
     });
   });
 
@@ -269,13 +270,14 @@ suite('shared attention interaction', () => {
       replacement: '+',
       stagedContents: 'staged only'
     });
-    interaction.requestProposalAcceptance();
+    const requested = interaction.requestProposalAcceptance();
+    assert.ok(requested.mutationRequest);
     const acceptanceResult: ProposalAcceptanceResult = { outcome: 'stale' };
-    const stale = interaction.completeProposalAcceptance(acceptanceResult);
+    const stale = interaction.completeProposalAcceptance(requested.mutationRequest, acceptanceResult);
 
     assert.equal(stale.proposal?.review, 'stale');
     assert.equal(stale.mutationRequest, undefined);
-    assert.equal(stale.proposalStaleMessage, 'The proposal is stale. Replay or restage it before accepting.');
+    assert.equal(stale.proposalAcceptance.message, 'The proposal is stale. Replay or restage it before accepting.');
   });
 
   test('clears an applied proposal after the authority completes it', () => {
@@ -288,44 +290,76 @@ suite('shared attention interaction', () => {
       replacement: '+',
       stagedContents: 'staged only'
     });
-    interaction.requestProposalAcceptance();
-    const completed = interaction.completeProposalAcceptance({ outcome: 'applied' });
+    const requested = interaction.requestProposalAcceptance();
+    assert.ok(requested.mutationRequest);
+    const completed = interaction.completeProposalAcceptance(requested.mutationRequest, { outcome: 'applied' });
 
     assert.equal(completed.proposal, undefined);
     assert.equal(completed.mutationRequest, undefined);
-    assert.equal(completed.proposalStaleMessage, undefined);
+    assert.equal(completed.proposalAcceptance.closeReview, true);
   });
 
-  test('makes rejection and reset terminal no-mutation paths for an acceptance request', () => {
+  test('makes cancellation terminal no-mutation and ignores an old completion after a new request', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
+    const capture = {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
+      stagedContents: 'staged only'
+    };
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.advance();
-    interaction.stageProposal({
+    stageKnownProposal(interaction, capture);
+    const oldRequest = interaction.requestProposalAcceptance().mutationRequest;
+    assert.ok(oldRequest);
+    const cancelled = interaction.completeProposalAcceptance(oldRequest, { outcome: 'cancelled' });
+    assert.equal(cancelled.proposal, undefined);
+    assert.equal(cancelled.mutationRequest, undefined);
+
+    stageKnownProposal(interaction, capture);
+    const newRequest = interaction.requestProposalAcceptance().mutationRequest;
+    assert.ok(newRequest);
+    const untouched = interaction.completeProposalAcceptance(oldRequest, { outcome: 'applied' });
+    assert.equal(untouched.mutationRequest?.requestId, newRequest.requestId);
+    assert.equal(untouched.proposal?.review, 'accept-requested');
+  });
+
+  test('makes gateway failure terminal and supplies acceptance-specific guidance', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+    stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
       baseContents: 'staged base',
       replacement: '+',
       stagedContents: 'staged only'
     });
+    const acceptanceRequest = interaction.requestProposalAcceptance().mutationRequest;
+    assert.ok(acceptanceRequest);
+
+    const failed = interaction.completeProposalAcceptance(acceptanceRequest, { outcome: 'failed' });
+
+    assert.equal(failed.proposal, undefined);
+    assert.equal(failed.mutationRequest, undefined);
+    assert.equal(failed.proposalAcceptance.message, 'CodeAlongAI could not accept the proposal. Restage it and try again.');
+  });
+
+  test('makes rejection and reset terminal no-mutation paths for an acceptance request', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+    const capture = {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
+      stagedContents: 'staged only'
+    };
+
+    stageKnownProposal(interaction, capture);
     interaction.requestProposalAcceptance();
     const rejected = interaction.rejectProposal();
     assert.equal(rejected.proposal, undefined);
     assert.equal(rejected.mutationRequest, undefined);
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.advance();
-    interaction.stageProposal({
-      target: deterministicReplayFixture.events[3]!.target,
-      baseDocumentVersion: 23,
-      baseContents: 'staged base',
-      replacement: '+',
-      stagedContents: 'staged only'
-    });
+    stageKnownProposal(interaction, capture);
     interaction.requestProposalAcceptance();
     const reset = interaction.reset();
     assert.equal(reset.proposal, undefined);
