@@ -134,6 +134,7 @@ suite('CodeAlongAI extension', () => {
     assert.equal(completedFollow.follow, 'not-following');
     assert.equal(completedFollow.aiAttention, undefined);
     assert.deepEqual(completedFollow.explanations, []);
+    assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), checkout.uri.toString());
   });
 
   test('stages the known proposal in a separate document without changing the fixture', async () => {

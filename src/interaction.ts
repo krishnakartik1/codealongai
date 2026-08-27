@@ -145,6 +145,9 @@ function advanceState(
   };
 }
 
+type FollowAction = 'advance' | 'accept' | 'refuse';
+type FollowDispatchOutcome = 'advance-replay' | 'stop';
+
 export class InteractionController {
   private readonly replay: ReplayController;
   private pendingExplanation: AnchoredExplanation | undefined;
@@ -184,7 +187,7 @@ export class InteractionController {
   }
 
   public advance(): InteractionState {
-    if (!this.transitionFollow('advance')) {
+    if (this.dispatchFollow('advance') === 'stop') {
       return this.current;
     }
 
@@ -200,18 +203,18 @@ export class InteractionController {
   }
 
   public acceptFollow(): InteractionState {
-    this.transitionFollow('accept');
+    this.dispatchFollow('accept');
     return this.current;
   }
 
   public refuseFollow(): InteractionState {
-    this.transitionFollow('refuse');
+    this.dispatchFollow('refuse');
     return this.current;
   }
 
-  private transitionFollow(action: 'advance' | 'accept' | 'refuse'): boolean {
+  private dispatchFollow(action: FollowAction): FollowDispatchOutcome {
     if (this.current.follow !== 'awaiting-consent') {
-      return action === 'advance';
+      return action === 'advance' ? 'advance-replay' : 'stop';
     }
     if (action === 'accept') {
       this.current = {
@@ -227,7 +230,7 @@ export class InteractionController {
       this.current = clearAiCues(this.current);
       this.pendingExplanation = undefined;
     }
-    return false;
+    return 'stop';
   }
 
   public breakAway(): InteractionState {
