@@ -26,9 +26,13 @@ export class ProposalAcceptanceAuthority {
 
   public beginAcceptance(request: ProposalMutationRequest): boolean {
     if (this.completed?.requestId === request.requestId) return true;
-    if (this.active !== undefined) return this.active.request.requestId === request.requestId;
+    if (this.active !== undefined) return this.activeMatches(request);
     this.active = { request, completion: undefined, applicationSubmitted: false };
     return true;
+  }
+
+  private activeMatches(request: ProposalMutationRequest): boolean {
+    return this.active?.request.requestId === request.requestId;
   }
 
   public async cancelAcceptance(): Promise<void> {

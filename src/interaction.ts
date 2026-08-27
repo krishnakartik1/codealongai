@@ -262,10 +262,11 @@ export class InteractionController {
   }
 
   public releaseProposalAcceptance(request: ProposalMutationRequest): InteractionState {
-    if (this.current.mutationRequest?.requestId === request.requestId && this.current.proposal) {
+    const proposal = this.proposalForCurrentMutationRequest(request);
+    if (proposal !== undefined) {
       this.current = {
         ...this.current,
-        proposal: { ...this.current.proposal, review: 'ready' },
+        proposal: { ...proposal, review: 'ready' },
         mutationRequest: undefined,
         proposalAcceptance: {
           message: 'CodeAlongAI is finishing the previous proposal. Try acceptance again.',
@@ -274,6 +275,13 @@ export class InteractionController {
       };
     }
     return this.current;
+  }
+
+  private proposalForCurrentMutationRequest(
+    request: ProposalMutationRequest
+  ): StagedProposal | undefined {
+    const mutationRequest = this.current.mutationRequest;
+    return mutationRequest?.requestId === request.requestId ? this.current.proposal : undefined;
   }
 
   public requestProposalAcceptance(): InteractionState {

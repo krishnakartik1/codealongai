@@ -151,6 +151,11 @@ export function activate(context: vscode.ExtensionContext): void {
     applyCues(visibleState);
     return state;
   };
+  const announceProposalAcceptance = (state: InteractionState): void => {
+    if (state.proposalAcceptance.message !== undefined) {
+      void vscode.window.showWarningMessage(state.proposalAcceptance.message);
+    }
+  };
   let stagedProposalTab: vscode.Tab | undefined;
   let stagedProposalUri: vscode.Uri | undefined;
   const stagedProposalContents = new Map<string, string>();
@@ -375,15 +380,11 @@ export function activate(context: vscode.ExtensionContext): void {
       if (proposalAuthority.beginAcceptance(request)) {
         const acceptanceResult = await proposalAuthority.accept(request);
         state = render(interaction.completeProposalAcceptance(request, acceptanceResult));
-        if (state.proposalAcceptance.message !== undefined) {
-          void vscode.window.showWarningMessage(state.proposalAcceptance.message);
-        }
+        announceProposalAcceptance(state);
         if (state.proposalAcceptance.closeReview) await closeStagedProposalTab();
       } else {
         state = render(interaction.releaseProposalAcceptance(request));
-        if (state.proposalAcceptance.message !== undefined) {
-          void vscode.window.showWarningMessage(state.proposalAcceptance.message);
-        }
+        announceProposalAcceptance(state);
       }
     }
     return state;

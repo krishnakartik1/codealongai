@@ -13,7 +13,7 @@ const proposal: ProposalCapture = {
   stagedContents: 'export function subtotal() { return total + price; }'
 };
 
-function request(requestId = 1): ProposalMutationRequest {
+function proposalMutationRequest(requestId = 1): ProposalMutationRequest {
   return { ...proposal, requestId };
 }
 
@@ -27,7 +27,7 @@ suite('proposal acceptance authority', () => {
       }
     });
 
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
     authority.beginAcceptance(acceptanceRequest);
     const result = await authority.accept(acceptanceRequest);
 
@@ -46,7 +46,7 @@ suite('proposal acceptance authority', () => {
       }
     });
 
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
     authority.beginAcceptance(acceptanceRequest);
     const result = await authority.accept(acceptanceRequest);
 
@@ -66,7 +66,7 @@ suite('proposal acceptance authority', () => {
       }
     });
 
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
     authority.beginAcceptance(acceptanceRequest);
     const acceptance = authority.accept(acceptanceRequest);
     authority.cancelAcceptance();
@@ -90,7 +90,7 @@ suite('proposal acceptance authority', () => {
       }
     });
 
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
     authority.beginAcceptance(acceptanceRequest);
     const acceptance = authority.accept(acceptanceRequest);
     const cancellation = authority.cancelAcceptance();
@@ -112,7 +112,7 @@ suite('proposal acceptance authority', () => {
         return { outcome: 'applied' };
       }
     });
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
 
     assert.equal(authority.beginAcceptance(acceptanceRequest), true);
     const first = authority.accept(acceptanceRequest);
@@ -133,7 +133,7 @@ suite('proposal acceptance authority', () => {
         return { outcome: 'applied' };
       }
     });
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
 
     authority.beginAcceptance(acceptanceRequest);
     assert.deepEqual(await authority.accept(acceptanceRequest), { outcome: 'applied' });
@@ -153,8 +153,8 @@ suite('proposal acceptance authority', () => {
         return { outcome: 'applied' };
       }
     });
-    const oldRequest = request(1);
-    const newRequest = request(2);
+    const oldRequest = proposalMutationRequest(1);
+    const newRequest = proposalMutationRequest(2);
 
     authority.beginAcceptance(oldRequest);
     const oldAcceptance = authority.accept(oldRequest);
@@ -171,7 +171,7 @@ suite('proposal acceptance authority', () => {
     const authority = new ProposalAcceptanceAuthority({
       applyIfVersionMatches: async () => { throw new Error('disk is unavailable'); }
     });
-    const acceptanceRequest = request();
+    const acceptanceRequest = proposalMutationRequest();
 
     authority.beginAcceptance(acceptanceRequest);
 
