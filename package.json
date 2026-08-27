@@ -52,6 +52,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prototype:walkthrough-ui": "python3 -m http.server 4173 --directory prototypes/walkthrough-ui",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && vscode-test",
     "test:headless": "npm run build && xvfb-run -a vscode-test"

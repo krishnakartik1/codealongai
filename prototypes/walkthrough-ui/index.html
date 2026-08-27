@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodeAlongAI walkthrough UI prototype</title>
+  <!--
+    PROTOTYPE — throw away after the UI decision.
+    Three variants of the CodeAlongAI walkthrough surface, switchable via
+    ?variant=A|B|C on one simulated VS Code editor route.
+  -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #181818;
+      --panel: #1f1f1f;
+      --panel-2: #252526;
+      --line: #343434;
+      --muted: #9d9d9d;
+      --text: #d4d4d4;
+      --blue: #4daafc;
+      --blue-soft: #163852;
+      --green: #89d185;
+      --yellow: #cca700;
+      --input: #313131;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); overflow: hidden; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+
+    .titlebar {
+      height: 35px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 0 12px;
+      color: #bbb;
+      background: #181818;
+      border-bottom: 1px solid #2b2b2b;
+      font-size: 12px;
+    }
+    .titlebar strong { color: #ddd; font-weight: 500; }
+    .window-controls { justify-self: end; letter-spacing: 12px; color: #888; }
+
+    .workbench { display: grid; grid-template-columns: 48px 178px 1fr; height: calc(100vh - 57px); }
+    .activitybar { background: #181818; border-right: 1px solid #2b2b2b; padding-top: 12px; text-align: center; }
+    .activity-icon { padding: 10px 0; color: #888; font-size: 18px; }
+    .activity-icon.active { color: #eee; border-left: 2px solid var(--blue); }
+    .explorer { background: #181818; border-right: 1px solid #2b2b2b; font-size: 12px; }
+    .explorer-title { padding: 12px 16px 8px; font-size: 11px; letter-spacing: .08em; }
+    .folder { padding: 6px 10px; font-weight: 600; }
+    .file { padding: 5px 18px; color: #bbb; }
+    .file.active { background: #37373d; color: #fff; }
+
+    .main { min-width: 0; display: grid; grid-template-rows: 35px 1fr 23px; }
+    .walkthrough-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      background: #202020;
+      border-bottom: 1px solid #333;
+      font-size: 12px;
+    }
+    .walkthrough-bar .brand { color: var(--blue); font-weight: 600; }
+    .walkthrough-bar .step { color: #bbb; }
+    .walkthrough-bar .spacer { flex: 1; }
+    .pill { border: 1px solid #4a4a4a; color: #ccc; border-radius: 999px; padding: 2px 8px; }
+
+    .surface { min-height: 0; }
+    .editors { display: grid; grid-template-columns: 1fr 1fr; height: 100%; min-width: 0; }
+    .editor { min-width: 0; background: #1e1e1e; border-right: 1px solid #333; overflow: auto; }
+    .tab { height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 13px; background: #1f1f1f; border-bottom: 1px solid #333; font-size: 12px; }
+    .tab.active { background: #1e1e1e; border-top: 1px solid var(--blue); }
+    .ts { color: #4ec9b0; font-size: 10px; }
+    .code { padding: 10px 0 90px; font: 13px/21px "SFMono-Regular", Consolas, monospace; }
+    .code-line { display: grid; grid-template-columns: 42px minmax(0, 1fr); min-height: 21px; padding-right: 16px; }
+    .line-no { color: #666; text-align: right; padding-right: 14px; user-select: none; }
+    .source { white-space: pre; }
+    .kw { color: #c586c0; }
+    .fn { color: #dcdcaa; }
+    .str { color: #ce9178; }
+    .origin-range { background: #3a3550; border-bottom: 1px solid #c586c0; }
+    .ai-range { background: #173a4f; outline: 1px solid var(--blue); }
+    .cue-line { background: rgba(77, 170, 252, .07); }
+    .cue {
+      display: inline-block;
+      margin-left: 14px;
+      padding: 0 6px;
+      border-radius: 3px;
+      font: 11px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      vertical-align: middle;
+    }
+    .cue.you { color: #e5c2ff; background: #3a2847; }
+    .cue.ai { color: #cceaff; background: var(--blue-soft); }
+
+    .inline-host { margin: 6px 18px 10px 42px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .comment-thread {
+      border-left: 3px solid var(--blue);
+      border-radius: 3px;
+      background: #252526;
+      box-shadow: 0 2px 8px #0007;
+    }
+    .comment-head, .inline-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px 5px; font-size: 12px; }
+    .avatar { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--blue); color: #102333; font-weight: 800; font-size: 10px; }
+    .comment-body { padding: 3px 12px 10px 40px; color: #ddd; font-size: 13px; line-height: 1.45; }
+    .comment-turn { padding: 8px 12px 9px; border-top: 1px solid #383838; }
+    .comment-turn:first-of-type { border-top: 0; }
+    .comment-author { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; font-size: 11px; color: #aaa; }
+    .comment-author .avatar { width: 18px; height: 18px; font-size: 9px; }
+    .comment-author .avatar.you-avatar { background: #b180d7; color: #25172f; }
+    .comment-copy { padding-left: 25px; color: #ddd; font-size: 13px; line-height: 1.45; }
+    .reply { display: flex; gap: 7px; padding: 8px 10px; border-top: 1px solid #3a3a3a; }
+    .reply input, .askbox input {
+      flex: 1;
+      min-width: 0;
+      color: #eee;
+      background: var(--input);
+      border: 1px solid #565656;
+      border-radius: 3px;
+      padding: 7px 9px;
+      outline: none;
+    }
+    .reply input:focus, .askbox input:focus { border-color: var(--blue); }
+    .primary { color: white; background: #0e639c; border: 0; border-radius: 3px; padding: 6px 12px; }
+    .secondary { color: #ddd; background: #333; border: 1px solid #555; border-radius: 3px; padding: 5px 9px; }
+
+    .inline-chat {
+      border: 1px solid #454545;
+      border-radius: 6px;
+      background: #202020;
+      box-shadow: 0 8px 24px #0008;
+      overflow: hidden;
+    }
+    .inline-chat .explanation { padding: 4px 12px 10px 40px; font-size: 13px; line-height: 1.5; }
+    .inline-chat .askbox { display: flex; gap: 7px; padding: 8px; background: #292929; border-top: 1px solid #3f3f3f; }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 11px 40px; }
+    .suggestions button { color: #cceaff; background: #243c4d; border: 1px solid #375b74; border-radius: 999px; padding: 4px 9px; font-size: 11px; }
+
+    .sidebar-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; height: 100%; }
+    .sidebar-layout .editors { min-width: 0; }
+    .guide-panel { background: #202020; border-left: 1px solid #3a3a3a; display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
+    .guide-title { padding: 11px 12px; border-bottom: 1px solid #3a3a3a; font-size: 12px; font-weight: 600; }
+    .guide-content { padding: 14px; overflow: auto; }
+    .guide-content h3 { margin: 0 0 7px; font-size: 13px; }
+    .guide-content p { margin: 0 0 16px; color: #ccc; font-size: 13px; line-height: 1.5; }
+    .stop-card { border-left: 2px solid #555; padding: 2px 0 2px 10px; margin-bottom: 14px; color: #aaa; font-size: 12px; }
+    .stop-card.active { border-color: var(--blue); color: #eee; }
+    .guide-panel .askbox { display: flex; gap: 7px; padding: 10px; border-top: 1px solid #3a3a3a; }
+
+    .statusbar { display: flex; align-items: center; gap: 15px; padding: 0 9px; background: #007acc; color: white; font-size: 11px; }
+    .statusbar .spacer { flex: 1; }
+
+    .prototype-note {
+      position: fixed;
+      right: 14px;
+      bottom: 42px;
+      max-width: 360px;
+      padding: 9px 11px;
+      border: 1px solid #505050;
+      border-radius: 5px;
+      background: #252526ee;
+      color: #bbb;
+      font-size: 11px;
+      line-height: 1.4;
+      box-shadow: 0 4px 18px #0008;
+    }
+    .prototype-note strong { color: white; }
+    .switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 5px;
+      color: white;
+      background: #111;
+      border: 1px solid #666;
+      border-radius: 999px;
+      box-shadow: 0 5px 20px #000b;
+      font-size: 12px;
+    }
+    .switcher button { width: 28px; height: 26px; color: white; background: #333; border: 0; border-radius: 50%; }
+    .switcher-label { min-width: 225px; text-align: center; }
+
+    @media (max-width: 940px) {
+      .workbench { grid-template-columns: 42px 0 1fr; }
+      .explorer { overflow: hidden; }
+      .sidebar-layout { grid-template-columns: 1fr; }
+      .sidebar-layout .editors { display: none; }
+      .prototype-note { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="titlebar">
+    <span></span>
+    <strong>codealongai — Visual Studio Code</strong>
+    <span class="window-controls">— □ ×</span>
+  </header>
+  <div class="workbench">
+    <nav class="activitybar" aria-label="Activity bar">
+      <div class="activity-icon active">▱</div>
+      <div class="activity-icon">⌕</div>
+      <div class="activity-icon">⑂</div>
+      <div class="activity-icon">▷</div>
+    </nav>
+    <aside class="explorer">
+      <div class="explorer-title">EXPLORER</div>
+      <div class="folder">⌄ DEMO-WORKSPACE</div>
+      <div class="file">TS checkout.ts</div>
+      <div class="file active">TS pricing.ts</div>
+    </aside>
+    <main class="main">
+      <div class="walkthrough-bar">
+        <span class="brand">CodeAlongAI</span>
+        <span class="step">Walkthrough stop 2 of 3</span>
+        <span class="spacer"></span>
+        <span class="pill">origin: checkout.ts:5</span>
+        <span class="pill">current: pricing.ts:2</span>
+      </div>
+      <section id="surface" class="surface" aria-live="polite"></section>
+      <footer class="statusbar"><span>⑂ master</span><span>0 errors</span><span class="spacer"></span><span>Ln 2, Col 48</span><span>TypeScript</span></footer>
+    </main>
+  </div>
+
+  <aside id="prototype-note" class="prototype-note"></aside>
+  <nav class="switcher" aria-label="Prototype variants">
+    <button id="previous" aria-label="Previous variant">←</button>
+    <span id="switcher-label" class="switcher-label"></span>
+    <button id="next" aria-label="Next variant">→</button>
+  </nav>
+
+  <script>
+    const variants = [
+      { key: 'A', name: 'Native comment thread' },
+      { key: 'B', name: 'Inline-Chat-inspired panel' },
+      { key: 'C', name: 'Walkthrough sidebar' }
+    ];
+
+    const checkoutLines = [
+      `<span class="kw">import</span> { subtotal } <span class="kw">from</span> <span class="str">'./pricing'</span>;`,
+      ``,
+      `<span class="kw">export function</span> <span class="fn">checkout</span>(prices: number[]) {`,
+      `  <span class="kw">const</span> items = prices.filter(Boolean);`,
+      `  <span class="kw">return</span> subtotal(<span class="origin-range">items</span>); <span class="cue you">You — walkthrough origin</span>`,
+      `}`
+    ];
+
+    const pricingLines = [
+      `<span class="kw">export function</span> <span class="fn">subtotal</span>(prices: number[]) {`,
+      `  <span class="kw">return</span> prices.reduce((total, price) =&gt; total <span class="ai-range">-</span> price, 0); <span class="cue ai">CodeAlongAI — current stop ←</span>`,
+      `}`
+    ];
+
+    function codeLines(lines, cueLine = -1, insertion = '') {
+      return lines.map((line, index) => {
+        const row = `<div class="code-line ${index === cueLine ? 'cue-line' : ''}"><span class="line-no">${index + 1}</span><span class="source">${line}</span></div>`;
+        return row + (index === cueLine ? insertion : '');
+      }).join('');
+    }
+
+    function editor(filename, lines, cueLine = -1, insertion = '') {
+      return `<section class="editor"><div class="tab active"><span class="ts">TS</span>${filename}</div><div class="code">${codeLines(lines, cueLine, insertion)}</div></section>`;
+    }
+
+    function askForm(label) {
+      return `<form class="askbox demo-form"><input aria-label="Ask CodeAlongAI" placeholder="Ask about this code…"><button class="primary" type="submit">${label}</button></form>`;
+    }
+
+    function variantA() {
+      const thread = `<div class="inline-host"><section class="comment-thread">
+        <div class="comment-turn">
+          <div class="comment-author"><span class="avatar">CA</span><strong>CodeAlongAI</strong><span>walkthrough</span></div>
+          <div class="comment-copy">Subtotal subtracts each price instead of adding it.</div>
+        </div>
+        <div class="comment-turn">
+          <div class="comment-author"><span class="avatar you-avatar">Y</span><strong>You</strong><span>question</span></div>
+          <div class="comment-copy">Why does the reducer start at zero?</div>
+        </div>
+        <div class="comment-turn">
+          <div class="comment-author"><span class="avatar">CA</span><strong>CodeAlongAI</strong><span>answer</span></div>
+          <div class="comment-copy">Zero is the initial running total. Each price should be added to it, but this operator subtracts instead.</div>
+        </div>
+        <div class="conversation-end"></div>
+        <form class="reply demo-form" data-mode="thread"><input aria-label="Reply to CodeAlongAI" placeholder="Ask a follow-up…"><button class="secondary" type="submit">Ask</button></form>
+      </section></div>`;
+      return `<div class="editors">${editor('checkout.ts', checkoutLines)}${editor('pricing.ts', pricingLines, 1, thread)}</div>`;
+    }
+
+    function variantB() {
+      const panel = `<div class="inline-host"><section class="inline-chat">
+        <div class="inline-head"><span class="avatar">CA</span><strong>CodeAlongAI</strong><span style="color:#888">Walkthrough stop 2</span></div>
+        <div class="explanation">Subtotal subtracts each price instead of adding it. That makes every item after the initial value reduce the total.</div>
+        <div class="suggestions"><button type="button">Show where subtotal is called</button><button type="button">Why start at zero?</button></div>
+        ${askForm('Ask')}
+      </section></div>`;
+      return `<div class="editors">${editor('checkout.ts', checkoutLines)}${editor('pricing.ts', pricingLines, 1, panel)}</div>`;
+    }
+
+    function variantC() {
+      const panel = `<aside class="guide-panel">
+        <div class="guide-title">CodeAlongAI walkthrough</div>
+        <div class="guide-content">
+          <div class="stop-card">1 · checkout.ts:5<br>Where the walkthrough began</div>
+          <div class="stop-card active">2 · pricing.ts:2<br>Current explanation</div>
+          <h3>Why this line matters</h3>
+          <p>Subtotal subtracts each price instead of adding it. That makes every item reduce the running total.</p>
+          <button class="secondary" type="button">Show where subtotal is called</button>
+        </div>
+        ${askForm('Ask')}
+      </aside>`;
+      return `<div class="sidebar-layout"><div class="editors">${editor('checkout.ts', checkoutLines)}${editor('pricing.ts', pricingLines)}</div>${panel}</div>`;
+    }
+
+    const renders = { A: variantA, B: variantB, C: variantC };
+    const notes = {
+      A: '<strong>Stable and native.</strong> This is what a Comment thread feels like: code-review chrome, Markdown explanation, and a built-in reply field anchored to the range.',
+      B: '<strong>Desired shape, not a stable extension surface.</strong> This mirrors Inline Chat with rich content and input between source lines. Shipping it would require proposed editor-inset APIs or a different approximation.',
+      C: '<strong>Stable and fully customizable.</strong> A webview sidebar can look however we want, but it follows editor context rather than living on the exact line.'
+    };
+
+    function currentKey() {
+      const key = new URLSearchParams(location.search).get('variant')?.toUpperCase();
+      return variants.some((variant) => variant.key === key) ? key : 'A';
+    }
+
+    function setVariant(key) {
+      const url = new URL(location.href);
+      url.searchParams.set('variant', key);
+      history.replaceState({}, '', url);
+      render();
+    }
+
+    function cycle(offset) {
+      const index = variants.findIndex((variant) => variant.key === currentKey());
+      setVariant(variants[(index + offset + variants.length) % variants.length].key);
+    }
+
+    function render() {
+      const key = currentKey();
+      const variant = variants.find((item) => item.key === key);
+      document.getElementById('surface').innerHTML = renders[key]();
+      document.getElementById('switcher-label').textContent = `${variant.key} — ${variant.name}`;
+      document.getElementById('prototype-note').innerHTML = notes[key];
+      document.querySelectorAll('.demo-form').forEach((form) => form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const input = form.querySelector('input');
+        if (!input.value.trim()) return;
+        if (form.dataset.mode === 'thread') {
+          const end = form.parentElement.querySelector('.conversation-end');
+          const question = input.value.trim().replace(/[&<>"']/g, (character) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+          })[character]);
+          end.insertAdjacentHTML('beforebegin', `<div class="comment-turn">
+            <div class="comment-author"><span class="avatar you-avatar">Y</span><strong>You</strong><span>question</span></div>
+            <div class="comment-copy">${question}</div>
+          </div><div class="comment-turn">
+            <div class="comment-author"><span class="avatar">CA</span><strong>CodeAlongAI</strong><span>model-free answer</span></div>
+            <div class="comment-copy">This prototype keeps the whole exchange anchored here. A deterministic responder would choose the real answer from the walkthrough fixture.</div>
+          </div>`);
+        }
+        input.value = '';
+        input.placeholder = form.dataset.mode === 'thread' ? 'Ask another follow-up…' : 'Prototype only — question captured';
+      }));
+    }
+
+    document.getElementById('previous').addEventListener('click', () => cycle(-1));
+    document.getElementById('next').addEventListener('click', () => cycle(1));
+    window.addEventListener('keydown', (event) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+      if (event.key === 'ArrowLeft') cycle(-1);
+      if (event.key === 'ArrowRight') cycle(1);
+    });
+    window.addEventListener('popstate', render);
+    render();
+  </script>
+</body>
+</html>
