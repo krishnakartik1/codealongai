@@ -122,4 +122,31 @@ suite('CodeAlongAI extension', () => {
     assert.equal(rejected.proposal, undefined);
     assert.equal(rejected.mutationRequest, undefined);
   });
+
+  test('cancels a proposal when its review diff is closed manually', async () => {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'the demo workspace should be open');
+    const checkout = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+    );
+    const editor = await vscode.window.showTextDocument(checkout);
+    editor.selection = new vscode.Selection(4, 31, 4, 39);
+
+    await vscode.commands.executeCommand('codealongai.askPair');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    await vscode.commands.executeCommand('codealongai.follow.accept');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    assert.ok(tab, 'staging should open a proposal diff tab');
+    await vscode.window.tabGroups.close(tab, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const acceptance = await vscode.commands.executeCommand(
+      'codealongai.proposal.requestAcceptance'
+    ) as { proposal: undefined; mutationRequest: undefined };
+    assert.equal(acceptance.proposal, undefined);
+    assert.equal(acceptance.mutationRequest, undefined);
+  });
 });

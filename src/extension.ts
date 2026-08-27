@@ -107,6 +107,10 @@ async function openProposalDiff(
   return tab?.input instanceof vscode.TabInputTextDiff ? tab : undefined;
 }
 
+function isTabOpen(tab: vscode.Tab): boolean {
+  return vscode.window.tabGroups.all.some((group) => group.tabs.includes(tab));
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const interaction = new InteractionController(deterministicReplayFixture.events);
   let followPromptIsOpen = false;
@@ -138,11 +142,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const closeStagedProposalTab = async (): Promise<boolean> => {
     if (stagedProposalTab !== undefined) {
-      const closed = await vscode.window.tabGroups.close(stagedProposalTab, true);
+      const tab = stagedProposalTab;
+      stagedProposalTab = undefined;
+      if (!isTabOpen(tab)) {
+        discardProposalContents();
+        return true;
+      }
+      const closed = await vscode.window.tabGroups.close(tab, true);
       if (!closed) {
+        stagedProposalTab = tab;
         return false;
       }
-      stagedProposalTab = undefined;
     }
     if (stagedProposalUri !== undefined) {
       stagedProposalContents.delete(stagedProposalUri.toString());
@@ -160,6 +170,11 @@ export function activate(context: vscode.ExtensionContext): void {
       stagedProposalUri = undefined;
     }
     stagedProposalTab = undefined;
+  };
+  const cancelClosedProposalReview = (): void => {
+    proposalGeneration += 1;
+    discardProposalContents();
+    render(interaction.rejectProposal());
   };
 
   const followAi = async (): Promise<InteractionState> => {
@@ -318,10 +333,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.follow.breakAway', breakAway),
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
     vscode.window.tabGroups.onDidChangeTabs(() => {
-      if (stagedProposalTab !== undefined && !vscode.window.tabGroups.all.some(
-        (group) => group.tabs.includes(stagedProposalTab!)
-      )) {
-        discardProposalContents();
+      if (stagedProposalTab !== undefined && !isTabOpen(stagedProposalTab)) {
+        cancelClosedProposalReview();
       }
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),

@@ -59,6 +59,16 @@ function stageForTarget(
   return { ...capture, review: 'ready' };
 }
 
+function stageInteractionProposal(
+  current: InteractionState,
+  capture: ProposalCapture
+): InteractionState {
+  const proposal = stageForTarget(capture, current.proposalCaptureTarget);
+  return proposal
+    ? { ...current, proposalCaptureTarget: undefined, proposal }
+    : current;
+}
+
 function requestAcceptance(
   proposal: StagedProposal | undefined
 ): { proposal: StagedProposal; mutationRequest: ProposalCapture } | undefined {
@@ -183,10 +193,7 @@ export class InteractionController {
   }
 
   public stageProposal(capture: ProposalCapture): InteractionState {
-    const proposal = stageForTarget(capture, this.current.proposalCaptureTarget);
-    if (proposal) {
-      this.current = { ...this.current, proposalCaptureTarget: undefined, proposal };
-    }
+    this.current = stageInteractionProposal(this.current, capture);
     return this.current;
   }
 
