@@ -43,7 +43,10 @@ document and range, is the same. Their conversations must never be merged.
 A **walkthrough graph** is finite. Every referenced stop ID must resolve within
 the graph at the boundary where producer data is accepted. Destination order is
 significant. A recommended Next and Back, when present, must refer to known
-stops; recommended Next must also be one of the source's destinations.
+stops; recommended Next must also be one of the source's destinations. Every
+stop must be reachable from the immutable human origin by following destination
+edges. Back edges do not establish reachability because the picker traversal
+does not follow them.
 
 A **session** owns:
 
@@ -165,7 +168,9 @@ Commit the human question and CodeAlongAI answer to state and the native thread
 as one transition. A generated graph patch is part of that same transition. It
 may append stops and edges and select the resulting recommended Next, but it
 must not delete a stop, edge, or conversation. Reject an invalid patch before
-changing state or comments.
+changing state or comments. Validate reachability against the complete
+post-patch graph, so a patch may add a stop and its path from the origin in one
+atomic operation but may not leave any stop disconnected.
 
 A valid generated patch immediately changes the source thread's Next
 availability and the whole-graph picker. It never navigates automatically. A
@@ -323,8 +328,9 @@ Host tests against the deterministic two-file workspace.
    missing-editor/blank-line cases.
 2. Starting, replacing, canceling replacement, reset confirmation, and silent
    disposal obey the session rules.
-3. Stop IDs, graph references, recommended Next, and append-only patches are
-   validated before commit.
+3. Stop IDs, graph references, recommended Next, origin reachability through
+   destination edges, and append-only patches are validated before commit;
+   disconnected initial graphs and post-patch graphs are rejected atomically.
 4. Two same-range stop IDs keep separate conversations and receive stable
    collision labels.
 5. A reply appends question and each of the four outcome kinds atomically;
