@@ -134,6 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const stagedProposalContents = new Map<string, string>();
   let proposalGeneration = 0;
   let proposalStagingInProgress = false;
+  let proposalInvalidation = Promise.resolve();
 
   const proposalContentProvider = vscode.workspace.registerTextDocumentContentProvider(
     'codealongai-proposal',
@@ -181,13 +182,17 @@ export function activate(context: vscode.ExtensionContext): void {
     return true;
   };
   const invalidateProposalReview = async (): Promise<boolean> => {
-    const invalidationGeneration = proposalGeneration + 1;
-    proposalGeneration = invalidationGeneration;
-    const closed = await closeStagedProposalTab();
-    if (!closed && proposalGeneration === invalidationGeneration) {
-      proposalGeneration -= 1;
-      showProposalReviewActions(proposalGeneration);
-    }
+    let closed = true;
+    proposalInvalidation = proposalInvalidation.then(async () => {
+      const invalidationGeneration = proposalGeneration + 1;
+      proposalGeneration = invalidationGeneration;
+      closed = await closeStagedProposalTab();
+      if (!closed && proposalGeneration === invalidationGeneration) {
+        proposalGeneration -= 1;
+        showProposalReviewActions(proposalGeneration);
+      }
+    });
+    await proposalInvalidation;
     return closed;
   };
   const discardProposalContents = (): void => {
