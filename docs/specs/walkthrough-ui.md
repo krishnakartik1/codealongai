@@ -2,7 +2,7 @@
 
 Status: implementation-ready
 
-Scope: stable VS Code Extension APIs, model-free, read-only, session-memory only
+Scope: stable VS Code Extension APIs, model-free, workspace-read-only, session-memory only
 
 This document is the normative UI contract for the CodeAlongAI walkthrough. It
 synthesizes the approved interaction contract, stable-API research, and the two
@@ -15,9 +15,10 @@ The walkthrough lets a person start from code, read an anchored explanation,
 ask questions at any visited stop, and navigate a finite graph of code ranges.
 The human origin and CodeAlongAI attention are separate named concepts.
 
-This specification does not include a model or provider, MCP integration,
-workspace mutation, code proposals, persistence, authentication, or proposed
-VS Code APIs. The implementation must not edit files.
+This specification does not include a model or provider, workspace mutation,
+code proposals, persistence, authentication, or proposed VS Code APIs. MCP
+lifecycle and wire payloads are specified separately; the implementation must
+not edit files.
 
 The only UI primitives are stable native VS Code Comment threads and a native
 Quick Pick. In particular, do not use editor webview insets, proposed Comment
@@ -101,6 +102,10 @@ unchanged.
 
 Ask requires an active text editor.
 
+Ask is available only while the CodeAlongAI MCP endpoint is enabled. Endpoint
+startup, bind failure, disable-during-session behavior, and transport recovery
+belong to the MCP lifecycle contract.
+
 1. If the editor has a non-empty selection, normalize and use that exact range.
 2. Otherwise, use the complete cursor line from column zero through the end of
    its text, provided the line contains at least one non-whitespace character.
@@ -152,8 +157,10 @@ window close.
 ## Questions and generated walkthroughs
 
 Trim the submitted reply. An empty value does nothing. For a non-empty value,
-ask the injected deterministic responder using the source stop ID, submitted
-text, and a read-only session snapshot. The responder returns exactly one of:
+create a single-use walkthrough request containing the source stop ID,
+submitted text, and a read-only session snapshot. The deterministic driver
+reads and completes that request through the loopback MCP endpoint. It returns
+exactly one of:
 
 - explanation-only;
 - destination-offer;
@@ -178,11 +185,11 @@ question asked in a historical thread uses that historical stop as source,
 attaches any patch there, leaves attention unchanged, and leaves that manually
 opened thread expanded. Unsupported answers are comments, not notifications.
 
-The deterministic responder used in this effort is synchronous or otherwise
-infallible after its input has been accepted. Model/provider latency and
-responder failures are outside this specification. Tests must inject all four
-outcome variants directly rather than depend on natural-language keyword
-matching.
+The deterministic producer used in this effort generates its payload
+synchronously and infallibly after accepting an input. MCP delivery and
+lifecycle failures belong to the MCP specification; model/provider latency and
+failures remain outside this effort. Tests must inject all four outcome variants
+directly rather than depend on natural-language keyword matching.
 
 ## Attention, expansion, and editor placement
 
@@ -299,9 +306,14 @@ roles may use different TypeScript names, but their boundaries are normative:
 - **Session core:** owns immutable state snapshots, validates producer data and
   graph patches, selects Back/Next sources, and commits question and navigation
   transitions.
-- **Walkthrough producer/responder:** supplies the initial graph and the four
-  question outcomes. The deterministic fixture implements this role now; a
-  future model can replace it without changing UI state or commands.
+- **Walkthrough producer/driver:** supplies the initial graph and the four
+  question outcomes. The deterministic fixture generates payloads now and
+  commits them through the MCP command boundary; a future model can supply the
+  same payloads without changing UI state or commands.
+- **MCP command boundary:** exposes workspace reads and validated walkthrough
+  transitions over common extension-owned handlers. Native Back, Next, and
+  Destinations controls call their handlers in-process; producer outcomes cross
+  the real loopback Streamable HTTP transport.
 - **Comment view adapter:** maps stop IDs to native threads and renders snapshots.
 - **Editor navigator:** resolves documents/ranges, captures editor state,
   prepares same-file or split-editor navigation, reveals a range, and restores
@@ -379,6 +391,23 @@ The cart branch rejoins the existing Definition stop. Fixture prose beyond the
 required invitation and question may remain deterministic test data; assertions
 should verify producer payload identity rather than couple domain logic to its
 wording. Pure tests inject the other three question outcome variants directly.
+
+After navigating to `pricing-reducer`, submitting the fixture question **Why is
+the subtotal negative?** returns a second generated-walkthrough outcome. It
+appends `pricing-initial-value` as a new destination after
+`pricing-reducer-revisit`, without changing the existing recommended Next:
+
+| ID | Display name | Document and anchor | Destinations | Next | Back |
+| --- | --- | --- | --- | --- | --- |
+| `pricing-initial-value` | `Initial value` | The initial accumulator `0` in `pricing.ts` | None | None | `pricing-reducer` |
+
+The answer explains that starting from zero and subtracting each price makes the
+subtotal negative. The question and answer remain in the source stop's
+conversation, the append-only patch commits atomically, and CodeAlongAI
+attention does not move automatically. Selecting the new stop through
+Destinations then follows the ordinary navigation contract. An end-to-end MCP
+test must observe the resulting six-stop graph, stop excerpt, conversation, and
+new session revision.
 
 ## Decision sources
 
