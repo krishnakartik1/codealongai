@@ -1,0 +1,18 @@
+{
+  "name": "codealongai-trueforge-loopback-discovery-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "fixture": "node fixture.mjs",
+    "spike": "node run-spike.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@truefoundry/trueforge": "0.1.4",
+    "express": "5.2.1"
+  }
+}
