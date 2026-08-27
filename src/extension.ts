@@ -116,7 +116,10 @@ export function activate(context: vscode.ExtensionContext): void {
     aiAttention: undefined,
     explanations: [],
     follow: 'not-following',
-    followTarget: undefined
+    followTarget: undefined,
+    proposalCaptureTarget: undefined,
+    proposal: undefined,
+    mutationRequest: undefined
   };
   const render = (state: InteractionState): InteractionState => {
     visibleState = state;
@@ -124,12 +127,17 @@ export function activate(context: vscode.ExtensionContext): void {
     return state;
   };
   let stagedProposalTab: vscode.Tab | undefined;
+  let proposalGeneration = 0;
 
   const closeStagedProposalTab = async (): Promise<void> => {
     if (stagedProposalTab !== undefined) {
       await vscode.window.tabGroups.close(stagedProposalTab, true);
       stagedProposalTab = undefined;
     }
+  };
+  const invalidateProposalReview = async (): Promise<void> => {
+    proposalGeneration += 1;
+    await closeStagedProposalTab();
   };
 
   const followAi = async (): Promise<InteractionState> => {
@@ -165,12 +173,13 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   const askPair = vscode.commands.registerCommand(
     'codealongai.askPair',
-    (): InteractionState | undefined => {
+    async (): Promise<InteractionState | undefined> => {
       const editor = vscode.window.activeTextEditor;
       if (editor === undefined) {
         void vscode.window.showWarningMessage('Open the suspicious code before asking CodeAlongAI.');
         return undefined;
       }
+      await invalidateProposalReview();
       const state = interaction.start(documentRange(editor));
       return render(state);
     }
@@ -184,16 +193,38 @@ export function activate(context: vscode.ExtensionContext): void {
         requestFollowConsent();
       }
       if (state.proposalCaptureTarget !== undefined) {
-        const capture = await captureKnownProposal(state.proposalCaptureTarget);
+        const generation = proposalGeneration;
+        let capture: { baseDocumentVersion: number; stagedContents: string };
+        try {
+          capture = await captureKnownProposal(state.proposalCaptureTarget);
+        } catch (error) {
+          if (generation === proposalGeneration) {
+            render(interaction.rejectProposal());
+            void vscode.window.showWarningMessage(`CodeAlongAI could not stage the proposal: ${String(error)}`);
+          }
+          return state;
+        }
+        if (generation !== proposalGeneration) return state;
         state = interaction.stageProposal({ target: state.proposalCaptureTarget, ...capture });
         render(state);
         if (state.proposal !== undefined) {
-          stagedProposalTab = await openProposalDiff(state.proposal);
+          let tab: vscode.Tab | undefined;
+          try { tab = await openProposalDiff(state.proposal); } catch (error) {
+            if (generation === proposalGeneration) render(interaction.rejectProposal());
+            void vscode.window.showWarningMessage(`CodeAlongAI could not open the proposal review: ${String(error)}`);
+            return state;
+          }
+          if (generation !== proposalGeneration) {
+            if (tab !== undefined) await vscode.window.tabGroups.close(tab, true);
+            return state;
+          }
+          stagedProposalTab = tab;
           void vscode.window.showInformationMessage(
             'CodeAlongAI staged the known proposal for review.',
             'Request acceptance',
             'Reject proposal'
           ).then((response) => {
+            if (generation !== proposalGeneration) return undefined;
             if (response === 'Request acceptance') {
               return requestProposalAcceptance();
             }
@@ -211,12 +242,12 @@ export function activate(context: vscode.ExtensionContext): void {
     return render(interaction.breakAway());
   };
   const resetReplay = async (): Promise<InteractionState> => {
-    await closeStagedProposalTab();
+    await invalidateProposalReview();
     const state = interaction.reset();
     return render(state);
   };
   const rejectProposal = async (): Promise<InteractionState> => {
-    await closeStagedProposalTab();
+    await invalidateProposalReview();
     const state = interaction.rejectProposal();
     return render(state);
   };

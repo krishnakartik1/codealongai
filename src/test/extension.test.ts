@@ -101,6 +101,7 @@ suite('CodeAlongAI extension', () => {
     await vscode.commands.executeCommand('codealongai.askPair');
     await vscode.commands.executeCommand('codealongai.replay.advance');
     await vscode.commands.executeCommand('codealongai.replay.advance');
+    await vscode.commands.executeCommand('codealongai.follow.accept');
     const staged = await vscode.commands.executeCommand('codealongai.replay.advance') as {
       proposal: {
         target: { document: string };
