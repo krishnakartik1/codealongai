@@ -62,6 +62,7 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
   const interaction = new InteractionController(deterministicReplayFixture.events);
+  let followPromptIsOpen = false;
   let visibleState: InteractionState = {
     humanSelection: undefined,
     aiAttention: undefined,
@@ -85,6 +86,27 @@ export function activate(context: vscode.ExtensionContext): void {
   const refuseFollow = (): InteractionState => {
     return render(interaction.refuseFollow());
   };
+  const requestFollowConsent = (): void => {
+    if (followPromptIsOpen) {
+      return;
+    }
+    followPromptIsOpen = true;
+    void Promise.resolve(vscode.window.showInformationMessage(
+      'CodeAlongAI found a related code range. Follow AI?',
+      'Follow AI',
+      'Stay here'
+    )).then((response) => {
+      if (response === 'Follow AI') {
+        return followAi();
+      }
+      if (response === 'Stay here') {
+        return refuseFollow();
+      }
+      return undefined;
+    }).finally(() => {
+      followPromptIsOpen = false;
+    });
+  };
   const askPair = vscode.commands.registerCommand(
     'codealongai.askPair',
     (): InteractionState | undefined => {
@@ -103,19 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const state = interaction.advance();
       render(state);
       if (state.follow === 'awaiting-consent') {
-        void vscode.window.showInformationMessage(
-          'CodeAlongAI found a related code range. Follow AI?',
-          'Follow AI',
-          'Stay here'
-        ).then((response) => {
-          if (response === 'Follow AI') {
-            return followAi();
-          }
-          if (response === 'Stay here') {
-            return refuseFollow();
-          }
-          return undefined;
-        });
+        requestFollowConsent();
       }
       return state;
     }
