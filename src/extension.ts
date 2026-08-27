@@ -161,14 +161,16 @@ export function activate(context: vscode.ExtensionContext): void {
     mutationRequest: undefined,
     proposalAcceptance: { message: undefined, closeReview: false }
   };
-  let interactionGeneration = 0;
-  let interactionEditor: vscode.TextEditor | undefined;
+  let followNavigationGeneration = 0;
+  let interactionEditor: { generation: number; editor: vscode.TextEditor } | undefined;
   const supersedeInteraction = (): void => {
-    interactionGeneration += 1;
-    interactionEditor = vscode.window.activeTextEditor;
+    followNavigationGeneration += 1;
+    const editor = vscode.window.activeTextEditor;
+    interactionEditor = editor === undefined
+      ? undefined
+      : { generation: followNavigationGeneration, editor };
   };
   const render = (state: InteractionState): InteractionState => {
-    interactionGeneration += 1;
     visibleState = state;
     applyCues(visibleState);
     return state;
@@ -268,16 +270,21 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const followAi = async (): Promise<InteractionState> => {
+    const shouldNavigate = visibleState.follow === 'awaiting-consent';
     const state = render(interaction.acceptFollow());
-    const acceptedGeneration = interactionGeneration;
-    if (state.followTarget !== undefined) {
-      await revealFollowTarget(
-        state.followTarget,
-        () => acceptedGeneration === interactionGeneration,
-        () => interactionEditor
-      );
+    if (!shouldNavigate || state.followTarget === undefined) {
+      return state;
     }
-    return acceptedGeneration === interactionGeneration ? state : visibleState;
+    followNavigationGeneration += 1;
+    const acceptedGeneration = followNavigationGeneration;
+    await revealFollowTarget(
+      state.followTarget,
+      () => acceptedGeneration === followNavigationGeneration,
+      () => interactionEditor?.generation === followNavigationGeneration
+        ? interactionEditor.editor
+        : undefined
+    );
+    return acceptedGeneration === followNavigationGeneration ? state : visibleState;
   };
   const refuseFollow = (): InteractionState => {
     return render(interaction.refuseFollow());
