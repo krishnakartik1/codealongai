@@ -139,6 +139,22 @@ export function activate(context: vscode.ExtensionContext): void {
     'codealongai-proposal',
     { provideTextDocumentContent: (uri) => stagedProposalContents.get(uri.toString()) }
   );
+  const showProposalReviewActions = (generation: number): void => {
+    void vscode.window.showInformationMessage(
+      'CodeAlongAI staged the known proposal for review.',
+      'Request acceptance',
+      'Reject proposal'
+    ).then((response) => {
+      if (generation !== proposalGeneration) return undefined;
+      if (response === 'Request acceptance') {
+        return requestProposalAcceptance();
+      }
+      if (response === 'Reject proposal') {
+        return rejectProposal();
+      }
+      return undefined;
+    });
+  };
 
   const closeStagedProposalTab = async (): Promise<boolean> => {
     if (stagedProposalTab !== undefined) {
@@ -165,8 +181,14 @@ export function activate(context: vscode.ExtensionContext): void {
     return true;
   };
   const invalidateProposalReview = async (): Promise<boolean> => {
-    proposalGeneration += 1;
-    return closeStagedProposalTab();
+    const invalidationGeneration = proposalGeneration + 1;
+    proposalGeneration = invalidationGeneration;
+    const closed = await closeStagedProposalTab();
+    if (!closed && proposalGeneration === invalidationGeneration) {
+      proposalGeneration -= 1;
+      showProposalReviewActions(proposalGeneration);
+    }
+    return closed;
   };
   const discardProposalContents = (): void => {
     if (stagedProposalUri !== undefined) {
@@ -276,20 +298,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             stagedProposalTab = tab;
             stagedProposalUri = stagedUri;
-            void vscode.window.showInformationMessage(
-              'CodeAlongAI staged the known proposal for review.',
-              'Request acceptance',
-              'Reject proposal'
-            ).then((response) => {
-              if (generation !== proposalGeneration) return undefined;
-              if (response === 'Request acceptance') {
-                return requestProposalAcceptance();
-              }
-              if (response === 'Reject proposal') {
-                return rejectProposal();
-              }
-              return undefined;
-            });
+            showProposalReviewActions(generation);
           }
         } finally {
           proposalStagingInProgress = false;
