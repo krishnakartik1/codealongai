@@ -35,6 +35,14 @@
       {
         "command": "codealongai.replay.reset",
         "title": "CodeAlongAI: Reset walkthrough"
+      },
+      {
+        "command": "codealongai.proposal.reject",
+        "title": "CodeAlongAI: Reject staged proposal"
+      },
+      {
+        "command": "codealongai.proposal.requestAcceptance",
+        "title": "CodeAlongAI: Request proposal acceptance"
       }
     ]
   },

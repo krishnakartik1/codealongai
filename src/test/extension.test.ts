@@ -84,4 +84,54 @@ suite('CodeAlongAI extension', () => {
     assert.equal(resetState.follow, 'not-following');
     assert.equal(resetState.followTarget, undefined);
   });
+
+  test('stages the known proposal in a separate document without changing the fixture', async () => {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'the demo workspace should be open');
+    const pricing = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspace.uri, 'pricing.ts')
+    );
+    const originalContents = pricing.getText();
+    const checkout = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+    );
+    const editor = await vscode.window.showTextDocument(checkout);
+    editor.selection = new vscode.Selection(4, 31, 4, 39);
+
+    await vscode.commands.executeCommand('codealongai.askPair');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    const staged = await vscode.commands.executeCommand('codealongai.replay.advance') as {
+      proposal: {
+        target: { document: string };
+        baseDocumentVersion: number;
+        stagedContents: string;
+        review: string;
+      };
+    };
+
+    assert.equal(staged.proposal.target.document, 'pricing.ts');
+    assert.equal(staged.proposal.baseDocumentVersion, pricing.version);
+    assert.equal(staged.proposal.stagedContents.includes('total + price'), true);
+    assert.equal(staged.proposal.review, 'ready');
+    assert.equal(pricing.getText(), originalContents);
+
+    const acceptanceRequested = await vscode.commands.executeCommand(
+      'codealongai.proposal.requestAcceptance'
+    ) as {
+      proposal: { review: string };
+      mutationRequest: { baseDocumentVersion: number; stagedContents: string };
+    };
+    assert.equal(acceptanceRequested.proposal.review, 'accept-requested');
+    assert.equal(acceptanceRequested.mutationRequest.baseDocumentVersion, pricing.version);
+    assert.equal(acceptanceRequested.mutationRequest.stagedContents.includes('total + price'), true);
+    assert.equal(pricing.getText(), originalContents);
+
+    const rejected = await vscode.commands.executeCommand('codealongai.proposal.reject') as {
+      proposal: undefined;
+      mutationRequest: undefined;
+    };
+    assert.equal(rejected.proposal, undefined);
+    assert.equal(rejected.mutationRequest, undefined);
+  });
 });

@@ -2,7 +2,8 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   InteractionController,
-  type InteractionState
+  type InteractionState,
+  type StagedProposal
 } from './interaction';
 import { deterministicReplayFixture, type DocumentRange } from './replay';
 
@@ -60,6 +61,53 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
   editor.revealRange(toRange(target), vscode.TextEditorRevealType.InCenter);
 }
 
+async function captureKnownProposal(
+  target: DocumentRange
+): Promise<{ baseDocumentVersion: number; stagedContents: string }> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  const isKnownTarget = target.document === 'pricing.ts' &&
+    target.range.start.line === 1 &&
+    target.range.start.character === 47 &&
+    target.range.end.line === 1 &&
+    target.range.end.character === 48;
+  if (workspace === undefined || !isKnownTarget) {
+    throw new Error('The known proposal target is unavailable.');
+  }
+  const document = await vscode.workspace.openTextDocument(
+    vscode.Uri.joinPath(workspace.uri, target.document)
+  );
+  const source = document.getText();
+  const lines = source.split('\n');
+  const knownLine = lines[1];
+  if (knownLine?.slice(47, 48) !== '-') {
+    throw new Error('The known one-character proposal no longer matches the fixture.');
+  }
+  lines[1] = knownLine.slice(0, 47) + '+' + knownLine.slice(48);
+  const stagedContents = lines.join('\n');
+
+  return { baseDocumentVersion: document.version, stagedContents };
+}
+
+async function openProposalDiff(proposal: StagedProposal): Promise<vscode.Tab | undefined> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  if (workspace === undefined) {
+    return undefined;
+  }
+  const target = vscode.Uri.joinPath(workspace.uri, proposal.target.document);
+  const staged = await vscode.workspace.openTextDocument({
+    content: proposal.stagedContents,
+    language: 'typescript'
+  });
+  await vscode.commands.executeCommand(
+    'vscode.diff',
+    target,
+    staged.uri,
+    `CodeAlongAI proposal: ${proposal.target.document} (version ${proposal.baseDocumentVersion})`
+  );
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  return tab?.input instanceof vscode.TabInputTextDiff ? tab : undefined;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const interaction = new InteractionController(deterministicReplayFixture.events);
   let followPromptIsOpen = false;
@@ -75,6 +123,7 @@ export function activate(context: vscode.ExtensionContext): void {
     applyCues(visibleState);
     return state;
   };
+  let stagedProposalTab: vscode.Tab | undefined;
 
   const followAi = async (): Promise<InteractionState> => {
     const state = interaction.acceptFollow();
@@ -122,10 +171,31 @@ export function activate(context: vscode.ExtensionContext): void {
   const advanceReplay = vscode.commands.registerCommand(
     'codealongai.replay.advance',
     async (): Promise<InteractionState> => {
-      const state = interaction.advance();
+      let state = interaction.advance();
       render(state);
       if (state.follow === 'awaiting-consent') {
         requestFollowConsent();
+      }
+      if (state.proposalCaptureTarget !== undefined) {
+        const capture = await captureKnownProposal(state.proposalCaptureTarget);
+        state = interaction.stageProposal({ target: state.proposalCaptureTarget, ...capture });
+        render(state);
+        if (state.proposal !== undefined) {
+          stagedProposalTab = await openProposalDiff(state.proposal);
+          void vscode.window.showInformationMessage(
+            'CodeAlongAI staged the known proposal for review.',
+            'Request acceptance',
+            'Reject proposal'
+          ).then((response) => {
+            if (response === 'Request acceptance') {
+              return requestProposalAcceptance();
+            }
+            if (response === 'Reject proposal') {
+              return rejectProposal();
+            }
+            return undefined;
+          });
+        }
       }
       return state;
     }
@@ -133,8 +203,31 @@ export function activate(context: vscode.ExtensionContext): void {
   const breakAway = (): InteractionState => {
     return render(interaction.breakAway());
   };
-  const resetReplay = (): InteractionState => {
-    return render(interaction.reset());
+  const resetReplay = async (): Promise<InteractionState> => {
+    if (stagedProposalTab !== undefined) {
+      await vscode.window.tabGroups.close(stagedProposalTab, true);
+      stagedProposalTab = undefined;
+    }
+    const state = interaction.reset();
+    return render(state);
+  };
+  const rejectProposal = async (): Promise<InteractionState> => {
+    if (stagedProposalTab !== undefined) {
+      await vscode.window.tabGroups.close(stagedProposalTab, true);
+      stagedProposalTab = undefined;
+    }
+    const state = interaction.rejectProposal();
+    return render(state);
+  };
+  const requestProposalAcceptance = (): InteractionState => {
+    const state = interaction.requestProposalAcceptance();
+    render(state);
+    if (state.mutationRequest !== undefined) {
+      void vscode.window.showInformationMessage(
+        'Acceptance request recorded. The extension authority gate must recheck the document version before any change.'
+      );
+    }
+    return state;
   };
 
   context.subscriptions.push(
@@ -145,6 +238,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.follow.breakAway', breakAway),
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
     vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),
+    vscode.commands.registerCommand('codealongai.proposal.reject', rejectProposal),
+    vscode.commands.registerCommand('codealongai.proposal.requestAcceptance', requestProposalAcceptance),
     aiPointerStyle,
     explanationStyle
   );
