@@ -381,20 +381,27 @@ export function registerNativeCommentThreadPrototype(
     if (source === undefined) {
       return;
     }
-    const picked = await vscode.window.showQuickPick(
-      graphPickerProjection.map((projection) => {
+    const graphItems = await Promise.all(
+      graphPickerProjection.map(async (projection) => {
         const stop = stops.get(projection.id);
         if (stop === undefined) {
           throw new Error(`Unknown graph projection stop: ${projection.id}`);
         }
+        const document = await workspaceDocument(stop.document);
+        const position = rangeFor(document, stop.anchor).start;
+        const location = projection.id === attention ? '$(location) ' : '';
+        const coordinates = `L${position.line + 1}:C${position.character + 1}`;
         return {
-          label: `${projection.prefix} ${projection.id === attention ? '$(location) ' : ''}${projection.label}`,
+          label: `${projection.prefix} ${location}${projection.label}  · ${coordinates}`,
           stopId: projection.id
         };
-      }),
+      })
+    );
+    const picked = await vscode.window.showQuickPick(
+      graphItems,
       {
-        title: `Walkthrough graph · Current: ${attention === undefined ? 'none' : stops.get(attention)?.title}`,
-        placeHolder: 'Select any current, historical, or future stop'
+        title: 'Walkthrough graph',
+        placeHolder: 'Select a walkthrough stop'
       }
     );
     if (picked === undefined) {

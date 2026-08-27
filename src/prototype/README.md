@@ -24,7 +24,8 @@ In the Extension Development Host:
 2. Choose **Destinations**. Confirm the picker shows the whole walkthrough as
    a compact indented tree projection, including every stop. Only the current
    stop carries a location icon; the picker has no history/future labels or
-   secondary descriptions. Check that the tree and rejoin arrow make the graph
+   secondary descriptions. Each main label ends with a one-based line and
+   column such as `L2:C40`. Check that the tree and rejoin arrow make the graph
    understandable without extra prose.
 3. Choose **Next**. Confirm cross-file navigation proceeds immediately:
    `checkout.ts` remains on the left, `pricing.ts` opens on the right, the
