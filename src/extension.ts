@@ -9,6 +9,7 @@ import {
 } from './interaction';
 import { ProposalAcceptanceAuthority, type LiveProposalDocument } from './proposalAcceptance';
 import { deterministicReplayFixture, type DocumentRange } from './replay';
+import { registerNativeCommentThreadPrototype } from './prototype/nativeCommentThread';
 
 const aiPointerStyle = vscode.window.createTextEditorDecorationType({
   after: { contentText: '  CodeAlongAI →', color: new vscode.ThemeColor('editorInfo.foreground') },
@@ -147,6 +148,7 @@ function liveProposalDocuments(): LiveProposalDocument {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  registerNativeCommentThreadPrototype(context);
   const interaction = new InteractionController(deterministicReplayFixture.events);
   const proposalAuthority = new ProposalAcceptanceAuthority(liveProposalDocuments());
   let followPromptIsOpen = false;

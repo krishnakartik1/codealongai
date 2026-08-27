@@ -15,7 +15,8 @@
     "ui"
   ],
   "activationEvents": [
-    "onCommand:codealongai.askPair"
+    "onCommand:codealongai.askPair",
+    "onCommand:codealongai.prototype.comments.start"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -47,14 +48,91 @@
       {
         "command": "codealongai.proposal.requestAcceptance",
         "title": "CodeAlongAI: Request proposal acceptance"
+      },
+      {
+        "command": "codealongai.prototype.comments.start",
+        "title": "CodeAlongAI Prototype: Start native Comment walkthrough"
+      },
+      {
+        "command": "codealongai.prototype.comments.back",
+        "title": "Back",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "codealongai.prototype.comments.next",
+        "title": "Next",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "codealongai.prototype.comments.destinations",
+        "title": "Destinations",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "codealongai.prototype.comments.reply",
+        "title": "Ask CodeAlongAI",
+        "icon": "$(send)"
+      },
+      {
+        "command": "codealongai.prototype.comments.showState",
+        "title": "CodeAlongAI Prototype: Show prototype state"
+      },
+      {
+        "command": "codealongai.prototype.comments.reset",
+        "title": "CodeAlongAI Prototype: Reset native Comment walkthrough"
       }
-    ]
+    ],
+    "menus": {
+      "comments/commentThread/title": [
+        {
+          "command": "codealongai.prototype.comments.back",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasBack/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codealongai.prototype.comments.next",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasNext/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codealongai.prototype.comments.destinations",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/",
+          "group": "navigation@3"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "codealongai.prototype.comments.reply",
+          "when": "commentController == codealongai.prototype.nativeComments",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "codealongai.prototype.comments.back",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.prototype.comments.next",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.prototype.comments.destinations",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.prototype.comments.reply",
+          "when": "false"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && vscode-test",
-    "test:headless": "npm run build && xvfb-run -a vscode-test"
+    "test:headless": "npm run build && xvfb-run -a vscode-test",
+    "prototype:comments": "npm run build && code --new-window --extensionDevelopmentPath=. demo-workspace"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
