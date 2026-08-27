@@ -86,18 +86,18 @@
       "comments/commentThread/title": [
         {
           "command": "codealongai.prototype.comments.back",
-          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasBack/",
-          "group": "navigation@1"
+          "when": "commentController == codealongai.prototype.nativeComments && commentThread =~ /hasBack/",
+          "group": "inline@1"
         },
         {
           "command": "codealongai.prototype.comments.next",
-          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasNext/",
-          "group": "navigation@2"
+          "when": "commentController == codealongai.prototype.nativeComments && commentThread =~ /hasNext/",
+          "group": "inline@2"
         },
         {
           "command": "codealongai.prototype.comments.destinations",
-          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/",
-          "group": "navigation@3"
+          "when": "commentController == codealongai.prototype.nativeComments && commentThread =~ /hasDestinations/",
+          "group": "inline@3"
         }
       ],
       "comments/commentThread/context": [
