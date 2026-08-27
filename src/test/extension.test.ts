@@ -11,15 +11,28 @@ suite('CodeAlongAI extension', () => {
 
   test('activates when Ask pair executes', async () => {
     const extension = vscode.extensions.getExtension('krishnakartik1.codealongai');
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'the demo workspace should be open');
+    const checkout = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+    );
+    const editor = await vscode.window.showTextDocument(checkout);
+    editor.selection = new vscode.Selection(4, 31, 4, 39);
 
     assert.ok(extension, 'CodeAlongAI extension should be installed in the test host');
     assert.equal(extension.isActive, false, 'CodeAlongAI should start inactive');
     assert.deepEqual(
       await vscode.commands.executeCommand('codealongai.askPair'),
       {
-        status: 'started',
-        event: {
-          kind: 'point',
+        humanSelection: {
+          document: 'checkout.ts',
+          range: {
+            start: { line: 4, character: 31 },
+            end: { line: 4, character: 39 }
+          }
+        },
+        aiAttention: {
+          name: 'CodeAlongAI',
           target: {
             document: 'checkout.ts',
             range: {
@@ -27,63 +40,48 @@ suite('CodeAlongAI extension', () => {
               end: { line: 4, character: 39 }
             }
           }
-        }
+        },
+        explanations: [],
+        follow: 'not-following'
       }
     );
     assert.equal(extension.isActive, true, 'Ask pair should activate CodeAlongAI');
   });
 
-  test('retains replay state across replay commands and restarts deterministically', async () => {
-    const firstEvent = {
-      kind: 'point',
-      target: {
-        document: 'checkout.ts',
-        range: {
-          start: { line: 4, character: 31 },
-          end: { line: 4, character: 39 }
-        }
-      }
+  test('reveals the target only after Follow AI consent and preserves the checkout selection', async () => {
+    const checkoutEditor = vscode.window.activeTextEditor;
+    assert.ok(checkoutEditor, 'Ask pair should leave checkout open');
+    const selection = checkoutEditor.selection;
+
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    const awaitingConsent = await vscode.commands.executeCommand('codealongai.replay.advance');
+    const pendingFollow = awaitingConsent as {
+      follow: string;
+      aiAttention: { target: { document: string } };
+      explanations: readonly unknown[];
     };
-    const secondEvent = {
-      kind: 'walkthrough',
-      message: 'Follow checkout through its subtotal import.',
-      target: {
-        document: 'checkout.ts',
-        range: {
-          start: { line: 0, character: 9 },
-          end: { line: 0, character: 17 }
-        }
-      }
+    assert.equal(pendingFollow.follow, 'awaiting-consent');
+    assert.equal(pendingFollow.aiAttention.target.document, 'pricing.ts');
+    assert.deepEqual(pendingFollow.explanations, []);
+    assert.equal(vscode.window.activeTextEditor?.document.fileName.endsWith('checkout.ts'), true);
+
+    const following = await vscode.commands.executeCommand('codealongai.follow.accept');
+    assert.equal((following as { follow: string }).follow, 'following');
+    assert.equal(vscode.window.activeTextEditor?.document.fileName.endsWith('pricing.ts'), true);
+    assert.equal(checkoutEditor.selection.isEqual(selection), true);
+
+    const reset = await vscode.commands.executeCommand('codealongai.replay.reset');
+    const resetState = reset as {
+      humanSelection: undefined;
+      aiAttention: undefined;
+      explanations: readonly unknown[];
+      follow: string;
+      followTarget: undefined;
     };
-
-    assert.deepEqual(await vscode.commands.executeCommand('codealongai.askPair'), {
-      status: 'started',
-      event: firstEvent
-    });
-    assert.deepEqual(
-      await vscode.commands.executeCommand('codealongai.replay.advance'),
-      secondEvent
-    );
-
-    await vscode.commands.executeCommand('codealongai.replay.cancel');
-    assert.equal(
-      await vscode.commands.executeCommand('codealongai.replay.advance'),
-      undefined
-    );
-
-    await vscode.commands.executeCommand('codealongai.replay.reset');
-    assert.equal(
-      await vscode.commands.executeCommand('codealongai.replay.advance'),
-      undefined
-    );
-
-    assert.deepEqual(await vscode.commands.executeCommand('codealongai.askPair'), {
-      status: 'started',
-      event: firstEvent
-    });
-    assert.deepEqual(
-      await vscode.commands.executeCommand('codealongai.replay.advance'),
-      secondEvent
-    );
+    assert.equal(resetState.humanSelection, undefined);
+    assert.equal(resetState.aiAttention, undefined);
+    assert.deepEqual(resetState.explanations, []);
+    assert.equal(resetState.follow, 'not-following');
+    assert.equal(resetState.followTarget, undefined);
   });
 });

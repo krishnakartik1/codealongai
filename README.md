@@ -17,6 +17,15 @@ Open this repository in VS Code, run the `Run CodeAlongAI` launch configuration,
 and choose `CodeAlongAI: Ask pair` from the Command Palette in the Extension
 Development Host. The host opens the two-file workspace under `demo-workspace/`.
 
+## Shared-attention walkthrough
+
+In `checkout.ts`, select `subtotal` in the `console.log` call, then run
+`CodeAlongAI: Ask pair`. Run `CodeAlongAI: Continue walkthrough` twice. The
+second step asks before it opens `pricing.ts`; choose **Follow AI** to reveal the
+known subtraction defect with an anchored explanation. `CodeAlongAI: Stop
+following` removes the AI cues, and `CodeAlongAI: Reset walkthrough` clears all
+state before another run.
+
 Run the automated Extension Development Host test with:
 
 ```bash
