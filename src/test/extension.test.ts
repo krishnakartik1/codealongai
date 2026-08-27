@@ -11,17 +11,7 @@ async function stageKnownProposal(): Promise<{
     review: string;
   };
 }> {
-  const workspace = vscode.workspace.workspaceFolders?.[0];
-  assert.ok(workspace, 'the demo workspace should be open');
-  const checkout = await vscode.workspace.openTextDocument(
-    vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
-  );
-  const editor = await vscode.window.showTextDocument(checkout);
-  editor.selection = new vscode.Selection(4, 31, 4, 39);
-
-  await vscode.commands.executeCommand('codealongai.askPair');
-  await vscode.commands.executeCommand('codealongai.replay.advance');
-  await vscode.commands.executeCommand('codealongai.replay.advance');
+  await preparePendingFollowNavigation();
   await vscode.commands.executeCommand('codealongai.follow.accept');
   return await vscode.commands.executeCommand('codealongai.replay.advance') as {
     proposal: {
@@ -33,6 +23,21 @@ async function stageKnownProposal(): Promise<{
       review: string;
     };
   };
+}
+
+async function preparePendingFollowNavigation(): Promise<vscode.TextDocument> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  assert.ok(workspace, 'the demo workspace should be open');
+  const checkout = await vscode.workspace.openTextDocument(
+    vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+  );
+  const editor = await vscode.window.showTextDocument(checkout);
+  editor.selection = new vscode.Selection(4, 31, 4, 39);
+
+  await vscode.commands.executeCommand('codealongai.askPair');
+  await vscode.commands.executeCommand('codealongai.replay.advance');
+  await vscode.commands.executeCommand('codealongai.replay.advance');
+  return checkout;
 }
 
 suite('CodeAlongAI extension', () => {
@@ -107,17 +112,7 @@ suite('CodeAlongAI extension', () => {
   });
 
   test('does not restore followed cues when reset wins during navigation', async () => {
-    const workspace = vscode.workspace.workspaceFolders?.[0];
-    assert.ok(workspace, 'the demo workspace should be open');
-    const checkout = await vscode.workspace.openTextDocument(
-      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
-    );
-    const editor = await vscode.window.showTextDocument(checkout);
-    editor.selection = new vscode.Selection(4, 31, 4, 39);
-
-    await vscode.commands.executeCommand('codealongai.askPair');
-    await vscode.commands.executeCommand('codealongai.replay.advance');
-    await vscode.commands.executeCommand('codealongai.replay.advance');
+    const checkout = await preparePendingFollowNavigation();
     const pendingFollow = vscode.commands.executeCommand('codealongai.follow.accept');
     const reset = await vscode.commands.executeCommand('codealongai.replay.reset') as {
       aiAttention: undefined;
@@ -138,17 +133,7 @@ suite('CodeAlongAI extension', () => {
   });
 
   test('does not cancel accepted navigation when an ordinary follow command renders', async () => {
-    const workspace = vscode.workspace.workspaceFolders?.[0];
-    assert.ok(workspace, 'the demo workspace should be open');
-    const checkout = await vscode.workspace.openTextDocument(
-      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
-    );
-    const editor = await vscode.window.showTextDocument(checkout);
-    editor.selection = new vscode.Selection(4, 31, 4, 39);
-
-    await vscode.commands.executeCommand('codealongai.askPair');
-    await vscode.commands.executeCommand('codealongai.replay.advance');
-    await vscode.commands.executeCommand('codealongai.replay.advance');
+    await preparePendingFollowNavigation();
     const pendingFollow = vscode.commands.executeCommand('codealongai.follow.accept');
     await vscode.commands.executeCommand('codealongai.follow.refuse');
     const completedFollow = await pendingFollow as { follow: string };
