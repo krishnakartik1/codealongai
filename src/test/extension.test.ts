@@ -117,17 +117,6 @@ suite('CodeAlongAI extension', () => {
     assert.equal(staged.proposal.review, 'ready');
     assert.equal(pricing.getText(), originalContents);
 
-    const acceptanceRequested = await vscode.commands.executeCommand(
-      'codealongai.proposal.requestAcceptance'
-    ) as {
-      proposal: { review: string };
-      mutationRequest: { baseDocumentVersion: number; stagedContents: string };
-    };
-    assert.equal(acceptanceRequested.proposal.review, 'accept-requested');
-    assert.equal(acceptanceRequested.mutationRequest.baseDocumentVersion, pricing.version);
-    assert.equal(acceptanceRequested.mutationRequest.stagedContents.includes('total + price'), true);
-    assert.equal(pricing.getText(), originalContents);
-
     const rejected = await vscode.commands.executeCommand('codealongai.proposal.reject') as {
       proposal: undefined;
       mutationRequest: undefined;

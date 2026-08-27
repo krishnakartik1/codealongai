@@ -38,8 +38,8 @@ function clearAiCues(state: InteractionState): InteractionState {
     followTarget: undefined,
     proposalCaptureTarget: undefined,
     proposal: undefined,
-    mutationRequest: undefined
-    ,proposalStaleMessage: undefined
+    mutationRequest: undefined,
+    proposalStaleMessage: undefined
   };
 }
 
@@ -129,7 +129,8 @@ export class InteractionController {
     followTarget: undefined,
     proposalCaptureTarget: undefined,
     proposal: undefined,
-    mutationRequest: undefined
+    mutationRequest: undefined,
+    proposalStaleMessage: undefined
   };
 
   public constructor(events: readonly ReplayEvent[]) {

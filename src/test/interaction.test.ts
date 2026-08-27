@@ -250,11 +250,7 @@ suite('shared attention interaction', () => {
   test('marks a refused acceptance stale and prevents the staged request from being replayed', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.advance();
-    interaction.stageProposal({
+    stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
       stagedContents: 'staged only'
