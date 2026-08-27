@@ -154,6 +154,13 @@ export function activate(context: vscode.ExtensionContext): void {
     proposalGeneration += 1;
     return closeStagedProposalTab();
   };
+  const discardProposalContents = (): void => {
+    if (stagedProposalUri !== undefined) {
+      stagedProposalContents.delete(stagedProposalUri.toString());
+      stagedProposalUri = undefined;
+    }
+    stagedProposalTab = undefined;
+  };
 
   const followAi = async (): Promise<InteractionState> => {
     const state = interaction.acceptFollow();
@@ -219,27 +226,27 @@ export function activate(context: vscode.ExtensionContext): void {
             capture = await captureKnownProposal(target);
           } catch (error) {
             if (generation === proposalGeneration) {
-              render(interaction.rejectProposal());
+              state = render(interaction.rejectProposal());
               void vscode.window.showWarningMessage(`CodeAlongAI could not stage the proposal: ${String(error)}`);
             }
             return state;
           }
 
           if (generation !== proposalGeneration) {
-            return state;
+            return visibleState;
           }
 
           state = interaction.stageProposal({ target, ...capture });
           render(state);
           if (state.proposal !== undefined) {
             const stagedUri = vscode.Uri.parse(
-              `codealongai-proposal:/${state.proposal.target.document}?generation=${generation}`
+              `codealongai-proposal:/${target.document}?generation=${generation}`
             );
             stagedProposalContents.set(stagedUri.toString(), state.proposal.stagedContents);
             let tab: vscode.Tab | undefined;
             try { tab = await openProposalDiff(state.proposal, stagedUri); } catch (error) {
               stagedProposalContents.delete(stagedUri.toString());
-              if (generation === proposalGeneration) render(interaction.rejectProposal());
+              if (generation === proposalGeneration) state = render(interaction.rejectProposal());
               void vscode.window.showWarningMessage(`CodeAlongAI could not open the proposal review: ${String(error)}`);
               return state;
             }
@@ -310,6 +317,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.follow.refuse', refuseFollow),
     vscode.commands.registerCommand('codealongai.follow.breakAway', breakAway),
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
+    vscode.window.tabGroups.onDidChangeTabs(() => {
+      if (stagedProposalTab !== undefined && !vscode.window.tabGroups.all.some(
+        (group) => group.tabs.includes(stagedProposalTab!)
+      )) {
+        discardProposalContents();
+      }
+    }),
     vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),
     vscode.commands.registerCommand('codealongai.proposal.reject', rejectProposal),
     vscode.commands.registerCommand('codealongai.proposal.requestAcceptance', requestProposalAcceptance),
