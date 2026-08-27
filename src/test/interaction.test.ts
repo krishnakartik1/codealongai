@@ -343,6 +343,25 @@ suite('shared attention interaction', () => {
     assert.equal(failed.proposalAcceptance.message, 'CodeAlongAI could not accept the proposal. Restage it and try again.');
   });
 
+  test('returns a request to ready when the authority cannot own it yet', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+    stageKnownProposal(interaction, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      baseContents: 'staged base',
+      replacement: '+',
+      stagedContents: 'staged only'
+    });
+    const request = interaction.requestProposalAcceptance().mutationRequest;
+    assert.ok(request);
+
+    const retryable = interaction.releaseProposalAcceptance(request);
+
+    assert.equal(retryable.proposal?.review, 'ready');
+    assert.equal(retryable.mutationRequest, undefined);
+    assert.equal(retryable.proposalAcceptance.message, 'CodeAlongAI is finishing the previous proposal. Try acceptance again.');
+  });
+
   test('makes rejection and reset terminal no-mutation paths for an acceptance request', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
     const capture = {

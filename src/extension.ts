@@ -379,6 +379,11 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage(state.proposalAcceptance.message);
         }
         if (state.proposalAcceptance.closeReview) await closeStagedProposalTab();
+      } else {
+        state = render(interaction.releaseProposalAcceptance(request));
+        if (state.proposalAcceptance.message !== undefined) {
+          void vscode.window.showWarningMessage(state.proposalAcceptance.message);
+        }
       }
     }
     return state;
