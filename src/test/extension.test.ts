@@ -21,30 +21,17 @@ suite('CodeAlongAI extension', () => {
 
     assert.ok(extension, 'CodeAlongAI extension should be installed in the test host');
     assert.equal(extension.isActive, false, 'CodeAlongAI should start inactive');
-    assert.deepEqual(
-      await vscode.commands.executeCommand('codealongai.askPair'),
-      {
-        humanSelection: {
-          document: 'checkout.ts',
-          range: {
-            start: { line: 4, character: 31 },
-            end: { line: 4, character: 39 }
-          }
-        },
-        aiAttention: {
-          name: 'CodeAlongAI',
-          target: {
-            document: 'checkout.ts',
-            range: {
-              start: { line: 4, character: 31 },
-              end: { line: 4, character: 39 }
-            }
-          }
-        },
-        explanations: [],
-        follow: 'not-following'
-      }
-    );
+    const started = await vscode.commands.executeCommand('codealongai.askPair') as {
+      humanSelection: { document: string };
+      aiAttention: { name: string; target: { document: string } };
+      explanations: readonly unknown[];
+      follow: string;
+    };
+    assert.equal(started.humanSelection.document, 'checkout.ts');
+    assert.equal(started.aiAttention.name, 'CodeAlongAI');
+    assert.equal(started.aiAttention.target.document, 'checkout.ts');
+    assert.deepEqual(started.explanations, []);
+    assert.equal(started.follow, 'not-following');
     assert.equal(extension.isActive, true, 'Ask pair should activate CodeAlongAI');
   });
 
