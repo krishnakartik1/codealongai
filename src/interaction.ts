@@ -145,6 +145,9 @@ function advanceState(
   };
 }
 
+type FollowAction = 'advance' | 'accept' | 'refuse';
+type FollowDispatchOutcome = 'advance-replay' | 'stop';
+
 export class InteractionController {
   private readonly replay: ReplayController;
   private pendingExplanation: AnchoredExplanation | undefined;
@@ -184,7 +187,7 @@ export class InteractionController {
   }
 
   public advance(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
+    if (this.dispatchFollow('advance') === 'stop') {
       return this.current;
     }
 
@@ -200,23 +203,34 @@ export class InteractionController {
   }
 
   public acceptFollow(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
-      this.current = {
-        ...this.current,
-        explanations: this.pendingExplanation ? [this.pendingExplanation] : [],
-        follow: 'following'
-      };
-      this.pendingExplanation = undefined;
-    }
+    this.dispatchFollow('accept');
     return this.current;
   }
 
   public refuseFollow(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
+    this.dispatchFollow('refuse');
+    return this.current;
+  }
+
+  private dispatchFollow(action: FollowAction): FollowDispatchOutcome {
+    if (this.current.follow !== 'awaiting-consent') {
+      return action === 'advance' ? 'advance-replay' : 'stop';
+    }
+    if (action === 'accept') {
+      this.current = {
+        ...this.current,
+        explanations: this.pendingExplanation
+          ? [...this.current.explanations, this.pendingExplanation]
+          : this.current.explanations,
+        follow: 'following'
+      };
+      this.pendingExplanation = undefined;
+    }
+    if (action === 'refuse') {
       this.current = clearAiCues(this.current);
       this.pendingExplanation = undefined;
     }
-    return this.current;
+    return 'stop';
   }
 
   public breakAway(): InteractionState {

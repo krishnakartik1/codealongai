@@ -11,17 +11,7 @@ async function stageKnownProposal(): Promise<{
     review: string;
   };
 }> {
-  const workspace = vscode.workspace.workspaceFolders?.[0];
-  assert.ok(workspace, 'the demo workspace should be open');
-  const checkout = await vscode.workspace.openTextDocument(
-    vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
-  );
-  const editor = await vscode.window.showTextDocument(checkout);
-  editor.selection = new vscode.Selection(4, 31, 4, 39);
-
-  await vscode.commands.executeCommand('codealongai.askPair');
-  await vscode.commands.executeCommand('codealongai.replay.advance');
-  await vscode.commands.executeCommand('codealongai.replay.advance');
+  await preparePendingFollowNavigation();
   await vscode.commands.executeCommand('codealongai.follow.accept');
   return await vscode.commands.executeCommand('codealongai.replay.advance') as {
     proposal: {
@@ -33,6 +23,21 @@ async function stageKnownProposal(): Promise<{
       review: string;
     };
   };
+}
+
+async function preparePendingFollowNavigation(): Promise<vscode.TextDocument> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  assert.ok(workspace, 'the demo workspace should be open');
+  const checkout = await vscode.workspace.openTextDocument(
+    vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+  );
+  const editor = await vscode.window.showTextDocument(checkout);
+  editor.selection = new vscode.Selection(4, 31, 4, 39);
+
+  await vscode.commands.executeCommand('codealongai.askPair');
+  await vscode.commands.executeCommand('codealongai.replay.advance');
+  await vscode.commands.executeCommand('codealongai.replay.advance');
+  return checkout;
 }
 
 suite('CodeAlongAI extension', () => {
@@ -104,6 +109,38 @@ suite('CodeAlongAI extension', () => {
     assert.deepEqual(resetState.explanations, []);
     assert.equal(resetState.follow, 'not-following');
     assert.equal(resetState.followTarget, undefined);
+  });
+
+  test('does not restore followed cues when reset wins during navigation', async () => {
+    const checkout = await preparePendingFollowNavigation();
+    const pendingFollow = vscode.commands.executeCommand('codealongai.follow.accept');
+    const reset = await vscode.commands.executeCommand('codealongai.replay.reset') as {
+      aiAttention: undefined;
+      explanations: readonly unknown[];
+      follow: string;
+    };
+    const completedFollow = await pendingFollow as {
+      aiAttention: undefined;
+      explanations: readonly unknown[];
+      follow: string;
+    };
+
+    assert.equal(reset.follow, 'not-following');
+    assert.equal(completedFollow.follow, 'not-following');
+    assert.equal(completedFollow.aiAttention, undefined);
+    assert.deepEqual(completedFollow.explanations, []);
+    assert.equal(vscode.window.activeTextEditor?.document.uri.toString(), checkout.uri.toString());
+  });
+
+  test('does not cancel accepted navigation when an ordinary follow command renders', async () => {
+    await preparePendingFollowNavigation();
+    const pendingFollow = vscode.commands.executeCommand('codealongai.follow.accept');
+    await vscode.commands.executeCommand('codealongai.follow.refuse');
+    const completedFollow = await pendingFollow as { follow: string };
+
+    assert.equal(completedFollow.follow, 'following');
+    assert.equal(vscode.window.activeTextEditor?.document.fileName.endsWith('pricing.ts'), true);
+    await vscode.commands.executeCommand('codealongai.replay.reset');
   });
 
   test('stages the known proposal in a separate document without changing the fixture', async () => {

@@ -52,7 +52,11 @@ function applyCues(state: InteractionState): void {
   }
 }
 
-async function revealFollowTarget(target: DocumentRange): Promise<void> {
+async function revealFollowTarget(
+  target: DocumentRange,
+  isCurrent: () => boolean,
+  currentInteractionEditor: () => vscode.TextEditor | undefined
+): Promise<void> {
   const workspace = vscode.workspace.workspaceFolders?.[0];
   if (workspace === undefined) {
     return;
@@ -60,7 +64,17 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
   const document = await vscode.workspace.openTextDocument(
     vscode.Uri.joinPath(workspace.uri, target.document)
   );
+  if (!isCurrent()) {
+    return;
+  }
   const editor = await vscode.window.showTextDocument(document);
+  if (!isCurrent()) {
+    const currentEditor = currentInteractionEditor();
+    if (currentEditor !== undefined && currentEditor.document.uri.toString() !== editor.document.uri.toString()) {
+      await vscode.window.showTextDocument(currentEditor.document, currentEditor.viewColumn);
+    }
+    return;
+  }
   editor.revealRange(toRange(target), vscode.TextEditorRevealType.InCenter);
 }
 
@@ -146,6 +160,15 @@ export function activate(context: vscode.ExtensionContext): void {
     proposal: undefined,
     mutationRequest: undefined,
     proposalAcceptance: { message: undefined, closeReview: false }
+  };
+  let followNavigationGeneration = 0;
+  let interactionEditor: { generation: number; editor: vscode.TextEditor } | undefined;
+  const supersedeInteraction = (): void => {
+    followNavigationGeneration += 1;
+    const editor = vscode.window.activeTextEditor;
+    interactionEditor = editor === undefined
+      ? undefined
+      : { generation: followNavigationGeneration, editor };
   };
   const render = (state: InteractionState): InteractionState => {
     visibleState = state;
@@ -247,11 +270,21 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const followAi = async (): Promise<InteractionState> => {
-    const state = interaction.acceptFollow();
-    if (state.followTarget !== undefined) {
-      await revealFollowTarget(state.followTarget);
+    const shouldNavigate = visibleState.follow === 'awaiting-consent';
+    const state = render(interaction.acceptFollow());
+    if (!shouldNavigate || state.followTarget === undefined) {
+      return state;
     }
-    return render(state);
+    followNavigationGeneration += 1;
+    const acceptedGeneration = followNavigationGeneration;
+    await revealFollowTarget(
+      state.followTarget,
+      () => acceptedGeneration === followNavigationGeneration,
+      () => interactionEditor?.generation === followNavigationGeneration
+        ? interactionEditor.editor
+        : undefined
+    );
+    return acceptedGeneration === followNavigationGeneration ? state : visibleState;
   };
   const refuseFollow = (): InteractionState => {
     return render(interaction.refuseFollow());
@@ -285,6 +318,7 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage('Open the suspicious code before asking CodeAlongAI.');
         return undefined;
       }
+      supersedeInteraction();
       if (!await invalidateProposalReview()) {
         return visibleState;
       }
@@ -351,12 +385,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
   const breakAway = async (): Promise<InteractionState> => {
+    supersedeInteraction();
     if (!await invalidateProposalReview()) {
       return visibleState;
     }
     return render(interaction.breakAway());
   };
   const resetReplay = async (): Promise<InteractionState> => {
+    supersedeInteraction();
     if (!await invalidateProposalReview()) {
       return visibleState;
     }
