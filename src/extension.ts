@@ -147,7 +147,9 @@ export function activate(context: vscode.ExtensionContext): void {
     mutationRequest: undefined,
     proposalAcceptance: { message: undefined, closeReview: false }
   };
+  let interactionGeneration = 0;
   const render = (state: InteractionState): InteractionState => {
+    interactionGeneration += 1;
     visibleState = state;
     applyCues(visibleState);
     return state;
@@ -247,11 +249,12 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const followAi = async (): Promise<InteractionState> => {
-    const state = interaction.acceptFollow();
+    const state = render(interaction.acceptFollow());
+    const acceptedGeneration = interactionGeneration;
     if (state.followTarget !== undefined) {
       await revealFollowTarget(state.followTarget);
     }
-    return render(state);
+    return acceptedGeneration === interactionGeneration ? state : visibleState;
   };
   const refuseFollow = (): InteractionState => {
     return render(interaction.refuseFollow());

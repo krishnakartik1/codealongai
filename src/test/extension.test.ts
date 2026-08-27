@@ -106,6 +106,36 @@ suite('CodeAlongAI extension', () => {
     assert.equal(resetState.followTarget, undefined);
   });
 
+  test('does not restore followed cues when reset wins during navigation', async () => {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'the demo workspace should be open');
+    const checkout = await vscode.workspace.openTextDocument(
+      vscode.Uri.joinPath(workspace.uri, 'checkout.ts')
+    );
+    const editor = await vscode.window.showTextDocument(checkout);
+    editor.selection = new vscode.Selection(4, 31, 4, 39);
+
+    await vscode.commands.executeCommand('codealongai.askPair');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    await vscode.commands.executeCommand('codealongai.replay.advance');
+    const pendingFollow = vscode.commands.executeCommand('codealongai.follow.accept');
+    const reset = await vscode.commands.executeCommand('codealongai.replay.reset') as {
+      aiAttention: undefined;
+      explanations: readonly unknown[];
+      follow: string;
+    };
+    const completedFollow = await pendingFollow as {
+      aiAttention: undefined;
+      explanations: readonly unknown[];
+      follow: string;
+    };
+
+    assert.equal(reset.follow, 'not-following');
+    assert.equal(completedFollow.follow, 'not-following');
+    assert.equal(completedFollow.aiAttention, undefined);
+    assert.deepEqual(completedFollow.explanations, []);
+  });
+
   test('stages the known proposal in a separate document without changing the fixture', async () => {
     const workspace = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspace, 'the demo workspace should be open');

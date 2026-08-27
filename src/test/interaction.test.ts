@@ -129,6 +129,37 @@ suite('shared attention interaction', () => {
     ]);
   });
 
+  test('keeps earlier anchored explanations when cross-file follow is accepted', () => {
+    const sameFileExplanation = {
+      kind: 'explain' as const,
+      message: 'The checkout call uses the subtotal result.',
+      target: humanSelection
+    };
+    const crossFileExplanation = {
+      kind: 'explain' as const,
+      message: 'Subtotal subtracts each price instead of adding it.',
+      target: {
+        document: 'pricing.ts',
+        range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
+      }
+    };
+    const interaction = new InteractionController([
+      deterministicReplayFixture.events[0]!,
+      sameFileExplanation,
+      crossFileExplanation
+    ]);
+
+    interaction.start(humanSelection);
+    interaction.advance();
+    interaction.advance();
+    const state = interaction.acceptFollow();
+
+    assert.deepEqual(state.explanations, [
+      { message: sameFileExplanation.message, target: humanSelection },
+      { message: crossFileExplanation.message, target: crossFileExplanation.target }
+    ]);
+  });
+
   test('refuses a cross-file follow without revealing its explanation', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 

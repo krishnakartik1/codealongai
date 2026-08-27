@@ -184,7 +184,7 @@ export class InteractionController {
   }
 
   public advance(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
+    if (!this.transitionFollow('advance')) {
       return this.current;
     }
 
@@ -200,23 +200,34 @@ export class InteractionController {
   }
 
   public acceptFollow(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
-      this.current = {
-        ...this.current,
-        explanations: this.pendingExplanation ? [this.pendingExplanation] : [],
-        follow: 'following'
-      };
-      this.pendingExplanation = undefined;
-    }
+    this.transitionFollow('accept');
     return this.current;
   }
 
   public refuseFollow(): InteractionState {
-    if (this.current.follow === 'awaiting-consent') {
+    this.transitionFollow('refuse');
+    return this.current;
+  }
+
+  private transitionFollow(action: 'advance' | 'accept' | 'refuse'): boolean {
+    if (this.current.follow !== 'awaiting-consent') {
+      return action === 'advance';
+    }
+    if (action === 'accept') {
+      this.current = {
+        ...this.current,
+        explanations: this.pendingExplanation
+          ? [...this.current.explanations, this.pendingExplanation]
+          : this.current.explanations,
+        follow: 'following'
+      };
+      this.pendingExplanation = undefined;
+    }
+    if (action === 'refuse') {
       this.current = clearAiCues(this.current);
       this.pendingExplanation = undefined;
     }
-    return this.current;
+    return false;
   }
 
   public breakAway(): InteractionState {
