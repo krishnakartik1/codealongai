@@ -13,6 +13,18 @@ const humanSelection: DocumentRange = {
   }
 };
 
+function stageKnownProposal(
+  interaction: InteractionController,
+  capture: { target: DocumentRange; baseDocumentVersion: number; stagedContents: string }
+) {
+  interaction.start(humanSelection);
+  interaction.advance();
+  interaction.advance();
+  interaction.acceptFollow();
+  interaction.advance();
+  return interaction.stageProposal(capture);
+}
+
 suite('shared attention interaction', () => {
   test('captures the human selection and points the named AI at it when Ask pair starts', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
@@ -167,12 +179,7 @@ suite('shared attention interaction', () => {
   test('stages the known proposal against the live document version without changing the live document', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.acceptFollow();
-    interaction.advance();
-    const state = interaction.stageProposal({
+    const state = stageKnownProposal(interaction, {
       target: {
         document: 'pricing.ts',
         range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
@@ -196,12 +203,7 @@ suite('shared attention interaction', () => {
   test('rejects a staged proposal without making a mutation request and replays cleanly', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.acceptFollow();
-    interaction.advance();
-    interaction.stageProposal({
+    stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
       stagedContents: 'staged only'
@@ -224,12 +226,7 @@ suite('shared attention interaction', () => {
   test('routes acceptance to the extension authority gate without applying a workspace mutation', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 
-    interaction.start(humanSelection);
-    interaction.advance();
-    interaction.advance();
-    interaction.acceptFollow();
-    interaction.advance();
-    interaction.stageProposal({
+    stageKnownProposal(interaction, {
       target: deterministicReplayFixture.events[3]!.target,
       baseDocumentVersion: 23,
       stagedContents: 'staged only'

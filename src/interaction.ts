@@ -70,6 +70,41 @@ function requestAcceptance(
   return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest };
 }
 
+function humanSelectionDocument(state: InteractionState): string | undefined {
+  return state.humanSelection?.document;
+}
+
+function advanceState(
+  state: InteractionState,
+  event: ReplayEvent,
+  pendingExplanation: AnchoredExplanation | undefined
+): { state: InteractionState; pendingExplanation: AnchoredExplanation | undefined } {
+  const aiAttention = { name: 'CodeAlongAI' as const, target: event.target };
+  if (event.kind === 'propose') {
+    return {
+      state: { ...state, aiAttention, proposalCaptureTarget: event.target },
+      pendingExplanation
+    };
+  }
+
+  if (event.kind !== 'explain') {
+    return { state: { ...state, aiAttention }, pendingExplanation };
+  }
+
+  const explanation = { message: event.message, target: event.target };
+  if (event.target.document !== humanSelectionDocument(state)) {
+    return {
+      state: { ...state, aiAttention, follow: 'awaiting-consent', followTarget: event.target },
+      pendingExplanation: explanation
+    };
+  }
+
+  return {
+    state: { ...state, aiAttention, explanations: [...state.explanations, explanation] },
+    pendingExplanation
+  };
+}
+
 export class InteractionController {
   private readonly replay: ReplayController;
   private pendingExplanation: AnchoredExplanation | undefined;
@@ -115,38 +150,9 @@ export class InteractionController {
       return this.current;
     }
 
-    const aiAttention = { name: 'CodeAlongAI' as const, target: event.target };
-    if (event.kind === 'propose') {
-      this.current = {
-        ...this.current,
-        aiAttention,
-        proposalCaptureTarget: event.target
-      };
-      return this.current;
-    }
-
-    if (event.kind === 'explain') {
-      const explanation = { message: event.message, target: event.target };
-      if (event.target.document !== this.current.humanSelection?.document) {
-        this.pendingExplanation = explanation;
-        this.current = {
-          ...this.current,
-          aiAttention,
-          follow: 'awaiting-consent',
-          followTarget: event.target
-        };
-        return this.current;
-      }
-
-      this.current = {
-        ...this.current,
-        aiAttention,
-        explanations: [...this.current.explanations, explanation]
-      };
-      return this.current;
-    }
-
-    this.current = { ...this.current, aiAttention };
+    const transition = advanceState(this.current, event, this.pendingExplanation);
+    this.current = transition.state;
+    this.pendingExplanation = transition.pendingExplanation;
     return this.current;
   }
 
