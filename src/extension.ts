@@ -213,60 +213,61 @@ export function activate(context: vscode.ExtensionContext): void {
         proposalStagingInProgress = true;
         const target = state.proposalCaptureTarget;
         const generation = proposalGeneration;
-        let capture: { baseDocumentVersion: number; stagedContents: string };
         try {
-          capture = await captureKnownProposal(target);
-        } catch (error) {
-          if (generation === proposalGeneration) {
-            render(interaction.rejectProposal());
-            void vscode.window.showWarningMessage(`CodeAlongAI could not stage the proposal: ${String(error)}`);
-          }
-          proposalStagingInProgress = false;
-          return state;
-        }
-        if (generation !== proposalGeneration) {
-          proposalStagingInProgress = false;
-          return state;
-        }
-        state = interaction.stageProposal({ target, ...capture });
-        render(state);
-        if (state.proposal !== undefined) {
-          const stagedUri = vscode.Uri.parse(
-            `codealongai-proposal:/${state.proposal.target.document}?generation=${generation}`
-          );
-          stagedProposalContents.set(stagedUri.toString(), state.proposal.stagedContents);
-          let tab: vscode.Tab | undefined;
-          try { tab = await openProposalDiff(state.proposal, stagedUri); } catch (error) {
-            stagedProposalContents.delete(stagedUri.toString());
-            if (generation === proposalGeneration) render(interaction.rejectProposal());
-            void vscode.window.showWarningMessage(`CodeAlongAI could not open the proposal review: ${String(error)}`);
-            proposalStagingInProgress = false;
+          let capture: { baseDocumentVersion: number; stagedContents: string };
+          try {
+            capture = await captureKnownProposal(target);
+          } catch (error) {
+            if (generation === proposalGeneration) {
+              render(interaction.rejectProposal());
+              void vscode.window.showWarningMessage(`CodeAlongAI could not stage the proposal: ${String(error)}`);
+            }
             return state;
           }
+
           if (generation !== proposalGeneration) {
-            if (tab !== undefined) await vscode.window.tabGroups.close(tab, true);
-            stagedProposalContents.delete(stagedUri.toString());
-            proposalStagingInProgress = false;
             return state;
           }
-          stagedProposalTab = tab;
-          stagedProposalUri = stagedUri;
-          void vscode.window.showInformationMessage(
-            'CodeAlongAI staged the known proposal for review.',
-            'Request acceptance',
-            'Reject proposal'
-          ).then((response) => {
-            if (generation !== proposalGeneration) return undefined;
-            if (response === 'Request acceptance') {
-              return requestProposalAcceptance();
+
+          state = interaction.stageProposal({ target, ...capture });
+          render(state);
+          if (state.proposal !== undefined) {
+            const stagedUri = vscode.Uri.parse(
+              `codealongai-proposal:/${state.proposal.target.document}?generation=${generation}`
+            );
+            stagedProposalContents.set(stagedUri.toString(), state.proposal.stagedContents);
+            let tab: vscode.Tab | undefined;
+            try { tab = await openProposalDiff(state.proposal, stagedUri); } catch (error) {
+              stagedProposalContents.delete(stagedUri.toString());
+              if (generation === proposalGeneration) render(interaction.rejectProposal());
+              void vscode.window.showWarningMessage(`CodeAlongAI could not open the proposal review: ${String(error)}`);
+              return state;
             }
-            if (response === 'Reject proposal') {
-              return rejectProposal();
+            if (generation !== proposalGeneration) {
+              if (tab !== undefined) await vscode.window.tabGroups.close(tab, true);
+              stagedProposalContents.delete(stagedUri.toString());
+              return state;
             }
-            return undefined;
-          });
+            stagedProposalTab = tab;
+            stagedProposalUri = stagedUri;
+            void vscode.window.showInformationMessage(
+              'CodeAlongAI staged the known proposal for review.',
+              'Request acceptance',
+              'Reject proposal'
+            ).then((response) => {
+              if (generation !== proposalGeneration) return undefined;
+              if (response === 'Request acceptance') {
+                return requestProposalAcceptance();
+              }
+              if (response === 'Reject proposal') {
+                return rejectProposal();
+              }
+              return undefined;
+            });
+          }
+        } finally {
+          proposalStagingInProgress = false;
         }
-        proposalStagingInProgress = false;
       }
       return state;
     }
