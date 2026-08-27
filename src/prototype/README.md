@@ -22,9 +22,10 @@ In the Extension Development Host:
    thread-title icons are not obvious, hover them and confirm they read **Next**
    and **Destinations**.
 2. Choose **Destinations**. Confirm the picker shows the whole walkthrough as
-   an indented tree projection, including every current, historical, and future
-   stop. Check that branch, rejoin, direct-alternative, and duplicate-range
-   annotations make the underlying graph understandable.
+   a compact indented tree projection, including every stop. Only the current
+   stop carries a location icon; the picker has no history/future labels or
+   secondary descriptions. Check that the tree and rejoin arrow make the graph
+   understandable without extra prose.
 3. Choose **Next**. Confirm cross-file navigation proceeds immediately:
    `checkout.ts` remains on the left, `pricing.ts` opens on the right, the
    origin collapses, and the function-definition thread expands.
@@ -38,8 +39,8 @@ In the Extension Development Host:
 7. Open VS Code's **Comments** view and judge whether the visited graph history
    and duplicate-range stops are discoverable and distinguishable.
 8. Reopen the historical origin thread and choose **Destinations** from that
-   thread. Confirm the same whole-graph view opens with the current location and
-   history accurately marked. Choose the cart branch, then use **Next** to rejoin.
+   thread. Confirm the same whole-graph view opens with only the actual current
+   location marked. Choose the cart branch, then use **Next** to rejoin.
 9. Ask a question in a historical thread. Confirm its conversation grows but
    CodeAlongAI attention does not move in the prototype-state output.
 10. Run **CodeAlongAI Prototype: Show prototype state** to inspect the complete

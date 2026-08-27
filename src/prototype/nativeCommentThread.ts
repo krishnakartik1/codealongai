@@ -162,13 +162,13 @@ const stops = new Map<StopId, PrototypeStop>([
 const graphPickerProjection: readonly {
   id: StopId;
   prefix: string;
-  relation: string;
+  label: string;
 }[] = [
-  { id: 'checkout-origin', prefix: '●', relation: 'Root' },
-  { id: 'pricing-function', prefix: '├─ ★', relation: 'Recommended from Origin' },
-  { id: 'pricing-reducer', prefix: '│  └─', relation: 'Next from Definition; also a direct Origin alternative' },
-  { id: 'pricing-reducer-revisit', prefix: '│     └─', relation: 'Next from Reducer; distinct stop on the same range' },
-  { id: 'checkout-cart', prefix: '└─ ◆', relation: 'Origin alternative; rejoins at Definition' }
+  { id: 'checkout-origin', prefix: '●', label: 'Origin' },
+  { id: 'pricing-function', prefix: '├─→', label: 'Definition' },
+  { id: 'pricing-reducer', prefix: '│  └─→', label: 'Reducer' },
+  { id: 'pricing-reducer-revisit', prefix: '│     └─→', label: 'Reducer' },
+  { id: 'checkout-cart', prefix: '└─→', label: 'Cart input ↗ Definition' }
 ];
 
 const codeAlongAi: vscode.CommentAuthorInformation = { name: 'CodeAlongAI' };
@@ -387,15 +387,8 @@ export function registerNativeCommentThreadPrototype(
         if (stop === undefined) {
           throw new Error(`Unknown graph projection stop: ${projection.id}`);
         }
-        const status = projection.id === attention
-          ? { icon: '$(location)', label: 'Current' }
-          : liveStops.has(projection.id)
-            ? { icon: '$(history)', label: 'History' }
-            : { icon: '$(circle-outline)', label: 'Future' };
         return {
-          label: `${projection.prefix} ${status.icon} ${stop.title}`,
-          description: `${status.label} · ${projection.relation}`,
-          detail: `${stop.document} · ${stop.anchor}`,
+          label: `${projection.prefix} ${projection.id === attention ? '$(location) ' : ''}${projection.label}`,
           stopId: projection.id
         };
       }),
