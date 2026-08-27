@@ -1,4 +1,5 @@
 import { ReplayController, type DocumentRange, type ReplayEvent } from './replay';
+import type { ProposalAcceptanceResult } from './proposalAcceptance';
 
 export interface AiAttention {
   name: 'CodeAlongAI';
@@ -14,7 +15,7 @@ export interface ProposalCapture {
   stagedContents: string;
 }
 export interface StagedProposal extends ProposalCapture {
-  review: 'ready' | 'accept-requested';
+  review: 'ready' | 'accept-requested' | 'stale';
 }
 export interface InteractionState {
   humanSelection: DocumentRange | undefined;
@@ -25,6 +26,7 @@ export interface InteractionState {
   proposalCaptureTarget: DocumentRange | undefined;
   proposal: StagedProposal | undefined;
   mutationRequest: ProposalCapture | undefined;
+  proposalStaleMessage: string | undefined;
 }
 
 function clearAiCues(state: InteractionState): InteractionState {
@@ -37,6 +39,7 @@ function clearAiCues(state: InteractionState): InteractionState {
     proposalCaptureTarget: undefined,
     proposal: undefined,
     mutationRequest: undefined
+    ,proposalStaleMessage: undefined
   };
 }
 
@@ -146,6 +149,7 @@ export class InteractionController {
       proposalCaptureTarget: undefined,
       proposal: undefined,
       mutationRequest: undefined
+      ,proposalStaleMessage: undefined
     };
     return this.current;
   }
@@ -204,6 +208,16 @@ export class InteractionController {
       proposal: undefined,
       mutationRequest: undefined
     };
+    return this.current;
+  }
+
+  public cancelProposal(): InteractionState { return this.rejectProposal(); }
+
+  public completeProposalAcceptance(result: ProposalAcceptanceResult): InteractionState {
+    this.current = { ...this.current, mutationRequest: undefined };
+    if (result.outcome === 'stale' && this.current.proposal) {
+      this.current = { ...this.current, proposal: { ...this.current.proposal, review: 'stale' }, proposalStaleMessage: 'The proposal is stale. Replay or restage it before accepting.' };
+    }
     return this.current;
   }
 

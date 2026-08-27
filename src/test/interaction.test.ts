@@ -4,6 +4,7 @@ import {
   type DocumentRange
 } from '../replay';
 import { InteractionController } from '../interaction';
+import type { ProposalAcceptanceResult } from '../proposalAcceptance';
 
 const humanSelection: DocumentRange = {
   document: 'checkout.ts',
@@ -244,5 +245,58 @@ suite('shared attention interaction', () => {
       baseDocumentVersion: 23,
       stagedContents: 'staged only'
     });
+  });
+
+  test('marks a refused acceptance stale and prevents the staged request from being replayed', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    interaction.start(humanSelection);
+    interaction.advance();
+    interaction.advance();
+    interaction.advance();
+    interaction.stageProposal({
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
+    interaction.requestProposalAcceptance();
+    const result: ProposalAcceptanceResult = { outcome: 'stale' };
+    const stale = interaction.completeProposalAcceptance(result);
+
+    assert.equal(stale.proposal?.review, 'stale');
+    assert.equal(stale.mutationRequest, undefined);
+    assert.equal(stale.proposalStaleMessage, 'The proposal is stale. Replay or restage it before accepting.');
+  });
+
+  test('makes rejection and reset terminal no-mutation paths for an acceptance request', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    interaction.start(humanSelection);
+    interaction.advance();
+    interaction.advance();
+    interaction.advance();
+    interaction.stageProposal({
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
+    interaction.requestProposalAcceptance();
+    const rejected = interaction.rejectProposal();
+    assert.equal(rejected.proposal, undefined);
+    assert.equal(rejected.mutationRequest, undefined);
+
+    interaction.start(humanSelection);
+    interaction.advance();
+    interaction.advance();
+    interaction.advance();
+    interaction.stageProposal({
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
+    interaction.requestProposalAcceptance();
+    const reset = interaction.reset();
+    assert.equal(reset.proposal, undefined);
+    assert.equal(reset.mutationRequest, undefined);
   });
 });
