@@ -165,10 +165,10 @@ const graphPickerProjection: readonly {
   label: string;
 }[] = [
   { id: 'checkout-origin', prefix: '●', label: 'Origin' },
-  { id: 'pricing-function', prefix: '├─→', label: 'Definition' },
-  { id: 'pricing-reducer', prefix: '│  └─→', label: 'Reducer' },
-  { id: 'pricing-reducer-revisit', prefix: '│     └─→', label: 'Reducer' },
-  { id: 'checkout-cart', prefix: '└─→', label: 'Cart input ↗ Definition' }
+  { id: 'pricing-function', prefix: '├─', label: 'Definition' },
+  { id: 'pricing-reducer', prefix: '│  └─', label: 'Reducer' },
+  { id: 'pricing-reducer-revisit', prefix: '│     └─', label: 'Reducer' },
+  { id: 'checkout-cart', prefix: '└─', label: 'Cart input ↗ Definition' }
 ];
 
 const codeAlongAi: vscode.CommentAuthorInformation = { name: 'CodeAlongAI' };
