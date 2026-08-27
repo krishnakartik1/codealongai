@@ -47,6 +47,51 @@ suite('shared attention interaction', () => {
     assert.deepEqual(state.explanations, []);
   });
 
+  test('pauses replay while a cross-file follow decision is awaiting consent', () => {
+    const interaction = new InteractionController([
+      deterministicReplayFixture.events[0]!,
+      deterministicReplayFixture.events[2]!,
+      deterministicReplayFixture.events[1]!
+    ]);
+
+    interaction.start(humanSelection);
+    interaction.advance();
+    const awaitingConsent = interaction.advance();
+
+    assert.deepEqual(interaction.advance(), awaitingConsent);
+    interaction.acceptFollow();
+    assert.deepEqual(interaction.advance().aiAttention?.target, {
+      document: 'checkout.ts',
+      range: {
+        start: { line: 0, character: 9 },
+        end: { line: 0, character: 17 }
+      }
+    });
+  });
+
+  test('anchors a same-file explanation without requesting follow consent', () => {
+    const interaction = new InteractionController([
+      deterministicReplayFixture.events[0]!,
+      {
+        kind: 'explain',
+        message: 'The checkout call uses the subtotal result.',
+        target: {
+          document: 'checkout.ts',
+          range: { start: { line: 4, character: 31 }, end: { line: 4, character: 39 } }
+        }
+      }
+    ]);
+
+    interaction.start(humanSelection);
+    const state = interaction.advance();
+
+    assert.equal(state.follow, 'not-following');
+    assert.deepEqual(state.explanations, [{
+      message: 'The checkout call uses the subtotal result.',
+      target: humanSelection
+    }]);
+  });
+
   test('follows by consent and anchors the explanation without changing the human selection', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
 

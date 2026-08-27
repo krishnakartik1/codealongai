@@ -62,19 +62,28 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
   const interaction = new InteractionController(deterministicReplayFixture.events);
+  let visibleState: InteractionState = {
+    humanSelection: undefined,
+    aiAttention: undefined,
+    explanations: [],
+    follow: 'not-following',
+    followTarget: undefined
+  };
+  const render = (state: InteractionState): InteractionState => {
+    visibleState = state;
+    applyCues(visibleState);
+    return state;
+  };
 
   const followAi = async (): Promise<InteractionState> => {
     const state = interaction.acceptFollow();
     if (state.followTarget !== undefined) {
       await revealFollowTarget(state.followTarget);
     }
-    applyCues(state);
-    return state;
+    return render(state);
   };
   const refuseFollow = (): InteractionState => {
-    const state = interaction.refuseFollow();
-    applyCues(state);
-    return state;
+    return render(interaction.refuseFollow());
   };
   const askPair = vscode.commands.registerCommand(
     'codealongai.askPair',
@@ -85,15 +94,14 @@ export function activate(context: vscode.ExtensionContext): void {
         return undefined;
       }
       const state = interaction.start(documentRange(editor));
-      applyCues(state);
-      return state;
+      return render(state);
     }
   );
   const advanceReplay = vscode.commands.registerCommand(
     'codealongai.replay.advance',
     async (): Promise<InteractionState> => {
       const state = interaction.advance();
-      applyCues(state);
+      render(state);
       if (state.follow === 'awaiting-consent') {
         void vscode.window.showInformationMessage(
           'CodeAlongAI found a related code range. Follow AI?',
@@ -113,14 +121,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
   const breakAway = (): InteractionState => {
-    const state = interaction.breakAway();
-    applyCues(state);
-    return state;
+    return render(interaction.breakAway());
   };
   const resetReplay = (): InteractionState => {
-    const state = interaction.reset();
-    applyCues(state);
-    return state;
+    return render(interaction.reset());
   };
 
   context.subscriptions.push(
@@ -130,6 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.follow.refuse', refuseFollow),
     vscode.commands.registerCommand('codealongai.follow.breakAway', breakAway),
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
+    vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),
     aiPointerStyle,
     explanationStyle
   );

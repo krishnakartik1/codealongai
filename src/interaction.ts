@@ -22,14 +22,58 @@ export interface InteractionState {
   followTarget: DocumentRange | undefined;
 }
 
+function clearAiCues(state: InteractionState): InteractionState {
+  return {
+    ...state,
+    aiAttention: undefined,
+    explanations: [],
+    follow: 'not-following',
+    followTarget: undefined
+  };
+}
+
+interface ReplayProgress {
+  state: InteractionState;
+  pendingExplanation: AnchoredExplanation | undefined;
+}
+
+function progressReplay(
+  event: ReplayEvent | undefined,
+  state: InteractionState
+): ReplayProgress {
+  if (event === undefined) {
+    return { state, pendingExplanation: undefined };
+  }
+
+  const aiAttention: AiAttention = { name: 'CodeAlongAI', target: event.target };
+  if (event.kind !== 'explain') {
+    return { state: { ...state, aiAttention }, pendingExplanation: undefined };
+  }
+
+  const explanation = { message: event.message, target: event.target };
+  if (event.target.document === state.humanSelection?.document) {
+    return {
+      state: { ...state, aiAttention, explanations: [...state.explanations, explanation] },
+      pendingExplanation: undefined
+    };
+  }
+
+  return {
+    state: { ...state, aiAttention, follow: 'awaiting-consent', followTarget: event.target },
+    pendingExplanation: explanation
+  };
+}
+
 export class InteractionController {
   private readonly replay: ReplayController;
-  private humanSelection: DocumentRange | undefined;
-  private aiAttention: AiAttention | undefined;
-  private follow: InteractionState['follow'] = 'not-following';
-  private followTarget: DocumentRange | undefined;
   private pendingExplanation: AnchoredExplanation | undefined;
-  private explanations: AnchoredExplanation[] = [];
+  private current: InteractionState = {
+    humanSelection: undefined,
+    aiAttention: undefined,
+    explanations: [],
+    follow: 'not-following',
+    followTarget: undefined
+  };
 
   public constructor(events: readonly ReplayEvent[]) {
     this.replay = new ReplayController(events);
@@ -38,80 +82,57 @@ export class InteractionController {
   public start(humanSelection: DocumentRange): InteractionState {
     this.replay.reset();
     this.replay.start();
-    this.humanSelection = humanSelection;
-    this.clearAiCues();
-    this.aiAttention = { name: 'CodeAlongAI', target: humanSelection };
-
-    return this.state();
+    this.current = {
+      humanSelection,
+      aiAttention: { name: 'CodeAlongAI', target: humanSelection },
+      explanations: [],
+      follow: 'not-following',
+      followTarget: undefined
+    };
+    this.pendingExplanation = undefined;
+    return this.current;
   }
 
   public advance(): InteractionState {
-    const event = this.replay.advance();
-    if (event === undefined) {
-      return this.state();
+    if (this.current.follow === 'awaiting-consent') {
+      return this.current;
     }
-
-    this.aiAttention = { name: 'CodeAlongAI', target: event.target };
-    if (event.kind === 'explain' && this.isDifferentDocument(event.target)) {
-      this.follow = 'awaiting-consent';
-      this.followTarget = event.target;
-      this.pendingExplanation = { message: event.message, target: event.target };
-    }
-
-    return this.state();
+    const progressed = progressReplay(this.replay.advance(), this.current);
+    this.current = progressed.state;
+    this.pendingExplanation = progressed.pendingExplanation;
+    return this.current;
   }
 
   public acceptFollow(): InteractionState {
-    if (this.follow === 'awaiting-consent' && this.pendingExplanation !== undefined) {
-      this.follow = 'following';
-      this.explanations = [this.pendingExplanation];
+    if (this.current.follow === 'awaiting-consent') {
+      this.current = {
+        ...this.current,
+        explanations: this.pendingExplanation === undefined ? [] : [this.pendingExplanation],
+        follow: 'following'
+      };
       this.pendingExplanation = undefined;
     }
-
-    return this.state();
+    return this.current;
   }
 
   public refuseFollow(): InteractionState {
-    if (this.follow === 'awaiting-consent') {
-      this.clearAiCues();
+    if (this.current.follow === 'awaiting-consent') {
+      this.current = clearAiCues(this.current);
+      this.pendingExplanation = undefined;
     }
-
-    return this.state();
+    return this.current;
   }
 
   public breakAway(): InteractionState {
-    this.clearAiCues();
-
-    return this.state();
+    this.current = clearAiCues(this.current);
+    this.pendingExplanation = undefined;
+    return this.current;
   }
 
   public reset(): InteractionState {
     this.replay.reset();
-    this.humanSelection = undefined;
-    this.clearAiCues();
-
-    return this.state();
-  }
-
-  private clearAiCues(): void {
-    this.aiAttention = undefined;
-    this.follow = 'not-following';
-    this.followTarget = undefined;
+    this.current = clearAiCues({ ...this.current, humanSelection: undefined });
     this.pendingExplanation = undefined;
-    this.explanations = [];
-  }
-
-  private isDifferentDocument(target: DocumentRange): boolean {
-    return this.humanSelection?.document !== target.document;
-  }
-
-  private state(): InteractionState {
-    return {
-      humanSelection: this.humanSelection,
-      aiAttention: this.aiAttention,
-      explanations: this.explanations,
-      follow: this.follow,
-      followTarget: this.followTarget
-    };
+    return this.current;
   }
 }
