@@ -23,6 +23,18 @@
       {
         "command": "codealongai.askPair",
         "title": "CodeAlongAI: Ask pair"
+      },
+      {
+        "command": "codealongai.replay.advance",
+        "title": "CodeAlongAI: Continue walkthrough"
+      },
+      {
+        "command": "codealongai.follow.breakAway",
+        "title": "CodeAlongAI: Stop following"
+      },
+      {
+        "command": "codealongai.replay.reset",
+        "title": "CodeAlongAI: Reset walkthrough"
       }
     ]
   },
