@@ -39,11 +39,8 @@ export class InteractionController {
     this.replay.reset();
     this.replay.start();
     this.humanSelection = humanSelection;
+    this.clearAiCues();
     this.aiAttention = { name: 'CodeAlongAI', target: humanSelection };
-    this.follow = 'not-following';
-    this.followTarget = undefined;
-    this.pendingExplanation = undefined;
-    this.explanations = [];
 
     return this.state();
   }
@@ -76,21 +73,14 @@ export class InteractionController {
 
   public refuseFollow(): InteractionState {
     if (this.follow === 'awaiting-consent') {
-      this.follow = 'not-following';
-      this.followTarget = undefined;
-      this.pendingExplanation = undefined;
-      this.aiAttention = undefined;
+      this.clearAiCues();
     }
 
     return this.state();
   }
 
   public breakAway(): InteractionState {
-    this.follow = 'not-following';
-    this.followTarget = undefined;
-    this.pendingExplanation = undefined;
-    this.aiAttention = undefined;
-    this.explanations = [];
+    this.clearAiCues();
 
     return this.state();
   }
@@ -98,13 +88,17 @@ export class InteractionController {
   public reset(): InteractionState {
     this.replay.reset();
     this.humanSelection = undefined;
+    this.clearAiCues();
+
+    return this.state();
+  }
+
+  private clearAiCues(): void {
     this.aiAttention = undefined;
     this.follow = 'not-following';
     this.followTarget = undefined;
     this.pendingExplanation = undefined;
     this.explanations = [];
-
-    return this.state();
   }
 
   private isDifferentDocument(target: DocumentRange): boolean {
