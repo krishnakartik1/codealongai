@@ -13,6 +13,18 @@ const humanSelection: DocumentRange = {
   }
 };
 
+function stageKnownProposal(
+  interaction: InteractionController,
+  capture: { target: DocumentRange; baseDocumentVersion: number; stagedContents: string }
+) {
+  interaction.start(humanSelection);
+  interaction.advance();
+  interaction.advance();
+  interaction.acceptFollow();
+  interaction.advance();
+  return interaction.stageProposal(capture);
+}
+
 suite('shared attention interaction', () => {
   test('captures the human selection and points the named AI at it when Ask pair starts', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
@@ -162,5 +174,75 @@ suite('shared attention interaction', () => {
     assert.deepEqual(reset.explanations, []);
 
     assert.deepEqual(interaction.start(humanSelection).aiAttention?.target, humanSelection);
+  });
+
+  test('stages the known proposal against the live document version without changing the live document', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    const state = stageKnownProposal(interaction, {
+      target: {
+        document: 'pricing.ts',
+        range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
+      },
+      baseDocumentVersion: 23,
+      stagedContents: 'export function subtotal() { return total + price; }'
+    });
+
+    assert.deepEqual(state.proposal, {
+      target: {
+        document: 'pricing.ts',
+        range: { start: { line: 1, character: 47 }, end: { line: 1, character: 48 } }
+      },
+      baseDocumentVersion: 23,
+      stagedContents: 'export function subtotal() { return total + price; }',
+      review: 'ready'
+    });
+    assert.equal(state.proposalCaptureTarget, undefined);
+  });
+
+  test('rejects a staged proposal without making a mutation request and replays cleanly', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    stageKnownProposal(interaction, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
+    const rejected = interaction.rejectProposal();
+
+    assert.equal(rejected.proposal, undefined);
+    assert.equal(rejected.mutationRequest, undefined);
+
+    const reset = interaction.reset();
+    assert.equal(reset.proposal, undefined);
+    interaction.start(humanSelection);
+    interaction.advance();
+    interaction.advance();
+    interaction.acceptFollow();
+    const replayed = interaction.advance();
+    assert.deepEqual(replayed.proposalCaptureTarget, deterministicReplayFixture.events[3]!.target);
+  });
+
+  test('routes acceptance to the extension authority gate without applying a workspace mutation', () => {
+    const interaction = new InteractionController(deterministicReplayFixture.events);
+
+    stageKnownProposal(interaction, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
+    const accepted = interaction.requestProposalAcceptance();
+
+    assert.deepEqual(accepted.proposal, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only',
+      review: 'accept-requested'
+    });
+    assert.deepEqual(accepted.mutationRequest, {
+      target: deterministicReplayFixture.events[3]!.target,
+      baseDocumentVersion: 23,
+      stagedContents: 'staged only'
+    });
   });
 });

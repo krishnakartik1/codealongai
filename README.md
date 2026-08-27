@@ -23,8 +23,12 @@ In `checkout.ts`, select `subtotal` in the `console.log` call, then run
 `CodeAlongAI: Ask pair`. Run `CodeAlongAI: Continue walkthrough` twice. The
 second step asks before it opens `pricing.ts`; choose **Follow AI** to reveal the
 known subtraction defect with an anchored explanation. `CodeAlongAI: Stop
-following` removes the AI cues, and `CodeAlongAI: Reset walkthrough` clears all
-state before another run.
+following` removes the AI cues. Continue twice more to stage the known
+one-character proposal. VS Code opens its normal diff with the live
+`pricing.ts` document and an untitled staged copy. Choose **Reject proposal**
+to discard it, or **Request acceptance** to send a request to the later
+extension-owned authority gate; neither action changes the workspace. Use
+`CodeAlongAI: Reset walkthrough` to clear all state before another run.
 
 Run the automated Extension Development Host test with:
 
