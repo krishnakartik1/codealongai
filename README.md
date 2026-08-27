@@ -26,9 +26,13 @@ known subtraction defect with an anchored explanation. `CodeAlongAI: Stop
 following` removes the AI cues. Continue twice more to stage the known
 one-character proposal. VS Code opens its normal diff with the live
 `pricing.ts` document and an untitled staged copy. Choose **Reject proposal**
-to discard it, or **Request acceptance** to send a request to the later
-extension-owned authority gate; neither action changes the workspace. Use
-`CodeAlongAI: Reset walkthrough` to clear all state before another run.
+to discard it, or **Request acceptance** to explicitly accept it. CodeAlongAI
+then rechecks the live `pricing.ts` version at its mutation boundary and applies
+the known proposal only when it still matches the staged version. To see the
+stale refusal, edit `pricing.ts` after staging and before choosing **Request
+acceptance**. CodeAlongAI leaves that edit unchanged and reports that the
+proposal must be replayed or restaged. Use `CodeAlongAI: Reset walkthrough` to
+clear all state before another run.
 
 Run the automated Extension Development Host test with:
 

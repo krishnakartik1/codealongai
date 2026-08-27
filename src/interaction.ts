@@ -1,4 +1,5 @@
 import { ReplayController, type DocumentRange, type ReplayEvent } from './replay';
+import type { ProposalAcceptanceResult } from './proposalAcceptance';
 
 export interface AiAttention {
   name: 'CodeAlongAI';
@@ -11,10 +12,23 @@ export interface AnchoredExplanation {
 export interface ProposalCapture {
   target: DocumentRange;
   baseDocumentVersion: number;
+  baseContents: string;
+  replacement: string;
   stagedContents: string;
 }
 export interface StagedProposal extends ProposalCapture {
-  review: 'ready' | 'accept-requested';
+  review: 'ready' | 'accept-requested' | 'stale';
+}
+export interface ProposalMutationRequest extends ProposalCapture {
+  requestId: number;
+}
+export interface ProposalAcceptanceEffect {
+  message: string | undefined;
+  closeReview: boolean;
+}
+export interface ProposalAcceptanceCompletion {
+  state: InteractionState;
+  effect: ProposalAcceptanceEffect;
 }
 export interface InteractionState {
   humanSelection: DocumentRange | undefined;
@@ -24,8 +38,12 @@ export interface InteractionState {
   followTarget: DocumentRange | undefined;
   proposalCaptureTarget: DocumentRange | undefined;
   proposal: StagedProposal | undefined;
-  mutationRequest: ProposalCapture | undefined;
+  mutationRequest: ProposalMutationRequest | undefined;
+  proposalAcceptance: ProposalAcceptanceEffect;
 }
+
+export const staleProposalMessage = 'The proposal is stale. Replay or restage it before accepting.';
+const noProposalAcceptanceEffect: ProposalAcceptanceEffect = { message: undefined, closeReview: false };
 
 function clearAiCues(state: InteractionState): InteractionState {
   return {
@@ -36,7 +54,18 @@ function clearAiCues(state: InteractionState): InteractionState {
     followTarget: undefined,
     proposalCaptureTarget: undefined,
     proposal: undefined,
-    mutationRequest: undefined
+    mutationRequest: undefined,
+    proposalAcceptance: noProposalAcceptanceEffect
+  };
+}
+
+function clearProposal(state: InteractionState): InteractionState {
+  return {
+    ...state,
+    proposalCaptureTarget: undefined,
+    proposal: undefined,
+    mutationRequest: undefined,
+    proposalAcceptance: noProposalAcceptanceEffect
   };
 }
 
@@ -70,14 +99,15 @@ function stageInteractionProposal(
 }
 
 function requestAcceptance(
-  proposal: StagedProposal | undefined
-): { proposal: StagedProposal; mutationRequest: ProposalCapture } | undefined {
+  proposal: StagedProposal | undefined,
+  requestId: number
+): { proposal: StagedProposal; mutationRequest: ProposalMutationRequest } | undefined {
   if (proposal?.review !== 'ready') {
     return undefined;
   }
 
   const { review: _review, ...mutationRequest } = proposal;
-  return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest };
+  return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest: { ...mutationRequest, requestId } };
 }
 
 function humanSelectionDocument(state: InteractionState): string | undefined {
@@ -118,6 +148,7 @@ function advanceState(
 export class InteractionController {
   private readonly replay: ReplayController;
   private pendingExplanation: AnchoredExplanation | undefined;
+  private nextMutationRequestId = 1;
   private current: InteractionState = {
     humanSelection: undefined,
     aiAttention: undefined,
@@ -126,7 +157,8 @@ export class InteractionController {
     followTarget: undefined,
     proposalCaptureTarget: undefined,
     proposal: undefined,
-    mutationRequest: undefined
+    mutationRequest: undefined,
+    proposalAcceptance: noProposalAcceptanceEffect
   };
 
   public constructor(events: readonly ReplayEvent[]) {
@@ -145,7 +177,8 @@ export class InteractionController {
       followTarget: undefined,
       proposalCaptureTarget: undefined,
       proposal: undefined,
-      mutationRequest: undefined
+      mutationRequest: undefined,
+      proposalAcceptance: noProposalAcceptanceEffect
     };
     return this.current;
   }
@@ -198,19 +231,74 @@ export class InteractionController {
   }
 
   public rejectProposal(): InteractionState {
-    this.current = {
-      ...this.current,
-      proposalCaptureTarget: undefined,
-      proposal: undefined,
-      mutationRequest: undefined
-    };
+    this.current = clearProposal(this.current);
     return this.current;
   }
 
+  public completeProposalAcceptance(
+    request: ProposalMutationRequest,
+    acceptanceResult: ProposalAcceptanceResult
+  ): ProposalAcceptanceCompletion {
+    if (this.current.mutationRequest?.requestId !== request.requestId) {
+      return { state: this.current, effect: noProposalAcceptanceEffect };
+    }
+    let effect = noProposalAcceptanceEffect;
+    if (acceptanceResult.outcome === 'applied') {
+      effect = { message: undefined, closeReview: true };
+      this.current = { ...clearProposal(this.current), proposalAcceptance: effect };
+    }
+    if (acceptanceResult.outcome === 'stale' && this.current.proposal) {
+      effect = { message: staleProposalMessage, closeReview: false };
+      this.current = {
+        ...this.current,
+        mutationRequest: undefined,
+        proposal: { ...this.current.proposal, review: 'stale' },
+        proposalAcceptance: effect
+      };
+    }
+    if (acceptanceResult.outcome === 'cancelled') {
+      this.current = clearProposal(this.current);
+    }
+    if (acceptanceResult.outcome === 'failed') {
+      effect = { message: 'CodeAlongAI could not accept the proposal. Restage it and try again.', closeReview: false };
+      this.current = {
+        ...clearProposal(this.current),
+        proposalAcceptance: effect
+      };
+    }
+    return { state: this.current, effect };
+  }
+
+  public releaseProposalAcceptance(request: ProposalMutationRequest): ProposalAcceptanceCompletion {
+    const proposal = this.proposalForCurrentMutationRequest(request);
+    let effect = noProposalAcceptanceEffect;
+    if (proposal !== undefined) {
+      effect = {
+        message: 'CodeAlongAI is finishing the previous proposal. Try acceptance again.',
+        closeReview: false
+      };
+      this.current = {
+        ...this.current,
+        proposal: { ...proposal, review: 'ready' },
+        mutationRequest: undefined,
+        proposalAcceptance: effect
+      };
+    }
+    return { state: this.current, effect };
+  }
+
+  private proposalForCurrentMutationRequest(
+    request: ProposalMutationRequest
+  ): StagedProposal | undefined {
+    const mutationRequest = this.current.mutationRequest;
+    return mutationRequest?.requestId === request.requestId ? this.current.proposal : undefined;
+  }
+
   public requestProposalAcceptance(): InteractionState {
-    const request = requestAcceptance(this.current.proposal);
+    const request = requestAcceptance(this.current.proposal, this.nextMutationRequestId);
     if (request) {
-      this.current = { ...this.current, ...request };
+      this.nextMutationRequestId += 1;
+      this.current = { ...this.current, ...request, proposalAcceptance: noProposalAcceptanceEffect };
     }
     return this.current;
   }

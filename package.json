@@ -41,6 +41,10 @@
         "title": "CodeAlongAI: Reject staged proposal"
       },
       {
+        "command": "codealongai.proposal.cancel",
+        "title": "CodeAlongAI: Cancel staged proposal"
+      },
+      {
         "command": "codealongai.proposal.requestAcceptance",
         "title": "CodeAlongAI: Request proposal acceptance"
       }

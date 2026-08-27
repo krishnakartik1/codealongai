@@ -3,8 +3,11 @@ import * as vscode from 'vscode';
 import {
   InteractionController,
   type InteractionState,
+  type ProposalAcceptanceEffect,
+  type ProposalCapture,
   type StagedProposal
 } from './interaction';
+import { ProposalAcceptanceAuthority, type LiveProposalDocument } from './proposalAcceptance';
 import { deterministicReplayFixture, type DocumentRange } from './replay';
 
 const aiPointerStyle = vscode.window.createTextEditorDecorationType({
@@ -63,7 +66,7 @@ async function revealFollowTarget(target: DocumentRange): Promise<void> {
 
 async function captureKnownProposal(
   target: DocumentRange
-): Promise<{ baseDocumentVersion: number; stagedContents: string }> {
+): Promise<{ baseDocumentVersion: number; baseContents: string; replacement: string; stagedContents: string }> {
   const workspace = vscode.workspace.workspaceFolders?.[0];
   const isKnownTarget = target.document === 'pricing.ts' &&
     target.range.start.line === 1 &&
@@ -85,7 +88,7 @@ async function captureKnownProposal(
   lines[1] = knownLine.slice(0, 47) + '+' + knownLine.slice(48);
   const stagedContents = lines.join('\n');
 
-  return { baseDocumentVersion: document.version, stagedContents };
+  return { baseDocumentVersion: document.version, baseContents: source, replacement: '+', stagedContents };
 }
 
 async function openProposalDiff(
@@ -111,8 +114,27 @@ function isTabOpen(tab: vscode.Tab): boolean {
   return vscode.window.tabGroups.all.some((group) => group.tabs.includes(tab));
 }
 
+function liveProposalDocuments(): LiveProposalDocument {
+  return { async applyIfVersionMatches(proposal: ProposalCapture, isAcceptanceCurrent, beginApplication) {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (!workspace || proposal.target.document !== 'pricing.ts' || !isAcceptanceCurrent()) return { outcome: 'cancelled' };
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, proposal.target.document));
+    if (!isAcceptanceCurrent()) return { outcome: 'cancelled' };
+    const editor = vscode.window.visibleTextEditors.find(
+      (visibleEditor) => visibleEditor.document.uri.toString() === document.uri.toString()
+    ) ?? await vscode.window.showTextDocument(document);
+    if (!isAcceptanceCurrent()) return { outcome: 'cancelled' };
+    if (document.version !== proposal.baseDocumentVersion || document.getText() !== proposal.baseContents) return { outcome: 'stale' };
+    const targetRange = toRange(proposal.target);
+    if (!beginApplication()) return { outcome: 'cancelled' };
+    return await editor.edit((edit) => edit.replace(targetRange, proposal.replacement))
+      ? { outcome: 'applied' } : { outcome: 'stale' };
+  } };
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const interaction = new InteractionController(deterministicReplayFixture.events);
+  const proposalAuthority = new ProposalAcceptanceAuthority(liveProposalDocuments());
   let followPromptIsOpen = false;
   let visibleState: InteractionState = {
     humanSelection: undefined,
@@ -122,12 +144,18 @@ export function activate(context: vscode.ExtensionContext): void {
     followTarget: undefined,
     proposalCaptureTarget: undefined,
     proposal: undefined,
-    mutationRequest: undefined
+    mutationRequest: undefined,
+    proposalAcceptance: { message: undefined, closeReview: false }
   };
   const render = (state: InteractionState): InteractionState => {
     visibleState = state;
     applyCues(visibleState);
     return state;
+  };
+  const announceProposalAcceptance = (effect: ProposalAcceptanceEffect): void => {
+    if (effect.message !== undefined) {
+      void vscode.window.showWarningMessage(effect.message);
+    }
   };
   let stagedProposalTab: vscode.Tab | undefined;
   let stagedProposalUri: vscode.Uri | undefined;
@@ -144,7 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.window.showInformationMessage(
       'CodeAlongAI staged the known proposal for review.',
       'Request acceptance',
-      'Reject proposal'
+      'Reject proposal', 'Cancel proposal'
     ).then((response) => {
       if (generation !== proposalGeneration) return undefined;
       if (response === 'Request acceptance') {
@@ -153,6 +181,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (response === 'Reject proposal') {
         return rejectProposal();
       }
+      if (response === 'Cancel proposal') return cancelProposal();
       return undefined;
     });
   };
@@ -171,7 +200,7 @@ export function activate(context: vscode.ExtensionContext): void {
           stagedProposalTab = tab;
           return false;
         }
-        cancelClosedProposalReview();
+        await cancelClosedProposalReview();
         return true;
       }
     }
@@ -182,6 +211,7 @@ export function activate(context: vscode.ExtensionContext): void {
     return true;
   };
   const invalidateProposalReview = async (): Promise<boolean> => {
+    await proposalAuthority.cancelAcceptance();
     if (proposalInvalidation !== undefined) {
       return proposalInvalidation;
     }
@@ -209,7 +239,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     stagedProposalTab = undefined;
   };
-  const cancelClosedProposalReview = (): void => {
+  const cancelClosedProposalReview = async (): Promise<void> => {
+    await proposalAuthority.cancelAcceptance();
     proposalGeneration += 1;
     discardProposalContents();
     render(interaction.rejectProposal());
@@ -274,7 +305,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const target = state.proposalCaptureTarget;
         const generation = proposalGeneration;
         try {
-          let capture: { baseDocumentVersion: number; stagedContents: string };
+          let capture: { baseDocumentVersion: number; baseContents: string; replacement: string; stagedContents: string };
           try {
             capture = await captureKnownProposal(target);
           } catch (error) {
@@ -332,20 +363,32 @@ export function activate(context: vscode.ExtensionContext): void {
     const state = interaction.reset();
     return render(state);
   };
-  const rejectProposal = async (): Promise<InteractionState> => {
-    if (!await invalidateProposalReview()) {
-      return visibleState;
-    }
-    const state = interaction.rejectProposal();
-    return render(state);
+  const dismissProposal = async (): Promise<InteractionState> => {
+    const state = render(interaction.rejectProposal());
+    const cancellation = proposalAuthority.cancelAcceptance();
+    proposalGeneration += 1;
+    await cancellation;
+    await closeStagedProposalTab();
+    return state;
   };
-  const requestProposalAcceptance = (): InteractionState => {
-    const state = interaction.requestProposalAcceptance();
+  const rejectProposal = dismissProposal;
+  const cancelProposal = dismissProposal;
+  const requestProposalAcceptance = async (): Promise<InteractionState> => {
+    let state = interaction.requestProposalAcceptance();
     render(state);
     if (state.mutationRequest !== undefined) {
-      void vscode.window.showInformationMessage(
-        'Acceptance request recorded. The extension authority gate must recheck the document version before any change.'
-      );
+      const request = state.mutationRequest;
+      if (proposalAuthority.beginAcceptance(request)) {
+        const acceptanceResult = await proposalAuthority.accept(request);
+        const completion = interaction.completeProposalAcceptance(request, acceptanceResult);
+        state = render(completion.state);
+        announceProposalAcceptance(completion.effect);
+        if (completion.effect.closeReview) await closeStagedProposalTab();
+      } else {
+        const completion = interaction.releaseProposalAcceptance(request);
+        state = render(completion.state);
+        announceProposalAcceptance(completion.effect);
+      }
     }
     return state;
   };
@@ -359,11 +402,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codealongai.replay.reset', resetReplay),
     vscode.window.tabGroups.onDidChangeTabs(() => {
       if (stagedProposalTab !== undefined && !isTabOpen(stagedProposalTab)) {
-        cancelClosedProposalReview();
+        void cancelClosedProposalReview();
       }
     }),
     vscode.window.onDidChangeVisibleTextEditors(() => applyCues(visibleState)),
     vscode.commands.registerCommand('codealongai.proposal.reject', rejectProposal),
+    vscode.commands.registerCommand('codealongai.proposal.cancel', cancelProposal),
     vscode.commands.registerCommand('codealongai.proposal.requestAcceptance', requestProposalAcceptance),
     proposalContentProvider,
     aiPointerStyle,
