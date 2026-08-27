@@ -11,6 +11,14 @@ export interface InteractionState {
 }
 function clearAiCues(state: InteractionState): InteractionState { return { ...state, aiAttention: undefined, explanations: [], follow: 'not-following', followTarget: undefined, proposalCaptureTarget: undefined, proposal: undefined, mutationRequest: undefined }; }
 function sameDocumentRange(first: DocumentRange, second: DocumentRange | undefined): boolean { return first.document === second?.document && first.range.start.line === second.range.start.line && first.range.start.character === second.range.start.character && first.range.end.line === second.range.end.line && first.range.end.character === second.range.end.character; }
+function stageForTarget(capture: ProposalCapture, target: DocumentRange | undefined): StagedProposal | undefined {
+  return sameDocumentRange(capture.target, target) ? { ...capture, review: 'ready' } : undefined;
+}
+function requestAcceptance(proposal: StagedProposal | undefined): { proposal: StagedProposal; mutationRequest: ProposalCapture } | undefined {
+  if (proposal?.review !== 'ready') return undefined;
+  const { review: _review, ...mutationRequest } = proposal;
+  return { proposal: { ...proposal, review: 'accept-requested' }, mutationRequest };
+}
 export class InteractionController {
   private readonly replay: ReplayController; private pendingExplanation: AnchoredExplanation | undefined;
   private current: InteractionState = { humanSelection: undefined, aiAttention: undefined, explanations: [], follow: 'not-following', followTarget: undefined, proposalCaptureTarget: undefined, proposal: undefined, mutationRequest: undefined };
@@ -20,8 +28,8 @@ export class InteractionController {
   public acceptFollow(): InteractionState { if (this.current.follow === 'awaiting-consent') { this.current = { ...this.current, explanations: this.pendingExplanation ? [this.pendingExplanation] : [], follow: 'following' }; this.pendingExplanation = undefined; } return this.current; }
   public refuseFollow(): InteractionState { if (this.current.follow === 'awaiting-consent') { this.current = clearAiCues(this.current); this.pendingExplanation = undefined; } return this.current; }
   public breakAway(): InteractionState { this.current = clearAiCues(this.current); this.pendingExplanation = undefined; return this.current; }
-  public stageProposal(capture: ProposalCapture): InteractionState { if (sameDocumentRange(capture.target, this.current.proposalCaptureTarget)) this.current = { ...this.current, proposalCaptureTarget: undefined, proposal: { ...capture, review: 'ready' } }; return this.current; }
+  public stageProposal(capture: ProposalCapture): InteractionState { const proposal = stageForTarget(capture, this.current.proposalCaptureTarget); if (proposal) this.current = { ...this.current, proposalCaptureTarget: undefined, proposal }; return this.current; }
   public rejectProposal(): InteractionState { this.current = { ...this.current, proposalCaptureTarget: undefined, proposal: undefined, mutationRequest: undefined }; return this.current; }
-  public requestProposalAcceptance(): InteractionState { const proposal = this.current.proposal; if (proposal?.review === 'ready') { const { review: _review, ...mutationRequest } = proposal; this.current = { ...this.current, proposal: { ...proposal, review: 'accept-requested' }, mutationRequest }; } return this.current; }
+  public requestProposalAcceptance(): InteractionState { const request = requestAcceptance(this.current.proposal); if (request) this.current = { ...this.current, ...request }; return this.current; }
   public reset(): InteractionState { this.replay.reset(); this.pendingExplanation = undefined; this.current = clearAiCues({ ...this.current, humanSelection: undefined }); return this.current; }
 }

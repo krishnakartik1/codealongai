@@ -170,6 +170,7 @@ suite('shared attention interaction', () => {
     interaction.start(humanSelection);
     interaction.advance();
     interaction.advance();
+    interaction.acceptFollow();
     interaction.advance();
     const state = interaction.stageProposal({
       target: {
@@ -198,6 +199,7 @@ suite('shared attention interaction', () => {
     interaction.start(humanSelection);
     interaction.advance();
     interaction.advance();
+    interaction.acceptFollow();
     interaction.advance();
     interaction.stageProposal({
       target: deterministicReplayFixture.events[3]!.target,
@@ -214,6 +216,7 @@ suite('shared attention interaction', () => {
     interaction.start(humanSelection);
     interaction.advance();
     interaction.advance();
+    interaction.acceptFollow();
     const replayed = interaction.advance();
     assert.deepEqual(replayed.proposalCaptureTarget, deterministicReplayFixture.events[3]!.target);
   });
@@ -224,6 +227,7 @@ suite('shared attention interaction', () => {
     interaction.start(humanSelection);
     interaction.advance();
     interaction.advance();
+    interaction.acceptFollow();
     interaction.advance();
     interaction.stageProposal({
       target: deterministicReplayFixture.events[3]!.target,
