@@ -21,29 +21,32 @@ In the Extension Development Host:
 1. Run **CodeAlongAI Prototype: Start native Comment walkthrough**. If the
    thread-title icons are not obvious, hover them and confirm they read **Next**
    and **Destinations**.
-2. Choose **Destinations**. Confirm the flat picker shows all three root
-   destinations and marks each as not visited. Cancel it and confirm nothing
-   changes.
-3. Choose **Next**, cancel the cross-file confirmation once, then accept it.
-   Confirm `checkout.ts` remains on the left, `pricing.ts` opens on the right,
-   the origin collapses, and the function-definition thread expands.
+2. Choose **Destinations**. Confirm the picker shows the whole walkthrough as
+   an indented tree projection, including every current, historical, and future
+   stop. Check that branch, rejoin, direct-alternative, and duplicate-range
+   annotations make the underlying graph understandable.
+3. Choose **Next**. Confirm cross-file navigation proceeds immediately:
+   `checkout.ts` remains on the left, `pricing.ts` opens on the right, the
+   origin collapses, and the function-definition thread expands.
 4. Use **Next** twice. The last transition creates a second distinct thread on
    the exact same `total - price` range. Judge whether their labels, collapsed
    markers, and separate conversations make the duplicate stops understandable.
 5. Use **Back** on the second reducer thread. Confirm it follows the graph edge
    to the first reducer thread without another confirmation.
-6. Open VS Code's **Comments** view and judge whether the visited graph history
+6. At the terminal second-reducer stop, confirm **Destinations** remains visible
+   and still shows both History and Future entries. Jump directly to one of each.
+7. Open VS Code's **Comments** view and judge whether the visited graph history
    and duplicate-range stops are discoverable and distinguishable.
-7. Reopen the historical origin thread and choose **Destinations** from that
-   thread. Confirm the picker is rooted at the origin and marks visited entries.
-   Choose the same-file cart branch, then use **Next** to rejoin the graph.
-8. Ask a question in a historical thread. Confirm its conversation grows but
+8. Reopen the historical origin thread and choose **Destinations** from that
+   thread. Confirm the same whole-graph view opens with the current location and
+   history accurately marked. Choose the cart branch, then use **Next** to rejoin.
+9. Ask a question in a historical thread. Confirm its conversation grows but
    CodeAlongAI attention does not move in the prototype-state output.
-9. Run **CodeAlongAI Prototype: Show prototype state** to inspect the complete
+10. Run **CodeAlongAI Prototype: Show prototype state** to inspect the complete
    in-memory graph, visits, requested expansion state, and attention.
 
-Please report a verdict for each category: title actions, deterministic Next,
-Destinations picker, graph-defined Back, Comments-view history,
+Please report a verdict for each category: title actions, confirmation-free
+deterministic Next, whole-graph Destinations picker, graph-defined Back, Comments-view history,
 current-versus-prior expansion, and duplicate-range stops. Note any category
 that is acceptable only with a product constraint.
 

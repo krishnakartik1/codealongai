@@ -151,11 +151,25 @@ const pricingReducerRevisitStop: PrototypeStop = {
 
 const stops = new Map<StopId, PrototypeStop>([
   [checkoutStop.id, checkoutStop],
-  [checkoutCartStop.id, checkoutCartStop],
   [pricingFunctionStop.id, pricingFunctionStop],
   [pricingReducerStop.id, pricingReducerStop],
-  [pricingReducerRevisitStop.id, pricingReducerRevisitStop]
+  [pricingReducerRevisitStop.id, pricingReducerRevisitStop],
+  [checkoutCartStop.id, checkoutCartStop]
 ]);
+
+// A Quick Pick cannot draw an arbitrary graph. This canonical tree projection
+// keeps every stop selectable once and calls out the graph's extra/rejoin edges.
+const graphPickerProjection: readonly {
+  id: StopId;
+  prefix: string;
+  relation: string;
+}[] = [
+  { id: 'checkout-origin', prefix: '●', relation: 'Root' },
+  { id: 'pricing-function', prefix: '├─ ★', relation: 'Recommended from Origin' },
+  { id: 'pricing-reducer', prefix: '│  └─', relation: 'Next from Definition; also a direct Origin alternative' },
+  { id: 'pricing-reducer-revisit', prefix: '│     └─', relation: 'Next from Reducer; distinct stop on the same range' },
+  { id: 'checkout-cart', prefix: '└─ ◆', relation: 'Origin alternative; rejoins at Definition' }
+];
 
 const codeAlongAi: vscode.CommentAuthorInformation = { name: 'CodeAlongAI' };
 const human: vscode.CommentAuthorInformation = { name: 'You' };
@@ -251,7 +265,7 @@ export function registerNativeCommentThreadPrototype(
     'codealongaiWalkthrough',
     stop.back === undefined ? undefined : 'hasBack',
     stop.next === undefined ? undefined : 'hasNext',
-    stop.destinations.length === 0 ? undefined : 'hasDestinations'
+    'hasDestinations'
   ].filter((part): part is string => part !== undefined).join('-');
 
   const ensureStop = async (stop: PrototypeStop): Promise<LiveStop> => {
@@ -339,24 +353,13 @@ export function registerNativeCommentThreadPrototype(
   const navigate = async (
     source: PrototypeStop,
     targetId: StopId,
-    direction: 'back' | 'forward'
+    action: 'back' | 'next' | 'destination'
   ): Promise<void> => {
     const target = stops.get(targetId);
     if (target === undefined) {
       return;
     }
-    if (direction === 'forward' && source.document !== target.document) {
-      const choice = await vscode.window.showInformationMessage(
-        `CodeAlongAI suggests ${target.title} in ${target.document}. Open it on the right while keeping the origin visible?`,
-        { modal: true },
-        'Open on right'
-      );
-      if (choice !== 'Open on right') {
-        snapshot(`cancelled ${source.id} -> ${target.id}`);
-        return;
-      }
-    }
-    await activateStop(target.id, `${direction} ${source.id} -> ${target.id}`);
+    await activateStop(target.id, `${action} ${source.id} -> ${target.id}`);
   };
 
   const back = async (thread: vscode.CommentThread | undefined): Promise<void> => {
@@ -369,32 +372,43 @@ export function registerNativeCommentThreadPrototype(
   const next = async (thread: vscode.CommentThread | undefined): Promise<void> => {
     const source = stopForThread(thread);
     if (source?.next !== undefined) {
-      await navigate(source, source.next, 'forward');
+      await navigate(source, source.next, 'next');
     }
   };
 
   const destinations = async (thread: vscode.CommentThread | undefined): Promise<void> => {
     const source = stopForThread(thread);
-    if (source === undefined || source.destinations.length === 0) {
+    if (source === undefined) {
       return;
     }
     const picked = await vscode.window.showQuickPick(
-      source.destinations.map((destination) => ({
-        label: destination.id === source.next ? `$(arrow-right) ${destination.label}` : destination.label,
-        description: destination.description,
-        detail: `${liveStops.has(destination.id) ? 'Visited' : 'Not visited'} · ${destination.id}`,
-        stopId: destination.id
-      })),
+      graphPickerProjection.map((projection) => {
+        const stop = stops.get(projection.id);
+        if (stop === undefined) {
+          throw new Error(`Unknown graph projection stop: ${projection.id}`);
+        }
+        const status = projection.id === attention
+          ? { icon: '$(location)', label: 'Current' }
+          : liveStops.has(projection.id)
+            ? { icon: '$(history)', label: 'History' }
+            : { icon: '$(circle-outline)', label: 'Future' };
+        return {
+          label: `${projection.prefix} ${status.icon} ${stop.title}`,
+          description: `${status.label} · ${projection.relation}`,
+          detail: `${stop.document} · ${stop.anchor}`,
+          stopId: projection.id
+        };
+      }),
       {
-        title: `Destinations from ${source.title}`,
-        placeHolder: 'Choose any outgoing destination; visited stops remain available'
+        title: `Walkthrough graph · Current: ${attention === undefined ? 'none' : stops.get(attention)?.title}`,
+        placeHolder: 'Select any current, historical, or future stop'
       }
     );
     if (picked === undefined) {
       snapshot(`cancelled destinations from ${source.id}`);
       return;
     }
-    await navigate(source, picked.stopId, 'forward');
+    await navigate(source, picked.stopId, 'destination');
   };
 
   const reply = (value: vscode.CommentReply): void => {
