@@ -26,6 +26,10 @@ export interface ProposalAcceptanceEffect {
   message: string | undefined;
   closeReview: boolean;
 }
+export interface ProposalAcceptanceCompletion {
+  state: InteractionState;
+  effect: ProposalAcceptanceEffect;
+}
 export interface InteractionState {
   humanSelection: DocumentRange | undefined;
   aiAttention: AiAttention | undefined;
@@ -234,47 +238,53 @@ export class InteractionController {
   public completeProposalAcceptance(
     request: ProposalMutationRequest,
     acceptanceResult: ProposalAcceptanceResult
-  ): InteractionState {
+  ): ProposalAcceptanceCompletion {
     if (this.current.mutationRequest?.requestId !== request.requestId) {
-      return this.current;
+      return { state: this.current, effect: noProposalAcceptanceEffect };
     }
+    let effect = noProposalAcceptanceEffect;
     if (acceptanceResult.outcome === 'applied') {
-      this.current = { ...clearProposal(this.current), proposalAcceptance: { message: undefined, closeReview: true } };
+      effect = { message: undefined, closeReview: true };
+      this.current = { ...clearProposal(this.current), proposalAcceptance: effect };
     }
     if (acceptanceResult.outcome === 'stale' && this.current.proposal) {
+      effect = { message: staleProposalMessage, closeReview: false };
       this.current = {
         ...this.current,
         mutationRequest: undefined,
         proposal: { ...this.current.proposal, review: 'stale' },
-        proposalAcceptance: { message: staleProposalMessage, closeReview: false }
+        proposalAcceptance: effect
       };
     }
     if (acceptanceResult.outcome === 'cancelled') {
       this.current = clearProposal(this.current);
     }
     if (acceptanceResult.outcome === 'failed') {
+      effect = { message: 'CodeAlongAI could not accept the proposal. Restage it and try again.', closeReview: false };
       this.current = {
         ...clearProposal(this.current),
-        proposalAcceptance: { message: 'CodeAlongAI could not accept the proposal. Restage it and try again.', closeReview: false }
+        proposalAcceptance: effect
       };
     }
-    return this.current;
+    return { state: this.current, effect };
   }
 
-  public releaseProposalAcceptance(request: ProposalMutationRequest): InteractionState {
+  public releaseProposalAcceptance(request: ProposalMutationRequest): ProposalAcceptanceCompletion {
     const proposal = this.proposalForCurrentMutationRequest(request);
+    let effect = noProposalAcceptanceEffect;
     if (proposal !== undefined) {
+      effect = {
+        message: 'CodeAlongAI is finishing the previous proposal. Try acceptance again.',
+        closeReview: false
+      };
       this.current = {
         ...this.current,
         proposal: { ...proposal, review: 'ready' },
         mutationRequest: undefined,
-        proposalAcceptance: {
-          message: 'CodeAlongAI is finishing the previous proposal. Try acceptance again.',
-          closeReview: false
-        }
+        proposalAcceptance: effect
       };
     }
-    return this.current;
+    return { state: this.current, effect };
   }
 
   private proposalForCurrentMutationRequest(
@@ -288,7 +298,7 @@ export class InteractionController {
     const request = requestAcceptance(this.current.proposal, this.nextMutationRequestId);
     if (request) {
       this.nextMutationRequestId += 1;
-      this.current = { ...this.current, ...request };
+      this.current = { ...this.current, ...request, proposalAcceptance: noProposalAcceptanceEffect };
     }
     return this.current;
   }

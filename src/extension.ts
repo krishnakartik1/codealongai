@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import {
   InteractionController,
   type InteractionState,
+  type ProposalAcceptanceEffect,
   type ProposalCapture,
   type StagedProposal
 } from './interaction';
@@ -151,9 +152,9 @@ export function activate(context: vscode.ExtensionContext): void {
     applyCues(visibleState);
     return state;
   };
-  const announceProposalAcceptance = (state: InteractionState): void => {
-    if (state.proposalAcceptance.message !== undefined) {
-      void vscode.window.showWarningMessage(state.proposalAcceptance.message);
+  const announceProposalAcceptance = (effect: ProposalAcceptanceEffect): void => {
+    if (effect.message !== undefined) {
+      void vscode.window.showWarningMessage(effect.message);
     }
   };
   let stagedProposalTab: vscode.Tab | undefined;
@@ -379,12 +380,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const request = state.mutationRequest;
       if (proposalAuthority.beginAcceptance(request)) {
         const acceptanceResult = await proposalAuthority.accept(request);
-        state = render(interaction.completeProposalAcceptance(request, acceptanceResult));
-        announceProposalAcceptance(state);
-        if (state.proposalAcceptance.closeReview) await closeStagedProposalTab();
+        const completion = interaction.completeProposalAcceptance(request, acceptanceResult);
+        state = render(completion.state);
+        announceProposalAcceptance(completion.effect);
+        if (completion.effect.closeReview) await closeStagedProposalTab();
       } else {
-        state = render(interaction.releaseProposalAcceptance(request));
-        announceProposalAcceptance(state);
+        const completion = interaction.releaseProposalAcceptance(request);
+        state = render(completion.state);
+        announceProposalAcceptance(completion.effect);
       }
     }
     return state;

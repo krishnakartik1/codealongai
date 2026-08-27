@@ -273,7 +273,7 @@ suite('shared attention interaction', () => {
     const requested = interaction.requestProposalAcceptance();
     assert.ok(requested.mutationRequest);
     const acceptanceResult: ProposalAcceptanceResult = { outcome: 'stale' };
-    const stale = interaction.completeProposalAcceptance(requested.mutationRequest, acceptanceResult);
+    const stale = interaction.completeProposalAcceptance(requested.mutationRequest, acceptanceResult).state;
 
     assert.equal(stale.proposal?.review, 'stale');
     assert.equal(stale.mutationRequest, undefined);
@@ -292,14 +292,14 @@ suite('shared attention interaction', () => {
     });
     const requested = interaction.requestProposalAcceptance();
     assert.ok(requested.mutationRequest);
-    const completed = interaction.completeProposalAcceptance(requested.mutationRequest, { outcome: 'applied' });
+    const completed = interaction.completeProposalAcceptance(requested.mutationRequest, { outcome: 'applied' }).state;
 
     assert.equal(completed.proposal, undefined);
     assert.equal(completed.mutationRequest, undefined);
     assert.equal(completed.proposalAcceptance.closeReview, true);
   });
 
-  test('makes cancellation terminal no-mutation and ignores an old completion after a new request', () => {
+  test('keeps a newer warning out of an obsolete acceptance completion effect', () => {
     const interaction = new InteractionController(deterministicReplayFixture.events);
     const capture = {
       target: deterministicReplayFixture.events[3]!.target,
@@ -312,16 +312,20 @@ suite('shared attention interaction', () => {
     stageKnownProposal(interaction, capture);
     const oldRequest = interaction.requestProposalAcceptance().mutationRequest;
     assert.ok(oldRequest);
-    const cancelled = interaction.completeProposalAcceptance(oldRequest, { outcome: 'cancelled' });
+    const cancelled = interaction.completeProposalAcceptance(oldRequest, { outcome: 'cancelled' }).state;
     assert.equal(cancelled.proposal, undefined);
     assert.equal(cancelled.mutationRequest, undefined);
 
     stageKnownProposal(interaction, capture);
     const newRequest = interaction.requestProposalAcceptance().mutationRequest;
     assert.ok(newRequest);
-    const untouched = interaction.completeProposalAcceptance(oldRequest, { outcome: 'applied' });
-    assert.equal(untouched.mutationRequest?.requestId, newRequest.requestId);
-    assert.equal(untouched.proposal?.review, 'accept-requested');
+    const newerWarning = interaction.releaseProposalAcceptance(newRequest);
+    assert.equal(newerWarning.effect.message, 'CodeAlongAI is finishing the previous proposal. Try acceptance again.');
+
+    const obsoleteCompletion = interaction.completeProposalAcceptance(oldRequest, { outcome: 'applied' });
+    assert.equal(obsoleteCompletion.effect.message, undefined);
+    assert.equal(obsoleteCompletion.state.proposalAcceptance.message, newerWarning.effect.message);
+    assert.equal(obsoleteCompletion.state.mutationRequest, undefined);
   });
 
   test('makes gateway failure terminal and supplies acceptance-specific guidance', () => {
@@ -336,7 +340,7 @@ suite('shared attention interaction', () => {
     const acceptanceRequest = interaction.requestProposalAcceptance().mutationRequest;
     assert.ok(acceptanceRequest);
 
-    const failed = interaction.completeProposalAcceptance(acceptanceRequest, { outcome: 'failed' });
+    const failed = interaction.completeProposalAcceptance(acceptanceRequest, { outcome: 'failed' }).state;
 
     assert.equal(failed.proposal, undefined);
     assert.equal(failed.mutationRequest, undefined);
@@ -355,7 +359,7 @@ suite('shared attention interaction', () => {
     const request = interaction.requestProposalAcceptance().mutationRequest;
     assert.ok(request);
 
-    const retryable = interaction.releaseProposalAcceptance(request);
+    const retryable = interaction.releaseProposalAcceptance(request).state;
 
     assert.equal(retryable.proposal?.review, 'ready');
     assert.equal(retryable.mutationRequest, undefined);
