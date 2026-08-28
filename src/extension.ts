@@ -29,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     }
   };
   void updateEndpoint();
-  const ask = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
+  const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
     await updateEndpoint();
     if (endpointState !== 'ready') { void vscode.window.showWarningMessage('Enable the CodeAlongAI MCP endpoint to start a walkthrough.'); return undefined; }
     const editor = vscode.window.activeTextEditor;
@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       return undefined;
     }
   });
-  context.subscriptions.push(ask, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { thread?.dispose(); void endpoint?.stop(); } });
+  context.subscriptions.push(askWalkthroughCommand, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { thread?.dispose(); void endpoint?.stop(); } });
   return { get endpointState() { return endpointState; }, get session() { return authority.getSession(); } };
 }
 
