@@ -62,6 +62,48 @@ suite('walkthrough start authority', () => {
   });
 });
 
+suite('walkthrough replacement and reset authority', () => {
+  const oldOrigin = { stopId: 'old', displayName: 'Old', explanation: 'Old walkthrough', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+  const newOrigin = { stopId: 'new', displayName: 'New', explanation: 'New walkthrough', document: 'pricing.ts', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } } };
+  const startedAuthority = (): WalkthroughAuthority => {
+    const authority = new WalkthroughAuthority();
+    const start = authority.captureStart(oldOrigin);
+    authority.start(start.id, oldOrigin);
+    return authority;
+  };
+
+  test('replaces a populated walkthrough only after the authorized new origin validates', () => {
+    const authority = startedAuthority();
+    const question = authority.captureQuestion(oldOrigin.stopId, 'Why?');
+    const old = authority.getSession()!;
+    authority.commitQuestionOutcome({ requestId: question.id, sessionId: old.id, revision: old.revision }, { kind: 'explanation-only', answerMarkdown: 'Because.' });
+    const before = authority.getSession()!;
+    const request = authority.captureReplacement({ document: newOrigin.document, range: newOrigin.range });
+    assert.throws(() => authority.replace(request.id, before.id, before.revision, { ...newOrigin, document: 'wrong.ts' }));
+    assert.deepEqual(authority.getSession(), before);
+    const receipt = authority.replace(request.id, before.id, before.revision, newOrigin);
+    assert.deepEqual(receipt, { schemaVersion: 1, status: 'committed', requestId: request.id, sessionId: authority.getSession()!.id, revision: 1, attentionStopId: 'new' });
+    assert.deepEqual(authority.replace(request.id, before.id, before.revision, newOrigin), receipt);
+    assert.equal(authority.getSession()!.stops.length, 1);
+    assert.notEqual(authority.getSession()!.id, before.id);
+  });
+
+  test('resets only the expected revision, is idempotent, and does not reset a later walkthrough', () => {
+    const authority = startedAuthority();
+    const before = authority.getSession()!;
+    const request = authority.captureReset();
+    assert.throws(() => authority.reset(request.id, before.id, before.revision + 1));
+    assert.deepEqual(authority.getSession(), before);
+    const receipt = authority.reset(request.id, before.id, before.revision);
+    assert.deepEqual(authority.reset(request.id, before.id, before.revision), receipt);
+    assert.equal(authority.getSession(), undefined);
+    const replacement = authority.captureStart(newOrigin);
+    authority.start(replacement.id, newOrigin);
+    assert.throws(() => authority.reset(request.id, before.id, before.revision));
+    assert.equal(authority.getSession()!.origin.stopId, newOrigin.stopId);
+  });
+});
+
 suite('bounded workspace context', () => {
   test('reads an unsaved buffer by normalized relative path and selected lines', async () => {
     const reader = new WorkspaceReader(memorySource([{ path: 'src\\cart.ts', text: 'first\nsecond\nthird', dirty: true, documentVersion: 7 }]));
@@ -106,6 +148,34 @@ suite('workspace context over loopback MCP', () => {
       await transport.close();
       await endpoint.stop();
     }
+  });
+});
+
+suite('replacement and reset over loopback MCP', () => {
+  const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+  test('uses strict revisions and clears only the authorized populated walkthrough', async () => {
+    const authority = new WalkthroughAuthority();
+    const start = authority.captureStart(origin);
+    authority.start(start.id, origin);
+    const endpoint = new LoopbackMcpEndpoint(authority);
+    await endpoint.start(0);
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+    const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+    await client.connect(transport);
+    try {
+      const old = authority.getSession()!;
+      const replacement = authority.captureReplacement({ document: 'pricing.ts', range: origin.range });
+      const rejected = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId: replacement.id, expectedSessionId: old.id, expectedRevision: old.revision + 1, origin: { ...origin, stopId: 'replacement', document: 'pricing.ts' } } });
+      assert.equal(rejected.isError, true);
+      assert.deepEqual(authority.getSession(), old);
+      const replaced = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId: replacement.id, expectedSessionId: old.id, expectedRevision: old.revision, origin: { ...origin, stopId: 'replacement', document: 'pricing.ts' } } });
+      assert.equal(replaced.isError, undefined);
+      const current = authority.getSession()!;
+      const reset = authority.captureReset();
+      const cleared = await client.callTool({ name: 'codealongai_reset_walkthrough', arguments: { schemaVersion: 1, requestId: reset.id, expectedSessionId: current.id, expectedRevision: current.revision } });
+      assert.deepEqual(cleared.structuredContent, { schemaVersion: 1, status: 'committed', requestId: reset.id, sessionId: current.id, revision: current.revision });
+      assert.equal(authority.getSession(), undefined);
+    } finally { await transport.close(); await endpoint.stop(); }
   });
 });
 

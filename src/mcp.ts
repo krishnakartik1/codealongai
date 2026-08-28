@@ -13,6 +13,7 @@ const range = z.object({ start: position, end: position }).strict();
 const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
 const graphPatch = z.object({ addedStops: z.array(addedStop), appendedDestinations: z.array(z.object({ sourceStopId: z.string().min(1), destinationIds: z.array(z.string().min(1)) }).strict()), recommendedNextUpdates: z.array(z.object({ sourceStopId: z.string().min(1), targetStopId: z.string().min(1) }).strict()) }).strict();
 const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal('explanation-only'), answerMarkdown: z.string() }).strict(), z.object({ kind: z.literal('destination-offer'), answerMarkdown: z.string(), destinationIds: z.array(z.string().min(1)) }).strict(), z.object({ kind: z.literal('generated-walkthrough'), answerMarkdown: z.string(), patch: graphPatch }).strict(), z.object({ kind: z.literal('explicit-unsupported'), answerMarkdown: z.string() }).strict()]);
+const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 
@@ -39,10 +40,20 @@ export class LoopbackMcpEndpoint {
     }, async (input: { schemaVersion: 1; requestId: string }) => {
       const request = this.authority.getStartRequest(input.requestId);
       const question = this.authority.getQuestionRequest(input.requestId);
+      const replacement = this.authority.getReplacementRequest(input.requestId);
+      const reset = this.authority.getResetRequest(input.requestId);
       if (question) {
         const sessionSnapshot = question.snapshot.session;
         const snapshot = { sessionId: sessionSnapshot.id, revision: sessionSnapshot.revision, humanOriginStopId: sessionSnapshot.origin.stopId, attentionStopId: sessionSnapshot.attentionStopId, origin: sessionSnapshot.origin, stops: sessionSnapshot.stops, stopExcerpts: question.snapshot.stopExcerpts, editorState: question.snapshot.editorState };
         const result = { schemaVersion: 1, requestId: question.id, status: question.status === 'consumed' ? 'committed' : question.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: question.capturedAt, kind: 'question', authorizedAction: 'question', input: { sessionId: question.sessionId, revision: question.revision, sourceStopId: question.sourceStopId, text: question.text }, snapshot };
+        return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      if (replacement) {
+        const result = { schemaVersion: 1, requestId: replacement.id, status: replacement.status === 'consumed' ? 'committed' : replacement.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: replacement.snapshot.capturedAt, kind: 'replace', authorizedAction: 'replace', input: { expectedSessionId: replacement.expectedSessionId, expectedRevision: replacement.expectedRevision, origin: { path: replacement.origin.document, range: replacement.origin.range } }, snapshot: replacement.snapshot.session };
+        return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      if (reset) {
+        const result = { schemaVersion: 1, requestId: reset.id, status: reset.status === 'consumed' ? 'committed' : reset.status === 'cancelled' ? 'canceled' : 'pending', kind: 'reset', authorizedAction: 'reset', input: { expectedSessionId: reset.sessionId, expectedRevision: reset.revision } };
         return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       if (!request) return this.domainError('request_not_found', 'The requested walkthrough request is unavailable.', false);
@@ -77,6 +88,26 @@ export class LoopbackMcpEndpoint {
       } catch (error) {
         return { isError: true, content: [{ type: 'text', text: String(error) }] };
       }
+    });
+    server.registerTool('codealongai_replace_walkthrough', {
+      description: 'Atomically replace an authorized walkthrough after validating its new origin.',
+      inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), origin: originDescriptor }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
+    }, (input) => {
+      try {
+        const receipt = this.authority.replace(input.requestId, input.expectedSessionId, input.expectedRevision, input.origin);
+        return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+    });
+    server.registerTool('codealongai_reset_walkthrough', {
+      description: 'Atomically clear an authorized walkthrough without changing editor state or source documents.',
+      inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive() }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
+    }, (input) => {
+      try {
+        const receipt = this.authority.reset(input.requestId, input.expectedSessionId, input.expectedRevision);
+        return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     });
     server.registerTool('codealongai_commit_question_outcome', {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
@@ -187,6 +218,19 @@ export async function commitDeterministicOrigin(port: number, requestId: string,
   } finally {
     await transport.close();
   }
+}
+
+/** The deterministic producer replaces through the same strict MCP boundary as an external producer. */
+export async function commitDeterministicReplacement(port: number, requestId: string, expectedSessionId: string, expectedRevision: number, origin: OriginDescriptor): Promise<void> {
+  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+  await client.connect(transport);
+  try {
+    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
+    if (request.isError || request.structuredContent === null) throw new Error('the authorized replacement request is unavailable');
+    const result = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId, expectedSessionId, expectedRevision, origin } });
+    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
+  } finally { await transport.close(); }
 }
 
 /** The deterministic question producer exercises the same loopback command boundary. */

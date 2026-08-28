@@ -23,8 +23,11 @@
     "commands": [
       {
         "command": "codealongai.walkthrough.ask",
-        "title": "CodeAlongAI: Ask about this code",
-        "enablement": "codealongai.mcpReady"
+        "title": "CodeAlongAI: Ask about this code"
+      },
+      {
+        "command": "codealongai.walkthrough.reset",
+        "title": "CodeAlongAI: Reset walkthrough"
       },
       {
         "command": "codealongai.walkthrough.submitComment",
@@ -47,6 +50,10 @@
       "commandPalette": [
         {
           "command": "codealongai.walkthrough.submitComment",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.reset",
           "when": "false"
         },
         {
