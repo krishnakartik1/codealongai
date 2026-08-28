@@ -1,0 +1,54 @@
+{
+  "result": "PASS",
+  "executedAt": "2026-08-28T05:04:52.397Z",
+  "runtime": {
+    "platform": "win32",
+    "operatingSystemType": "Windows_NT",
+    "release": "10.0.26200",
+    "architecture": "x64",
+    "node": "v22.23.2"
+  },
+  "dependencies": {
+    "trueforge": "0.1.4",
+    "mcpServer": "2.0.0",
+    "mcpNode": "2.0.0"
+  },
+  "transport": "Streamable HTTP",
+  "compatibility": "stateless 2025",
+  "trueforgeWindowsPathShim": true,
+  "modelConfigured": false,
+  "toolInvoked": false,
+  "registrationStatus": 200,
+  "firstDiscoveryStatus": 200,
+  "disconnectedDiscoveryStatus": 502,
+  "rediscoveryStatus": 200,
+  "discoveredTools": [
+    "ping"
+  ],
+  "firstFixtureObservations": {
+    "initialize": 1,
+    "toolsList": 1,
+    "toolsCall": 0,
+    "initializeProtocolVersions": [
+      "2025-11-25"
+    ],
+    "protocolVersionHeaders": [
+      "2025-11-25",
+      "2025-11-25"
+    ],
+    "sessionHeaderCount": 0
+  },
+  "restartedFixtureObservations": {
+    "initialize": 1,
+    "toolsList": 1,
+    "toolsCall": 0,
+    "initializeProtocolVersions": [
+      "2025-11-25"
+    ],
+    "protocolVersionHeaders": [
+      "2025-11-25",
+      "2025-11-25"
+    ],
+    "sessionHeaderCount": 0
+  }
+}

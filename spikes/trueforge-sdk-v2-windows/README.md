@@ -43,6 +43,12 @@ headers. Registration, initial discovery, disconnected discovery, and
 rediscovery returned HTTP 200, 200, 502, and 200 respectively. This is only a
 runner preflight; the decision still requires the native-Windows output.
 
+## Native Windows result
+
+The required native-Windows run passed on August 28, 2026 with Node.js 22.23.2
+on Windows_NT 10.0.26200 x64. The exact machine-readable output is archived at
+[`evidence/windows-2026-08-28.json`](evidence/windows-2026-08-28.json).
+
 The runner chooses unused IPv4 loopback ports, binds both processes explicitly
 to `127.0.0.1`, keeps TrueForge state in a temporary SQLite database, shortens
 MCP failure timeouts, and removes the database after both child processes
