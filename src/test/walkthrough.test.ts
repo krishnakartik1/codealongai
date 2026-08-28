@@ -218,6 +218,8 @@ suite('workspace context over loopback MCP', () => {
     const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
     await client.connect(transport);
     try {
+      const tools = await client.listTools();
+      assert.equal(tools.tools.length, 10);
       const listed = await client.callTool({ name: 'codealongai_list_workspace_files', arguments: { schemaVersion: 1 } });
       assert.deepEqual(listed.structuredContent, { schemaVersion: 1, paths: ['src/draft.ts'] });
       const read = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts' } });
