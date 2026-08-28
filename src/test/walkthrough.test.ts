@@ -6,7 +6,7 @@ import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadComments, threadLabel } from '../extension';
 import { McpLifecycle } from '../lifecycle';
 
 suite('MCP lifecycle', () => {
@@ -100,6 +100,11 @@ suite('walkthrough start authority', () => {
 
   test('uses native comment context tokens for available navigation actions', () => {
     assert.equal(navigationContext({ id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: ['definition'], recommendedNextId: 'definition', conversation: [] }), 'codealongaiWalkthrough-hasDestinations-hasNext');
+  });
+
+  test('renders every generated stop with its initial CodeAlongAI explanation', () => {
+    const stop = { id: 'definition', stopId: 'definition', displayName: 'Definition', explanation: 'This defines the subtotal calculation.', document: 'pricing.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: [], conversation: [] };
+    assert.deepEqual(threadComments(stop), [{ author: 'CodeAlongAI', bodyMarkdown: 'This defines the subtotal calculation.' }]);
   });
 
   test('gives the native reply editor an actionable placeholder', () => {

@@ -42,7 +42,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   const threadFor = (stop: WalkthroughStop, document: vscode.TextDocument): vscode.CommentThread => {
     const existing = threads.get(stop.id);
     if (existing) return existing;
-    const created = controller.createCommentThread(document.uri, asVscodeRange(stop.range), stop.conversation.map(commentFor));
+    const created = controller.createCommentThread(document.uri, asVscodeRange(stop.range), threadComments(stop).map(commentFor));
     created.label = threadLabel(stop, authority.getSession()!);
     created.contextValue = navigationContext(stop);
     created.canReply = true;
@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     for (const stop of session.stops) {
       const current = threads.get(stop.id);
       if (!current) continue;
-      current.comments = stop.conversation.map(commentFor);
+      current.comments = threadComments(stop).map(commentFor);
       current.label = threadLabel(stop, session);
       current.contextValue = navigationContext(stop);
       current.collapsibleState = stop.id === targetId ? vscode.CommentThreadCollapsibleState.Expanded : vscode.CommentThreadCollapsibleState.Collapsed;
@@ -204,7 +204,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
-      reply.thread.comments = source.conversation.map(commentFor);
+      reply.thread.comments = threadComments(source).map(commentFor);
       refreshThreads(committed, committed.attentionStopId);
     } catch (error) {
       void vscode.window.showErrorMessage(`CodeAlongAI could not answer the question: ${String(error)}`, 'Retry question', 'Discard question').then((action) => {
@@ -270,6 +270,10 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
 export function deactivate(): void {}
 
 const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
+export const threadComments = (stop: Pick<WalkthroughStop, 'explanation' | 'conversation'>): readonly { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }[] => {
+  const explanationIsAlreadyRecorded = stop.conversation[0]?.author === 'CodeAlongAI' && stop.conversation[0].bodyMarkdown === stop.explanation;
+  return explanationIsAlreadyRecorded ? stop.conversation : [{ author: 'CodeAlongAI', bodyMarkdown: stop.explanation }, ...stop.conversation];
+};
 const asVscodeRange = (range: { start: { line: number; character: number }; end: { line: number; character: number } }): vscode.Range => new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
 export const navigationContext = (stop: WalkthroughStop): string => [
   'codealongaiWalkthrough',
