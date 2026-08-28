@@ -29,7 +29,7 @@ export class LoopbackMcpEndpoint {
   public async start(port: number): Promise<void> {
     if (this.listener) return;
     const createServer = (): McpServer => {
-    const server = new McpServer({ name: 'CodeAlongAI', version: '0.0.1' });
+    const server = new McpServer({ name: 'CodeAlongAI', version: '0.0.1' }, { supportedProtocolVersions: ['2026-07-28', '2025-11-25'] });
     server.registerTool('codealongai_get_walkthrough', {
       description: 'Read the current walkthrough snapshot.', annotations: readAnnotations
     }, async () => {
