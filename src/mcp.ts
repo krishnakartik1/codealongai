@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import type { OriginDescriptor, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
+import type { OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
@@ -84,7 +84,7 @@ export class LoopbackMcpEndpoint {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input) => {
       try {
-        const receipt = this.authority.commitQuestionOutcome(input.requestId, input.expectedSessionId, input.expectedRevision, input.outcome as QuestionOutcome);
+        const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     }); return server; };
@@ -175,14 +175,14 @@ export async function commitDeterministicOrigin(port: number, requestId: string,
 }
 
 /** The deterministic question producer exercises the same loopback command boundary. */
-export async function commitDeterministicQuestion(port: number, requestId: string, sessionId: string, revision: number, outcome: QuestionOutcome): Promise<void> {
+export async function commitDeterministicQuestion(port: number, commit: QuestionCommit, outcome: QuestionOutcome): Promise<void> {
   const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
   await client.connect(transport);
   try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
+    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId: commit.requestId } });
     if (request.isError || request.structuredContent === null) throw new Error('the authorized question request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId, expectedSessionId: sessionId, expectedRevision: revision, outcome } });
+    const result = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: commit.requestId, expectedSessionId: commit.sessionId, expectedRevision: commit.revision, outcome } });
     if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
   } finally { await transport.close(); }
 }

@@ -48,6 +48,17 @@ suite('walkthrough start authority', () => {
     authority.discardStart();
     assert.equal(authority.getPendingStart(), undefined);
   });
+
+  test('keeps a captured question snapshot immutable and refuses a second pending reply', () => {
+    const authority = new WalkthroughAuthority();
+    const origin = { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'Ask', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 2 } } };
+    const start = authority.captureStart(origin);
+    authority.start(start.id, origin);
+    const question = authority.captureQuestion(origin.stopId, 'Why?');
+    question.snapshot.session.origin.document = 'mutated.ts';
+    assert.equal(authority.getQuestionRequest(question.id)?.snapshot.session.origin.document, 'checkout.ts');
+    assert.throws(() => authority.captureQuestion(origin.stopId, 'Different question'));
+  });
 });
 
 suite('bounded workspace context', () => {

@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { commitDeterministicOrigin, commitDeterministicQuestion, LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, type OriginDescriptor, type QuestionOutcome, WalkthroughAuthority } from './walkthrough';
-import type { WorkspaceSource } from './workspace';
+import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -67,9 +67,17 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     if (!sourceStopId || !text) return;
     const session = authority.getSession();
     if (!session || endpointState !== 'ready') return;
-    const request = authority.getPendingQuestion() ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
+    const pending = authority.getPendingQuestion();
+    if (pending && (pending.sessionId !== session.id || pending.revision !== session.revision || pending.sourceStopId !== sourceStopId || pending.text !== text)) {
+      void vscode.window.showWarningMessage('Finish or discard the pending CodeAlongAI question before submitting another.', 'Retry question', 'Discard question').then((action) => {
+        if (action === 'Retry question') void vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
+        if (action === 'Discard question') authority.discardQuestion();
+      });
+      return;
+    }
+    const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     try {
-      await commitDeterministicQuestion(activePort!, request.id, session.id, session.revision, deterministicQuestionOutcome());
+      await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: session.id, revision: session.revision }, deterministicQuestionOutcome(session));
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
       reply.thread.comments = source.conversation.map((comment) => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } }));
@@ -88,7 +96,7 @@ export function deactivate(): void {}
 
 async function captureQuestionSnapshot(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): Promise<{ stopExcerpts: { stopId: string; path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string; documentVersion?: number }[]; editorState: { visibleEditors: string[]; activeVisibleEditorIndex?: number } }> {
   const documents = await Promise.all(session.stops.map(async (stop) => {
-    try { const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, ...stop.document.split('/'))); return { stopId: stop.id, path: stop.document, range: stop.range, text: document.getText(new vscode.Range(stop.range.start.line, 0, stop.range.end.line + 1, 0)), documentVersion: document.version }; }
+    try { const path = normalizeWorkspacePath(stop.document); const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, ...path.split('/'))); return { stopId: stop.id, path, range: stop.range, text: document.getText(new vscode.Range(stop.range.start.line, 0, stop.range.end.line + 1, 0)), documentVersion: document.version }; }
     catch { return undefined; }
   }));
   const visibleEditors = vscode.window.visibleTextEditors.map((editor) => vscode.workspace.asRelativePath(editor.document.uri, false));
@@ -96,7 +104,8 @@ async function captureQuestionSnapshot(session: NonNullable<ReturnType<Walkthrou
   return { stopExcerpts: documents.filter((excerpt): excerpt is Exclude<typeof excerpt, undefined> => excerpt !== undefined), editorState: { visibleEditors, ...(activeVisibleEditorIndex === undefined || activeVisibleEditorIndex < 0 ? {} : { activeVisibleEditorIndex }) } };
 }
 
-function deterministicQuestionOutcome(): QuestionOutcome {
+function deterministicQuestionOutcome(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): QuestionOutcome {
+  if (session.stops.some((stop) => stop.id === 'pricing-function')) return { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' };
   return { kind: 'generated-walkthrough', answerMarkdown: 'Follow the value through the subtotal function and its reducer.', patch: { addedStops: [
     { id: 'pricing-function', displayName: 'Definition', explanationMarkdown: 'This defines the subtotal calculation.', path: 'pricing.ts', range: { start: { line: 0, character: 16 }, end: { line: 0, character: 51 } }, destinationIds: ['pricing-reducer'], recommendedNextId: 'pricing-reducer', backId: 'checkout-origin' },
     { id: 'pricing-reducer', displayName: 'Reducer', explanationMarkdown: 'The reducer subtracts each price.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: ['pricing-reducer-revisit'], recommendedNextId: 'pricing-reducer-revisit', backId: 'pricing-function' },
