@@ -23,10 +23,81 @@
     "commands": [
       {
         "command": "codealongai.walkthrough.ask",
-        "title": "CodeAlongAI: Ask about this code",
-        "enablement": "codealongai.mcpReady"
+        "title": "CodeAlongAI: Ask about this code"
+      },
+      {
+        "command": "codealongai.walkthrough.reset",
+        "title": "CodeAlongAI: Reset walkthrough"
+      },
+      {
+        "command": "codealongai.walkthrough.submitComment",
+        "title": "Reply to CodeAlongAI",
+        "icon": "$(send)"
+      },
+      {
+        "command": "codealongai.walkthrough.back",
+        "title": "CodeAlongAI: Back",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "codealongai.walkthrough.next",
+        "title": "CodeAlongAI: Next",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "codealongai.walkthrough.destinations",
+        "title": "CodeAlongAI: Destinations",
+        "icon": "$(list-tree)"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "codealongai.walkthrough.submitComment",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.reset",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.back",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.next",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.destinations",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "codealongai.walkthrough.submitComment",
+          "when": "commentController == codealongai.walkthrough",
+          "group": "inline"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "codealongai.walkthrough.back",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasBack/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codealongai.walkthrough.next",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasNext/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codealongai.walkthrough.destinations",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/",
+          "group": "navigation@3"
+        }
+      ]
+    },
     "configuration": {
       "title": "CodeAlongAI",
       "properties": {
