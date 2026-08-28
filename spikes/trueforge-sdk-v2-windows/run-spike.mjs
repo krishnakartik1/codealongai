@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { arch, platform, release, type as operatingSystemType } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const spikeDirectory = dirname(fileURLToPath(import.meta.url));
 const children = new Set();
@@ -161,6 +161,21 @@ try {
   const trueforgeBase = `http://127.0.0.1:${trueforgePort}`;
   const connectorName = "codealongai-sdk-v2-loopback-spike";
   const discoveryUrl = `${trueforgeBase}/api/v1/mcp-servers/${connectorName}/tools`;
+  const trueforgeWindowsPathShim = platform() === "win32";
+  const trueforgeArguments = [];
+
+  if (trueforgeWindowsPathShim) {
+    trueforgeArguments.push(
+      "--experimental-loader",
+      pathToFileURL(join(spikeDirectory, "trueforge-path-loader.mjs")).href,
+    );
+  }
+
+  trueforgeArguments.push(
+    join(spikeDirectory, "node_modules", "@truefoundry", "trueforge", "dist", "cli.js"),
+    "--port",
+    String(trueforgePort),
+  );
 
   fixture = launch("SDK v2 fixture (first process)", process.execPath, [
     join(spikeDirectory, "fixture.mjs"),
@@ -172,11 +187,7 @@ try {
   trueforge = launch(
     "TrueForge 0.1.4",
     process.execPath,
-    [
-      join(spikeDirectory, "node_modules", "@truefoundry", "trueforge", "dist", "cli.js"),
-      "--port",
-      String(trueforgePort),
-    ],
+    trueforgeArguments,
     {
       env: {
         SQLITE_PATH: join(temporaryDirectory, "trueforge.sqlite"),
@@ -242,6 +253,7 @@ try {
         dependencies: await dependencyVersions(),
         transport: "Streamable HTTP",
         compatibility: "stateless 2025",
+        trueforgeWindowsPathShim,
         modelConfigured: false,
         toolInvoked: false,
         registrationStatus: registration.response.status,

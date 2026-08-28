@@ -49,5 +49,14 @@ database after both child processes stop. It configures no provider, agent,
 session, model turn, authentication, editor access, filesystem access, or
 CodeAlongAI domain tool.
 
+Pinned TrueForge 0.1.4 delegates migrations to a Kysely file provider that
+passes native absolute paths directly to dynamic `import()`. Node.js rejects a
+Windows drive-letter path there because ESM imports require a `file:` URL. On
+Windows only, this runner installs a local Node loader that converts absolute
+filesystem paths with `pathToFileURL` before TrueForge starts. The installed
+TrueForge and Kysely packages remain unchanged. This is a spike compatibility
+shim, not a CodeAlongAI product path convention; product code must use
+cross-platform Node path and URL APIs directly.
+
 This is verification evidence, not extension production code and not the
 eventual CodeAlongAI MCP implementation.
