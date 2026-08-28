@@ -8,12 +8,7 @@ import { destinationQuickPickItems, deterministicQuestionOutcome, threadLabel } 
 import { McpLifecycle } from '../lifecycle';
 
 suite('MCP lifecycle', () => {
-  test('serializes setting churn and preserves the walkthrough authority', async () => {
-    const authority = new WalkthroughAuthority();
-    const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
-    const start = authority.captureStart(origin);
-    authority.start(start.id, origin);
-    const sessionId = authority.getSession()!.id;
+  test('serializes setting churn so the last valid configuration wins', async () => {
     const calls: string[] = [];
     let releaseStart: (() => void) | undefined;
     const lifecycle = new McpLifecycle(async (port) => ({
@@ -29,7 +24,25 @@ suite('MCP lifecycle', () => {
     assert.equal(lifecycle.state, 'ready');
     assert.equal(lifecycle.port, 4200);
     assert.deepEqual(calls, ['start:4100', 'stop:4100', 'start:4200']);
-    assert.equal(authority.getSession()!.id, sessionId);
+  });
+
+  test('preserves an active walkthrough while a real listener is disabled', async () => {
+    const authority = new WalkthroughAuthority();
+    const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+    const start = authority.captureStart(origin);
+    const session = authority.start(start.id, origin);
+    const reservation = new LoopbackMcpEndpoint(authority);
+    await reservation.start(0);
+    const port = reservation.port!;
+    await reservation.stop();
+    const lifecycle = new McpLifecycle(async (configuredPort) => {
+      const endpoint = new LoopbackMcpEndpoint(authority);
+      return { start: () => endpoint.start(configuredPort), stop: () => endpoint.stop() };
+    });
+    await lifecycle.configure({ enabled: true, port });
+    await lifecycle.configure({ enabled: false, port });
+    assert.equal(lifecycle.state, 'off');
+    assert.deepEqual(authority.getSession(), session);
   });
 
   test('rejects an invalid port before stopping a ready endpoint', async () => {

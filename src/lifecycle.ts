@@ -46,20 +46,12 @@ export class McpLifecycle {
     while (true) {
       if (!this.desired.enabled) {
         if (!this.current) { this._state = 'off'; return; }
-        const listener = this.current;
-        this._state = 'stopping';
-        await listener.stop();
-        if (this.current === listener) { this.current = undefined; this.currentPort = undefined; }
-        this._state = 'off';
+        await this.stopCurrent();
         continue;
       }
       if (this.current && this.currentPort === this.desired.port) { this._state = 'ready'; return; }
       if (this.current) {
-        const listener = this.current;
-        this._state = 'stopping';
-        await listener.stop();
-        if (this.current === listener) { this.current = undefined; this.currentPort = undefined; }
-        this._state = 'off';
+        await this.stopCurrent();
         continue;
       }
       const port = this.desired.port;
@@ -79,5 +71,14 @@ export class McpLifecycle {
       this._state = 'ready';
       return;
     }
+  }
+
+  private async stopCurrent(): Promise<void> {
+    const listener = this.current;
+    if (!listener) return;
+    this._state = 'stopping';
+    await listener.stop();
+    if (this.current === listener) { this.current = undefined; this.currentPort = undefined; }
+    this._state = 'off';
   }
 }
