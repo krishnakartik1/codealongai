@@ -267,7 +267,12 @@ export function deactivate(): void {}
 
 const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
 const asVscodeRange = (range: { start: { line: number; character: number }; end: { line: number; character: number } }): vscode.Range => new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
-const navigationContext = (stop: WalkthroughStop): string => `codealongai.walkthrough.destinations${stop.backId === undefined ? '' : '.back'}${stop.recommendedNextId === undefined ? '' : '.next'}`;
+export const navigationContext = (stop: WalkthroughStop): string => [
+  'codealongaiWalkthrough',
+  stop.destinationIds.length === 0 ? undefined : 'hasDestinations',
+  stop.backId === undefined ? undefined : 'hasBack',
+  stop.recommendedNextId === undefined ? undefined : 'hasNext'
+].filter((part): part is string => part !== undefined).join('-');
 
 interface DestinationQuickPickItem extends vscode.QuickPickItem { stopId: string; }
 export function destinationQuickPickItems(session: WalkthroughSession): readonly DestinationQuickPickItem[] {

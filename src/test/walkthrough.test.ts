@@ -6,7 +6,7 @@ import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { destinationQuickPickItems, deterministicQuestionOutcome, threadLabel } from '../extension';
+import { destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadLabel } from '../extension';
 import { McpLifecycle } from '../lifecycle';
 
 suite('MCP lifecycle', () => {
@@ -94,8 +94,12 @@ suite('walkthrough start authority', () => {
   test('exposes reply and destinations on every CodeAlongAI thread', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { commands: { command: string; icon?: string }[]; menus: { 'comments/commentThread/context': { command: string; when: string; group?: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
     assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
-    assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongai\\.walkthrough\\.destinations/'));
+    assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/'));
     assert.deepEqual(manifest.contributes.commands.filter((item) => ['codealongai.walkthrough.back', 'codealongai.walkthrough.next', 'codealongai.walkthrough.destinations', 'codealongai.walkthrough.submitComment'].includes(item.command)).map((item) => item.icon), ['$(send)', '$(arrow-left)', '$(arrow-right)', '$(list-tree)']);
+  });
+
+  test('uses native comment context tokens for available navigation actions', () => {
+    assert.equal(navigationContext({ id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: ['definition'], recommendedNextId: 'definition', conversation: [] }), 'codealongaiWalkthrough-hasDestinations-hasNext');
   });
 
   test('uses the complete nonblank cursor line when there is no selection', () => {

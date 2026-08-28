@@ -83,17 +83,17 @@
       "comments/commentThread/title": [
         {
           "command": "codealongai.walkthrough.back",
-          "when": "commentThread =~ /codealongai\\.walkthrough\\.back/",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasBack/",
           "group": "navigation@1"
         },
         {
           "command": "codealongai.walkthrough.next",
-          "when": "commentThread =~ /codealongai\\.walkthrough\\.next/",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasNext/",
           "group": "navigation@2"
         },
         {
           "command": "codealongai.walkthrough.destinations",
-          "when": "commentThread =~ /codealongai\\.walkthrough\\.destinations/",
+          "when": "commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/",
           "group": "navigation@3"
         }
       ]
