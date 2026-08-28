@@ -202,8 +202,7 @@ export class LoopbackMcpEndpoint {
   }
 
   private domainError(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
-    const structuredContent = { schemaVersion: 1, code, message, retryable };
-    return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
+    return domainErrorResult(code, message, retryable);
   }
 
   private async walkthroughSnapshot(): Promise<object> {
