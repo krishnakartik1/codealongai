@@ -17,6 +17,7 @@ const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.st
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
+const toolCallDeadlineMs = 30_000;
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
@@ -82,7 +83,8 @@ export class LoopbackMcpEndpoint {
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
       inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-    }, (input) => {
+    }, (input, context) => {
+      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const session = this.authority.start(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
@@ -95,7 +97,8 @@ export class LoopbackMcpEndpoint {
       description: 'Atomically replace an authorized walkthrough after validating its new origin.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), origin: originDescriptor }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
-    }, (input) => {
+    }, (input, context) => {
+      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.replace(input.requestId, input.expectedSessionId, input.expectedRevision, input.origin);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
@@ -105,7 +108,8 @@ export class LoopbackMcpEndpoint {
       description: 'Atomically clear an authorized walkthrough without changing editor state or source documents.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive() }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
-    }, (input) => {
+    }, (input, context) => {
+      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.reset(input.requestId, input.expectedSessionId, input.expectedRevision);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
@@ -115,7 +119,8 @@ export class LoopbackMcpEndpoint {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), outcome: questionOutcome }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-    }, (input) => {
+    }, (input, context) => {
+      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
@@ -128,7 +133,8 @@ export class LoopbackMcpEndpoint {
         z.object({ schemaVersion, expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), targetStopId: z.string().min(1) }).strict()
       ]),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
-    }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection } | { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; targetStopId: string }) => {
+    }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection } | { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; targetStopId: string }, context) => {
+      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = 'targetStopId' in input
           ? this.authority.navigateDestination({ sessionId: input.expectedSessionId, revision: input.expectedRevision, targetStopId: input.targetStopId })
@@ -176,6 +182,7 @@ export class LoopbackMcpEndpoint {
     const isToolCall = isToolsCall(parsedBody);
     if (isToolCall && this.toolCallInFlight) return this.json(response, 409, { jsonrpc: '2.0', id: requestId(parsedBody), result: domainErrorResult('endpoint_busy', 'The endpoint is busy. Retry the tool call.', true) });
     if (isToolCall) this.toolCallInFlight = true;
+    const deadline = isToolCall ? setTimeout(() => response.destroy(), toolCallDeadlineMs) : undefined;
     try {
       const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await createServer().connect(transport);
@@ -183,6 +190,7 @@ export class LoopbackMcpEndpoint {
     } catch {
       if (!response.headersSent) this.httpError(response, 500, -32603, 'Internal server error');
     } finally {
+      if (deadline) clearTimeout(deadline);
       if (isToolCall) this.toolCallInFlight = false;
     }
   }
