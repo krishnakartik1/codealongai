@@ -5,6 +5,56 @@ import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
 import { destinationQuickPickItems, deterministicQuestionOutcome, threadLabel } from '../extension';
+import { McpLifecycle } from '../lifecycle';
+
+suite('MCP lifecycle', () => {
+  test('serializes setting churn and preserves the walkthrough authority', async () => {
+    const authority = new WalkthroughAuthority();
+    const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+    const start = authority.captureStart(origin);
+    authority.start(start.id, origin);
+    const sessionId = authority.getSession()!.id;
+    const calls: string[] = [];
+    let releaseStart: (() => void) | undefined;
+    const lifecycle = new McpLifecycle(async (port) => ({
+      start: async () => { calls.push(`start:${port}`); if (port === 4100) await new Promise<void>((resolve) => { releaseStart = resolve; }); },
+      stop: async () => { calls.push(`stop:${port}`); }
+    }));
+    const starting = lifecycle.configure({ enabled: true, port: 4100 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const disabling = lifecycle.configure({ enabled: false, port: 4100 });
+    const enabling = lifecycle.configure({ enabled: true, port: 4200 });
+    releaseStart!();
+    await Promise.all([starting, disabling, enabling]);
+    assert.equal(lifecycle.state, 'ready');
+    assert.equal(lifecycle.port, 4200);
+    assert.deepEqual(calls, ['start:4100', 'stop:4100', 'start:4200']);
+    assert.equal(authority.getSession()!.id, sessionId);
+  });
+
+  test('rejects an invalid port before stopping a ready endpoint', async () => {
+    const calls: string[] = [];
+    const lifecycle = new McpLifecycle(async (port) => ({ start: async () => { calls.push(`start:${port}`); }, stop: async () => { calls.push(`stop:${port}`); } }));
+    await lifecycle.configure({ enabled: true, port: 4100 });
+    await assert.rejects(() => lifecycle.configure({ enabled: true, port: 12 }), /1024/);
+    assert.equal(lifecycle.state, 'ready');
+    assert.equal(lifecycle.port, 4100);
+    assert.deepEqual(calls, ['start:4100']);
+  });
+
+  test('returns off after a bind failure and can recover on a later valid setting', async () => {
+    const calls: string[] = [];
+    const lifecycle = new McpLifecycle(async (port) => ({
+      start: async () => { calls.push(`start:${port}`); if (port === 4100) throw new Error('in use'); },
+      stop: async () => { calls.push(`stop:${port}`); }
+    }));
+    await assert.rejects(() => lifecycle.configure({ enabled: true, port: 4100 }), /in use/);
+    assert.equal(lifecycle.state, 'off');
+    await lifecycle.configure({ enabled: true, port: 4200 });
+    assert.equal(lifecycle.state, 'ready');
+    assert.deepEqual(calls, ['start:4100', 'start:4200']);
+  });
+});
 
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
