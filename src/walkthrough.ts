@@ -23,7 +23,11 @@ export interface NavigationReceipt { schemaVersion: 1; sessionId: string; revisi
 export interface WalkthroughSession { readonly id: string; readonly revision: number; readonly origin: OriginDescriptor; readonly attentionStopId: string; readonly stops: readonly WalkthroughStop[]; }
 let nextId = 1;
 const identifier = (prefix: string): string => `${prefix}-${nextId++}`;
-const copyRange = (range: Range): Range => ({ start: { ...range.start }, end: { ...range.end } });
+// VS Code Position instances serialize their private backing fields (`_line` and
+// `_character`) when spread.  Always project coordinates explicitly because
+// ranges cross the strict MCP JSON boundary.
+const copyPosition = (position: Position): Position => ({ line: position.line, character: position.character });
+const copyRange = (range: Range): Range => ({ start: copyPosition(range.start), end: copyPosition(range.end) });
 const copyAnchor = (anchor: OriginAnchor): OriginAnchor => ({ document: anchor.document, range: copyRange(anchor.range) });
 const copyStop = (stop: WalkthroughStop): WalkthroughStop => ({ ...stop, range: copyRange(stop.range), destinationIds: [...stop.destinationIds], conversation: stop.conversation.map((comment) => ({ ...comment })) });
 const copySession = (session: WalkthroughSession): WalkthroughSession => ({ ...session, origin: { ...session.origin, range: copyRange(session.origin.range) }, stops: session.stops.map(copyStop) });
