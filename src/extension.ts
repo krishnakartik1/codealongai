@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { commitDeterministicOrigin, commitDeterministicQuestion, LoopbackMcpEndpoint } from './mcp';
-import { deriveOrigin, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
+import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
@@ -27,7 +27,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const existing = threads.get(stop.id);
     if (existing) return existing;
     const created = controller.createCommentThread(document.uri, asVscodeRange(stop.range), stop.conversation.map(commentFor));
-    created.label = `CodeAlongAI · ${stop.displayName}`;
+    created.label = threadLabel(stop, authority.getSession()!);
     created.contextValue = navigationContext(stop);
     created.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
     threads.set(stop.id, created);
@@ -39,6 +39,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       const current = threads.get(stop.id);
       if (!current) continue;
       current.comments = stop.conversation.map(commentFor);
+      current.label = threadLabel(stop, session);
       current.contextValue = navigationContext(stop);
       current.collapsibleState = stop.id === targetId ? vscode.CommentThreadCollapsibleState.Expanded : vscode.CommentThreadCollapsibleState.Collapsed;
     }
@@ -137,6 +138,9 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     if (!session || !sourceStopId) return;
     const target = authority.navigationTarget(sourceStopId, direction);
     if (!target) { void vscode.window.showErrorMessage(`CodeAlongAI ${direction} is unavailable for this walkthrough stop.`); return; }
+    await navigateTo(session, target, () => authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId, direction }));
+  };
+  const navigateTo = async (session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>, target: WalkthroughStop, commit: () => unknown): Promise<void> => {
     const tabsBefore = visibleTextTabLocations();
     if (navigationInProgress) { void vscode.window.showErrorMessage('CodeAlongAI navigation is already in progress.'); return; }
     navigationInProgress = true;
@@ -147,7 +151,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       await showStopDocument(document, target, session.origin);
       threadFor(target, document);
       refreshThreads(session, target.id);
-      authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId, direction });
+      commit();
     } catch {
       await restorePreparedNavigation(tabsBefore, editorRangesBefore, threads, threadsBefore);
       const current = authority.getSession();
@@ -155,9 +159,22 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       void vscode.window.showErrorMessage('CodeAlongAI could not navigate to that walkthrough stop.');
     } finally { navigationInProgress = false; }
   };
+  const navigateDestination = async (targetStopId: string): Promise<void> => {
+    const session = authority.getSession();
+    const target = session?.stops.find((stop) => stop.id === targetStopId);
+    if (!session || !target) return;
+    await navigateTo(session, target, () => authority.navigateDestination({ sessionId: session.id, revision: session.revision, targetStopId }));
+  };
   const backCommand = vscode.commands.registerCommand('codealongai.walkthrough.back', (thread?: vscode.CommentThread) => navigate('back', thread));
   const nextCommand = vscode.commands.registerCommand('codealongai.walkthrough.next', (thread?: vscode.CommentThread) => navigate('next', thread));
-  context.subscriptions.push(askWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { for (const thread of threads.values()) thread.dispose(); void endpoint?.stop(); } });
+  const destinationsCommand = vscode.commands.registerCommand('codealongai.walkthrough.destinations', async () => {
+    const session = authority.getSession();
+    if (!session) return;
+    const items = destinationQuickPickItems(session);
+    const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
+    if (selected) await navigateDestination(selected.stopId);
+  });
+  context.subscriptions.push(askWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { for (const thread of threads.values()) thread.dispose(); void endpoint?.stop(); } });
   return { get endpointState() { return endpointState; }, get session() { return authority.getSession(); } };
 }
 
@@ -165,7 +182,25 @@ export function deactivate(): void {}
 
 const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
 const asVscodeRange = (range: { start: { line: number; character: number }; end: { line: number; character: number } }): vscode.Range => new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
-const navigationContext = (stop: WalkthroughStop): string => `codealongai.walkthrough${stop.backId === undefined ? '' : '.back'}${stop.recommendedNextId === undefined ? '' : '.next'}`;
+const navigationContext = (stop: WalkthroughStop): string => `codealongai.walkthrough.destinations${stop.backId === undefined ? '' : '.back'}${stop.recommendedNextId === undefined ? '' : '.next'}`;
+
+interface DestinationQuickPickItem extends vscode.QuickPickItem { stopId: string; }
+export function destinationQuickPickItems(session: WalkthroughSession): readonly DestinationQuickPickItem[] {
+  const byId = new Map(session.stops.map((stop) => [stop.id, stop]));
+  return projectDestinations(session).map((row) => {
+    const stop = byId.get(row.stopId)!;
+    const connector = row.depth === 0 ? '' : `${row.ancestorIsLast.map((last) => last ? '   ' : '│  ').join('')}${row.isLast ? '└─ ' : '├─ '}`;
+    const markers = row.rejoinDisplayNames.map((name) => ` ↗ ${name}`).join('');
+    const location = `L${stop.range.start.line + 1}:C${stop.range.start.character + 1}`;
+    return { stopId: stop.id, label: `${stop.id === session.attentionStopId ? '$(location) ' : ''}${connector}${stop.displayName}${markers} ${location}` };
+  });
+}
+
+export function threadLabel(stop: WalkthroughStop, session: WalkthroughSession): string {
+  const matching = session.stops.filter((candidate) => candidate.displayName === stop.displayName && candidate.document === stop.document && JSON.stringify(candidate.range) === JSON.stringify(stop.range));
+  const ordinal = matching.findIndex((candidate) => candidate.id === stop.id) + 1;
+  return `CodeAlongAI · ${stop.displayName}${matching.length > 1 ? ` (${ordinal})` : ''}`;
+}
 
 async function openStopDocument(stop: Pick<WalkthroughStop, 'document' | 'range'>): Promise<vscode.TextDocument> {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -217,8 +252,11 @@ async function captureQuestionSnapshot(session: NonNullable<ReturnType<Walkthrou
   return { stopExcerpts: documents.filter((excerpt): excerpt is Exclude<typeof excerpt, undefined> => excerpt !== undefined), editorState: { visibleEditors, ...(activeVisibleEditorIndex === undefined || activeVisibleEditorIndex < 0 ? {} : { activeVisibleEditorIndex }) } };
 }
 
-function deterministicQuestionOutcome(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): QuestionOutcome {
-  if (session.stops.some((stop) => stop.id === 'pricing-function')) return { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' };
+export function deterministicQuestionOutcome(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): QuestionOutcome {
+  if (session.stops.some((stop) => stop.id === 'initial-value')) return { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' };
+  if (session.stops.some((stop) => stop.id === 'pricing-function')) return { kind: 'generated-walkthrough', answerMarkdown: 'The reducer begins with its initial value.', patch: { addedStops: [
+    { id: 'initial-value', displayName: 'Initial value', explanationMarkdown: 'The reduction starts from its initial value.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 42 } }, destinationIds: [], backId: 'pricing-reducer-revisit' }
+  ], appendedDestinations: [{ sourceStopId: 'pricing-reducer-revisit', destinationIds: ['initial-value'] }], recommendedNextUpdates: [] } };
   return { kind: 'generated-walkthrough', answerMarkdown: 'Follow the value through the subtotal function and its reducer.', patch: { addedStops: [
     { id: 'pricing-function', displayName: 'Definition', explanationMarkdown: 'This defines the subtotal calculation.', path: 'pricing.ts', range: { start: { line: 0, character: 16 }, end: { line: 0, character: 51 } }, destinationIds: ['pricing-reducer'], recommendedNextId: 'pricing-reducer', backId: 'checkout-origin' },
     { id: 'pricing-reducer', displayName: 'Reducer', explanationMarkdown: 'The reducer subtracts each price.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: ['pricing-reducer-revisit'], recommendedNextId: 'pricing-reducer-revisit', backId: 'pricing-function' },

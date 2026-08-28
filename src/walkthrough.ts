@@ -15,6 +15,7 @@ export interface QuestionCommit { requestId: string; sessionId: string; revision
 export interface QuestionReceipt { schemaVersion: 1; status: 'committed'; requestId: string; sessionId: string; revision: number; attentionStopId: string; }
 export type NavigationDirection = 'back' | 'next';
 export interface NavigationCommit { sessionId: string; revision: number; sourceStopId: string; direction: NavigationDirection; }
+export interface DestinationCommit { sessionId: string; revision: number; targetStopId: string; }
 export interface NavigationReceipt { schemaVersion: 1; sessionId: string; revision: number; attentionStopId: string; sourceStopId: string; targetStopId: string; }
 export interface WalkthroughSession { readonly id: string; readonly revision: number; readonly origin: OriginDescriptor; readonly attentionStopId: string; readonly stops: readonly WalkthroughStop[]; }
 let nextId = 1;
@@ -60,6 +61,14 @@ export class WalkthroughAuthority {
     this.session = { ...session, revision: session.revision + 1, attentionStopId: target.id };
     return { schemaVersion: 1, sessionId: session.id, revision: this.session.revision, attentionStopId: target.id, sourceStopId: commit.sourceStopId, targetStopId: target.id };
   }
+  public navigateDestination(commit: DestinationCommit): NavigationReceipt {
+    const session = this.session;
+    if (!session || session.id !== commit.sessionId || session.revision !== commit.revision) throw new Error('walkthrough navigation is unavailable or stale');
+    const target = session.stops.find((stop) => stop.id === commit.targetStopId);
+    if (!target) throw new Error('walkthrough destination is unavailable');
+    this.session = { ...session, revision: session.revision + 1, attentionStopId: target.id };
+    return { schemaVersion: 1, sessionId: session.id, revision: this.session.revision, attentionStopId: target.id, sourceStopId: session.attentionStopId, targetStopId: target.id };
+  }
   public discardStart(): void { if (this.startRequest?.status === 'pending') this.startRequest.status = 'cancelled'; }
 }
 function applyPatch(stops: WalkthroughStop[], patch: GraphPatch): void { const ids = new Set(stops.map((stop) => stop.id)); if (!patch.addedStops.length && !patch.appendedDestinations.length && !patch.recommendedNextUpdates.length) throw new Error('graph patch has no append'); for (const added of patch.addedStops) { if (ids.has(added.id)) throw new Error('graph patch rewrites an existing stop'); ids.add(added.id); stops.push({ id: added.id, stopId: added.id, displayName: added.displayName, explanation: added.explanationMarkdown, document: added.path, range: copyRange(added.range), destinationIds: [...added.destinationIds], ...(added.recommendedNextId === undefined ? {} : { recommendedNextId: added.recommendedNextId }), ...(added.backId === undefined ? {} : { backId: added.backId }), conversation: [] }); } for (const append of patch.appendedDestinations) { const source = stops.find((stop) => stop.id === append.sourceStopId); if (!source || append.destinationIds.some((id) => source.destinationIds.includes(id) || !ids.has(id))) throw new Error('graph patch has invalid destination append'); source.destinationIds.push(...append.destinationIds); } for (const update of patch.recommendedNextUpdates) { const source = stops.find((stop) => stop.id === update.sourceStopId); if (!source || source.recommendedNextId !== undefined || !source.destinationIds.includes(update.targetStopId)) throw new Error('graph patch rewrites recommended next'); source.recommendedNextId = update.targetStopId; } }
@@ -67,3 +76,37 @@ function reachable(stops: readonly WalkthroughStop[], startId: string): Set<stri
 function validateOffer(stops: readonly WalkthroughStop[], sourceId: string, ids: readonly string[]): void { if (!ids.length || new Set(ids).size !== ids.length || ids.includes(sourceId) || ids.some((id) => !reachable(stops, sourceId).has(id))) throw new Error('destination offer is invalid'); }
 function validateGraph(stops: readonly WalkthroughStop[], originId: string): void { const ids = new Set(stops.map((stop) => stop.id)); if (ids.size !== stops.length || !ids.has(originId)) throw new Error('graph has duplicate or missing stops'); for (const stop of stops) if (new Set(stop.destinationIds).size !== stop.destinationIds.length || stop.destinationIds.some((id) => !ids.has(id)) || (stop.recommendedNextId !== undefined && !stop.destinationIds.includes(stop.recommendedNextId)) || (stop.backId !== undefined && !ids.has(stop.backId))) throw new Error('graph has unresolved references'); if (reachable(stops, originId).size !== stops.length) throw new Error('graph has disconnected stops'); }
 export function sameAnchor(left: OriginAnchor, right: OriginAnchor): boolean { return left.document === right.document && JSON.stringify(left.range) === JSON.stringify(right.range); }
+
+/** A presentation-independent, recommended-first spanning tree of the known graph. */
+export interface DestinationRow { stopId: string; depth: number; isLast: boolean; ancestorIsLast: readonly boolean[]; rejoinDisplayNames: readonly string[]; }
+export function projectDestinations(session: WalkthroughSession): readonly DestinationRow[] {
+  const byId = new Map(session.stops.map((stop) => [stop.id, stop]));
+  const rows: { stopId: string; parentStopId?: string; depth: number; isLast: boolean; ancestorIsLast: boolean[]; rejoinDisplayNames: string[] }[] = [];
+  const emitted = new Set<string>();
+  const visit = (stopId: string, parentStopId: string | undefined, depth: number): void => {
+    if (emitted.has(stopId)) return;
+    const stop = byId.get(stopId);
+    if (!stop) return;
+    emitted.add(stopId);
+    const row: (typeof rows)[number] = { stopId, parentStopId, depth, isLast: true, ancestorIsLast: [], rejoinDisplayNames: [] };
+    rows.push(row);
+    const children = stop.recommendedNextId === undefined ? [...stop.destinationIds] : [stop.recommendedNextId, ...stop.destinationIds.filter((id) => id !== stop.recommendedNextId)];
+    for (const childId of children) {
+      const child = byId.get(childId);
+      if (!child) continue;
+      if (emitted.has(childId)) { row.rejoinDisplayNames.push(child.displayName); continue; }
+      visit(childId, stopId, depth + 1);
+    }
+  };
+  visit(session.origin.stopId, undefined, 0);
+  const byParent = new Map<string | undefined, Array<(typeof rows)[number]>>();
+  for (const row of rows) { const siblings = byParent.get(row.parentStopId) ?? []; siblings.push(row); byParent.set(row.parentStopId, siblings); }
+  for (const siblings of byParent.values()) siblings.forEach((row, index) => { row.isLast = index === siblings.length - 1; });
+  const byStopId = new Map(rows.map((row) => [row.stopId, row]));
+  for (const row of rows) {
+    const ancestors: boolean[] = [];
+    for (let parent = row.parentStopId === undefined ? undefined : byStopId.get(row.parentStopId); parent; parent = parent.parentStopId === undefined ? undefined : byStopId.get(parent.parentStopId)) ancestors.unshift(parent.isLast);
+    row.ancestorIsLast = ancestors;
+  }
+  return rows.map(({ parentStopId: _parentStopId, ...row }) => row);
+}

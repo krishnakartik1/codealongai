@@ -89,12 +89,17 @@ export class LoopbackMcpEndpoint {
       } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     });
     server.registerTool('codealongai_navigate_walkthrough', {
-      description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next graph edge.',
-      inputSchema: z.object({ schemaVersion, expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), sourceStopId: z.string().min(1), direction: z.enum(['back', 'next']) }).strict(),
+      description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next edge, or directly to one known stop.',
+      inputSchema: z.union([
+        z.object({ schemaVersion, expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), sourceStopId: z.string().min(1), direction: z.enum(['back', 'next']) }).strict(),
+        z.object({ schemaVersion, expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), targetStopId: z.string().min(1) }).strict()
+      ]),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
-    }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection }) => {
+    }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection } | { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; targetStopId: string }) => {
       try {
-        const receipt = this.authority.navigate({ sessionId: input.expectedSessionId, revision: input.expectedRevision, sourceStopId: input.sourceStopId, direction: input.direction });
+        const receipt = 'targetStopId' in input
+          ? this.authority.navigateDestination({ sessionId: input.expectedSessionId, revision: input.expectedRevision, targetStopId: input.targetStopId })
+          : this.authority.navigate({ sessionId: input.expectedSessionId, revision: input.expectedRevision, sourceStopId: input.sourceStopId, direction: input.direction });
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     }); return server; };

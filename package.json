@@ -37,6 +37,10 @@
       {
         "command": "codealongai.walkthrough.next",
         "title": "CodeAlongAI: Next"
+      },
+      {
+        "command": "codealongai.walkthrough.destinations",
+        "title": "CodeAlongAI: Destinations"
       }
     ],
     "menus": {
@@ -51,6 +55,10 @@
         },
         {
           "command": "codealongai.walkthrough.next",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.destinations",
           "when": "false"
         }
       ],
@@ -70,6 +78,11 @@
           "command": "codealongai.walkthrough.next",
           "when": "commentThreadContext =~ /codealongai\\.walkthrough\\.next/",
           "group": "navigation@2"
+        },
+        {
+          "command": "codealongai.walkthrough.destinations",
+          "when": "commentThreadContext =~ /codealongai\\.walkthrough\\.destinations/",
+          "group": "navigation@3"
         }
       ]
     },

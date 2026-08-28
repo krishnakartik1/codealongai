@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { deriveOrigin, WalkthroughAuthority, type QuestionOutcome } from '../walkthrough';
+import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
+import { destinationQuickPickItems, deterministicQuestionOutcome, threadLabel } from '../extension';
 
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
@@ -245,6 +246,16 @@ suite('walkthrough navigation', () => {
     assert.equal(receipt.attentionStopId, 'origin');
   });
 
+  test('navigates directly to every known destination without inferring a graph edge', () => {
+    const authority = startedAuthority();
+    for (const targetStopId of ['origin', 'same-file', 'other-file']) {
+      const session = authority.getSession()!;
+      const receipt = authority.navigateDestination({ sessionId: session.id, revision: session.revision, targetStopId });
+      assert.equal(receipt.targetStopId, targetStopId);
+      assert.equal(authority.getSession()!.attentionStopId, targetStopId);
+    }
+  });
+
   test('rejects terminal and stale navigation without changing the session', () => {
     const authority = startedAuthority();
     const session = authority.getSession()!;
@@ -267,6 +278,50 @@ suite('walkthrough navigation', () => {
       const conflict = await client.callTool({ name: 'codealongai_navigate_walkthrough', arguments: { schemaVersion: 1, expectedSessionId: session.id, expectedRevision: session.revision, sourceStopId: 'origin', direction: 'next' } });
       assert.equal(conflict.isError, true);
       assert.equal(authority.getSession()!.revision, session.revision + 1);
+      const direct = await client.callTool({ name: 'codealongai_navigate_walkthrough', arguments: { schemaVersion: 1, expectedSessionId: authority.getSession()!.id, expectedRevision: authority.getSession()!.revision, targetStopId: 'other-file' } });
+      assert.deepEqual(direct.structuredContent, { schemaVersion: 1, sessionId: session.id, revision: session.revision + 2, attentionStopId: 'other-file', sourceStopId: 'same-file', targetStopId: 'other-file' });
+      const malformed = await client.callTool({ name: 'codealongai_navigate_walkthrough', arguments: { schemaVersion: 1, expectedSessionId: session.id, expectedRevision: session.revision + 2, targetStopId: 'other-file', direction: 'next' } });
+      assert.equal(malformed.isError, true);
     } finally { await transport.close(); await endpoint.stop(); }
+  });
+});
+
+suite('walkthrough destination projection', () => {
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } };
+  test('emits a recommended-first spanning tree, keeps same-range identities, and marks rejoins on their source', () => {
+    const session: WalkthroughSession = { id: 'walkthrough', revision: 1, attentionStopId: 'again', origin: { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'a.ts', range }, stops: [
+      { id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'a.ts', range, destinationIds: ['alternative', 'recommended'], recommendedNextId: 'recommended', conversation: [] },
+      { id: 'recommended', stopId: 'recommended', displayName: 'Reducer', explanation: '', document: 'a.ts', range, destinationIds: ['again'], conversation: [] },
+      { id: 'again', stopId: 'again', displayName: 'Reducer', explanation: '', document: 'a.ts', range, destinationIds: [], conversation: [] },
+      { id: 'alternative', stopId: 'alternative', displayName: 'Alternative', explanation: '', document: 'b.ts', range, destinationIds: ['again'], conversation: [] }
+    ] };
+    assert.deepEqual(projectDestinations(session), [
+      { stopId: 'origin', depth: 0, isLast: true, ancestorIsLast: [], rejoinDisplayNames: [] },
+      { stopId: 'recommended', depth: 1, isLast: false, ancestorIsLast: [true], rejoinDisplayNames: [] },
+      { stopId: 'again', depth: 2, isLast: true, ancestorIsLast: [true, false], rejoinDisplayNames: [] },
+      { stopId: 'alternative', depth: 1, isLast: true, ancestorIsLast: [true], rejoinDisplayNames: ['Reducer'] }
+    ]);
+  });
+
+  test('renders only graph data and marks only current attention with a location icon', () => {
+    const session: WalkthroughSession = { id: 'walkthrough', revision: 1, attentionStopId: 'second', origin: { stopId: 'origin', displayName: 'Origin', explanation: '', document: 'a.ts', range }, stops: [
+      { id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'a.ts', range, destinationIds: ['second'], recommendedNextId: 'second', conversation: [] },
+      { id: 'second', stopId: 'second', displayName: 'Reducer', explanation: '', document: 'a.ts', range, destinationIds: [], conversation: [] }
+    ] };
+    assert.deepEqual(destinationQuickPickItems(session).map((item) => item.label), ['Origin L1:C1', '$(location)    └─ Reducer L1:C1']);
+  });
+
+  test('assigns stable ordinals to same-range thread identities and adds Initial value without moving attention', () => {
+    const session: WalkthroughSession = { id: 'walkthrough', revision: 4, attentionStopId: 'pricing-reducer', origin: { stopId: 'origin', displayName: 'Origin', explanation: '', document: 'checkout.ts', range }, stops: [
+      { id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'checkout.ts', range, destinationIds: ['pricing-function'], conversation: [] },
+      { id: 'pricing-function', stopId: 'pricing-function', displayName: 'Definition', explanation: '', document: 'pricing.ts', range, destinationIds: ['pricing-reducer'], conversation: [] },
+      { id: 'pricing-reducer', stopId: 'pricing-reducer', displayName: 'Reducer', explanation: '', document: 'pricing.ts', range, destinationIds: ['pricing-reducer-revisit'], recommendedNextId: 'pricing-reducer-revisit', conversation: [] },
+      { id: 'pricing-reducer-revisit', stopId: 'pricing-reducer-revisit', displayName: 'Reducer', explanation: '', document: 'pricing.ts', range, destinationIds: [], conversation: [] }
+    ] };
+    assert.equal(threadLabel(session.stops[2], session), 'CodeAlongAI · Reducer (1)');
+    assert.equal(threadLabel(session.stops[3], session), 'CodeAlongAI · Reducer (2)');
+    assert.deepEqual(deterministicQuestionOutcome(session), { kind: 'generated-walkthrough', answerMarkdown: 'The reducer begins with its initial value.', patch: { addedStops: [
+      { id: 'initial-value', displayName: 'Initial value', explanationMarkdown: 'The reduction starts from its initial value.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 42 } }, destinationIds: [], backId: 'pricing-reducer-revisit' }
+    ], appendedDestinations: [{ sourceStopId: 'pricing-reducer-revisit', destinationIds: ['initial-value'] }], recommendedNextUpdates: [] } });
   });
 });
