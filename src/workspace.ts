@@ -13,7 +13,8 @@ export interface WorkspaceFile {
 
 export interface WorkspaceSource {
   readonly workspaceFolderCount: () => number;
-  readonly files: () => Promise<readonly WorkspaceFile[]>;
+  readonly listFiles: () => Promise<readonly string[]>;
+  readonly readFile: (path: string) => Promise<WorkspaceFile>;
 }
 
 export type WorkspaceErrorCode = 'workspace_unavailable' | 'path_invalid' | 'path_outside_workspace' | 'file_unsupported' | 'file_too_large';
@@ -39,14 +40,16 @@ export class WorkspaceReader {
   public constructor(private readonly source: WorkspaceSource) {}
 
   public async list(): Promise<string[]> {
-    return (await this.availableFiles()).map((file) => file.path).sort(utf16Compare);
+    this.requireWorkspace();
+    return (await this.source.listFiles()).map(normalizeWorkspacePath).sort(utf16Compare);
   }
 
-  public async read(candidate: string, startLine?: number, endLine?: number): Promise<{ path: string; startLine: number; endLine: number; text: string; dirty: boolean; documentVersion?: number }> {
+  public async read(request: { path: string; startLine?: number; endLine?: number }): Promise<{ path: string; startLine: number; endLine: number; text: string; dirty: boolean; documentVersion?: number }> {
+    const { path: candidate, startLine, endLine } = request;
     if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('path_invalid');
     const requested = normalizeWorkspacePath(candidate);
-    const file = (await this.availableFiles()).find((item) => item.path === requested);
-    if (!file) throw new WorkspaceError('file_unsupported');
+    this.requireWorkspace();
+    const file = this.classify(await this.source.readFile(requested));
     if (file.failure) throw new WorkspaceError(file.failure);
     const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
@@ -55,31 +58,39 @@ export class WorkspaceReader {
     return { path: file.path, startLine: actualStart, endLine: actualEnd, text: lines.slice(actualStart, actualEnd).join('\n'), dirty: file.dirty, ...(file.documentVersion === undefined ? {} : { documentVersion: file.documentVersion }) };
   }
 
-  public async search(query: string): Promise<WorkspaceMatch[]> {
+  public async search(query: string, after?: string): Promise<WorkspaceMatch[]> {
     if (!query) throw new WorkspaceError('path_invalid');
     const matches: WorkspaceMatch[] = [];
-    for (const file of await this.availableFiles()) {
+    for (const filePath of await this.list()) {
+      const file = this.classify(await this.source.readFile(filePath));
       if (file.failure) continue;
       const lines = file.text!.split(/\r\n|\n|\r/);
       for (let line = 0; line < lines.length; line += 1) {
         let character = lines[line].indexOf(query);
         while (character !== -1) {
-          matches.push({ path: file.path, range: { start: { line, character }, end: { line, character: character + query.length } }, preview: preview(lines[line], character, query.length) });
+          const match = { path: file.path, range: { start: { line, character }, end: { line, character: character + query.length } }, preview: preview(lines[line], character, query.length) };
+          const key = `${match.path}\u0000${line}\u0000${character}\u0000${line}\u0000${character + query.length}`;
+          if (after === undefined || key > after) matches.push(match);
+          if (matches.length > workspaceResultLimit) return matches;
           character = lines[line].indexOf(query, character + Math.max(query.length, 1));
         }
       }
     }
-    return matches.sort((left, right) => utf16Compare(left.path, right.path) || left.range.start.line - right.range.start.line || left.range.start.character - right.range.start.character || left.range.end.line - right.range.end.line || left.range.end.character - right.range.end.character);
+    return matches;
   }
 
-  private async availableFiles(): Promise<WorkspaceFile[]> {
+  private requireWorkspace(): void {
     if (this.source.workspaceFolderCount() !== 1) throw new WorkspaceError('workspace_unavailable');
-    return (await this.source.files()).map((file) => ({ ...file, path: normalizeWorkspacePath(file.path) })).map((file) => {
-      if (file.failure) return file;
-      if (file.text!.includes('\0')) return { ...file, failure: 'file_unsupported' as const };
-      if (Buffer.byteLength(file.text!, 'utf8') > maxFileBytes) return { ...file, failure: 'file_too_large' as const };
-      return file;
-    });
+  }
+
+  private classify(file: WorkspaceFile): WorkspaceFile {
+    const normalized = { ...file, path: normalizeWorkspacePath(file.path) };
+    return (() => {
+      if (normalized.failure) return normalized;
+      if (normalized.text!.includes('\0')) return { ...normalized, failure: 'file_unsupported' as const };
+      if (Buffer.byteLength(normalized.text!, 'utf8') > maxFileBytes) return { ...normalized, failure: 'file_too_large' as const };
+      return normalized;
+    })();
   }
 }
 

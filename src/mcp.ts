@@ -9,7 +9,7 @@ import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspa
 const schemaVersion = z.literal(1);
 const pathInput = z.object({ schemaVersion, path: z.string().min(1), startLine: z.number().int().nonnegative().optional(), endLine: z.number().int().nonnegative().optional() }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
-const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, files: async () => [] };
+const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
@@ -34,7 +34,8 @@ export class LoopbackMcpEndpoint {
     }, async (input: { schemaVersion: 1; requestId: string }) => {
       const request = this.authority.getStartRequest(input.requestId);
       if (!request) return this.domainError('request_not_found', 'The requested walkthrough request is unavailable.', false);
-      const result = { schemaVersion: 1, requestId: request.id, status: request.status === 'consumed' ? 'committed' : request.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: request.snapshot.capturedAt, kind: 'start', authorizedAction: 'start', input: { origin: { path: request.origin.document, range: request.origin.range } }, snapshot: await this.walkthroughSnapshot() };
+      const snapshot = { schemaVersion: 1, capturedAt: request.snapshot.capturedAt, status: 'inactive', positionEncoding: 'utf-16', origin: { path: request.snapshot.origin.document, range: request.snapshot.origin.range } };
+      const result = { schemaVersion: 1, requestId: request.id, status: request.status === 'consumed' ? 'committed' : request.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: request.snapshot.capturedAt, kind: 'start', authorizedAction: 'start', input: { origin: { path: request.origin.document, range: request.origin.range } }, snapshot };
       return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
     });
     server.registerTool('codealongai_list_workspace_files', {
@@ -45,11 +46,12 @@ export class LoopbackMcpEndpoint {
     }));
     server.registerTool('codealongai_read_workspace_file', {
       description: 'Read bounded text from one workspace file.', inputSchema: pathInput, annotations: readAnnotations
-    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input.path, input.startLine, input.endLine)));
+    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input)));
     server.registerTool('codealongai_search_workspace', {
-      description: 'Search workspace text literally and case-sensitively.', inputSchema: z.object({ schemaVersion, query: z.string().min(1), cursor: z.string().optional() }).strict(), annotations: readAnnotations
+      description: 'Search workspace text literally and case-sensitively.', inputSchema: z.object({ schemaVersion, query: z.string().min(1).refine((value) => !/[\r\n]/.test(value), 'query must be single-line'), cursor: z.string().optional() }).strict(), annotations: readAnnotations
     }, async (input: { schemaVersion: 1; query: string; cursor?: string }) => this.workspaceResult(async () => {
-      const matches = await this.workspace.search(input.query);
+      const after = decodeCursor(input.cursor, 'search', input.query);
+      const matches = await this.workspace.search(input.query, after);
       return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`);
     }));
     server.registerTool('codealongai_start_walkthrough', {
@@ -111,7 +113,7 @@ export class LoopbackMcpEndpoint {
     if (!session) return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'inactive' };
     let stopExcerpts: object[] = [];
     try {
-      const excerpt = await this.workspace.read(session.origin.document, session.origin.range.start.line, session.origin.range.end.line + 1);
+      const excerpt = await this.workspace.read({ path: session.origin.document, startLine: session.origin.range.start.line, endLine: session.origin.range.end.line + 1 });
       stopExcerpts = [{ stopId: session.origin.stopId, path: excerpt.path, range: session.origin.range, text: excerpt.text, ...(excerpt.documentVersion === undefined ? {} : { documentVersion: excerpt.documentVersion }) }];
     } catch { /* A snapshot never widens the workspace boundary when an origin file is no longer readable. */ }
     return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'active', positionEncoding: 'utf-16', sessionId: session.id, revision: session.revision, humanOriginStopId: session.origin.stopId, attentionStopId: session.attentionStopId, stops: [{ id: session.origin.stopId, displayName: session.origin.displayName, explanation: session.origin.explanation, path: session.origin.document, range: session.origin.range, destinations: [], conversation: [] }], stopExcerpts, editorState: { visibleEditors: [] } };
@@ -119,19 +121,21 @@ export class LoopbackMcpEndpoint {
 }
 
 function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item)): { paths?: T[]; matches?: T[]; nextCursor?: string } {
-  let after: string | undefined;
-  if (cursor) {
-    try {
-      const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { tool: string; query: string; after: string };
-      if (decoded.tool !== tool || decoded.query !== query || typeof decoded.after !== 'string') throw new Error('cursor');
-      after = decoded.after;
-    } catch { throw new WorkspaceError('path_invalid'); }
-  }
+  const after = decodeCursor(cursor, tool, query);
   const start = after === undefined ? 0 : items.findIndex((item) => key(item) > after);
   const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + 200);
   const response = tool === 'list' ? { paths: page } : { matches: page };
   if (page.length === 200 && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
   return response;
+}
+
+function decodeCursor(cursor: string | undefined, tool: string, query: string): string | undefined {
+  if (!cursor) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { tool: string; query: string; after: string };
+    if (decoded.tool !== tool || decoded.query !== query || typeof decoded.after !== 'string') throw new Error('cursor');
+    return decoded.after;
+  } catch { throw new WorkspaceError('path_invalid'); }
 }
 
 /** The model-free producer uses the same public transport a future producer will use. */

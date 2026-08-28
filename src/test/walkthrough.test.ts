@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { deriveOrigin, WalkthroughAuthority } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
+import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
+
+const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
 suite('walkthrough start authority', () => {
   test('uses the complete nonblank cursor line when there is no selection', () => {
@@ -49,12 +52,12 @@ suite('walkthrough start authority', () => {
 
 suite('bounded workspace context', () => {
   test('reads an unsaved buffer by normalized relative path and selected lines', async () => {
-    const reader = new WorkspaceReader({ workspaceFolderCount: () => 1, files: async () => [{ path: 'src\\cart.ts', text: 'first\nsecond\nthird', dirty: true, documentVersion: 7 }] });
-    assert.deepEqual(await reader.read('src/cart.ts', 1, 3), { path: 'src/cart.ts', startLine: 1, endLine: 3, text: 'second\nthird', dirty: true, documentVersion: 7 });
+    const reader = new WorkspaceReader(memorySource([{ path: 'src\\cart.ts', text: 'first\nsecond\nthird', dirty: true, documentVersion: 7 }]));
+    assert.deepEqual(await reader.read({ path: 'src/cart.ts', startLine: 1, endLine: 3 }), { path: 'src/cart.ts', startLine: 1, endLine: 3, text: 'second\nthird', dirty: true, documentVersion: 7 });
   });
 
   test('uses UTF-16 ordering and literal case-sensitive search previews', async () => {
-    const reader = new WorkspaceReader({ workspaceFolderCount: () => 1, files: async () => [{ path: 'z.ts', text: 'needle', dirty: false }, { path: 'A.ts', text: `${'x'.repeat(100)}needle${'y'.repeat(120)}`, dirty: false }] });
+    const reader = new WorkspaceReader(memorySource([{ path: 'z.ts', text: 'needle', dirty: false }, { path: 'A.ts', text: `${'x'.repeat(100)}needle${'y'.repeat(120)}`, dirty: false }]));
     assert.deepEqual(await reader.list(), ['A.ts', 'z.ts']);
     const [match] = await reader.search('needle');
     assert.equal(match.path, 'A.ts');
@@ -65,16 +68,16 @@ suite('bounded workspace context', () => {
   });
 
   test('does not disclose files when the workspace is unavailable or a path traverses it', async () => {
-    const reader = new WorkspaceReader({ workspaceFolderCount: () => 0, files: async () => [{ path: 'secret.ts', text: 'secret', dirty: false }] });
+    const reader = new WorkspaceReader(memorySource([{ path: 'secret.ts', text: 'secret', dirty: false }], 0));
     await assert.rejects(() => reader.list(), { code: 'workspace_unavailable' });
-    const available = new WorkspaceReader({ workspaceFolderCount: () => 1, files: async () => [{ path: 'safe.ts', text: 'safe', dirty: false }] });
-    await assert.rejects(() => available.read('../secret.ts'), { code: 'path_outside_workspace' });
+    const available = new WorkspaceReader(memorySource([{ path: 'safe.ts', text: 'safe', dirty: false }]));
+    await assert.rejects(() => available.read({ path: '../secret.ts' }), { code: 'path_outside_workspace' });
   });
 });
 
 suite('workspace context over loopback MCP', () => {
   test('exposes only normalized unsaved workspace text through the public tools', async () => {
-    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), { workspaceFolderCount: () => 1, files: async () => [{ path: 'src\\draft.ts', text: 'const draft = true;\n', dirty: true, documentVersion: 3 }] });
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), memorySource([{ path: 'src\\draft.ts', text: 'const draft = true;\n', dirty: true, documentVersion: 3 }]));
     await endpoint.start(0);
     const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
     const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
