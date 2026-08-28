@@ -7,6 +7,7 @@
     "outDir": "out",
     "strict": true,
     "sourceMap": true,
+    "skipLibCheck": true,
     "types": [
       "mocha",
       "node"
