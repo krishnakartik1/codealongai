@@ -67,6 +67,23 @@ suite('MCP lifecycle', () => {
     assert.equal(lifecycle.state, 'ready');
     assert.deepEqual(calls, ['start:4100', 'start:4200']);
   });
+
+  test('ignores a bind failure superseded by a newer saved port', async () => {
+    let rejectStart: ((error: Error) => void) | undefined;
+    const lifecycle = new McpLifecycle(async (port) => ({
+      start: async () => {
+        if (port === 4100) await new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+      },
+      stop: async () => undefined
+    }));
+    const first = lifecycle.configure({ enabled: true, port: 4100 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const replacement = lifecycle.configure({ enabled: true, port: 4200 });
+    rejectStart!(new Error('in use'));
+    await Promise.all([first, replacement]);
+    assert.equal(lifecycle.state, 'ready');
+    assert.equal(lifecycle.port, 4200);
+  });
 });
 
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });

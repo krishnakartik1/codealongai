@@ -16,6 +16,7 @@ export class McpLifecycle {
   private current: McpListener | undefined;
   private currentPort: number | undefined;
   private desired: McpConfiguration = { enabled: false, port: 61337 };
+  private desiredRevision = 0;
   private running: Promise<void> = Promise.resolve();
   private _state: McpLifecycleState = 'off';
 
@@ -29,6 +30,9 @@ export class McpLifecycle {
       return Promise.reject(new RangeError('CodeAlongAI MCP port must be an integer from 1024 through 65535.'));
     }
     this.desired = { ...configuration };
+    this.desiredRevision++;
+    if (this.current && (!configuration.enabled || this.currentPort !== configuration.port)) this._state = 'stopping';
+    else if (!this.current && configuration.enabled) this._state = 'starting';
     // Keep the queue usable after a bind failure; this call still receives the
     // error from its own reconciliation.
     this.running = this.running.catch(() => undefined).then(() => this.reconcile());
@@ -37,6 +41,8 @@ export class McpLifecycle {
 
   public async dispose(): Promise<void> {
     this.desired = { ...this.desired, enabled: false };
+    this.desiredRevision++;
+    if (this.current) this._state = 'stopping';
     this.running = this.running.catch(() => undefined).then(() => this.reconcile());
     await this.running;
   }
@@ -55,12 +61,16 @@ export class McpLifecycle {
         continue;
       }
       const port = this.desired.port;
+      const revision = this.desiredRevision;
       this._state = 'starting';
       const listener = await this.createListener(port);
       try {
         await listener.start();
       } catch (error) {
         this._state = 'off';
+        // A newer saved configuration supersedes this failed attempt; do not
+        // make an obsolete bind result turn off its replacement.
+        if (revision !== this.desiredRevision) continue;
         throw error;
       }
       // Do not report a transient ready state when disable/port-change arrived

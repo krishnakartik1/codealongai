@@ -25,6 +25,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     };
   });
   let endpointState: McpLifecycleState = 'off';
+  const mcpReady = (): boolean => lifecycle.state === 'ready';
   const threads = new Map<string, vscode.CommentThread>();
   const threadStopIds = new Map<vscode.CommentThread, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
@@ -65,7 +66,10 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const enabled = config.get<boolean>('enabled', false);
     const port = config.get<number>('port', 61337);
     try {
-      await lifecycle.configure({ enabled, port });
+      const configured = lifecycle.configure({ enabled, port });
+      endpointState = lifecycle.state;
+      void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false);
+      await configured;
       endpointState = lifecycle.state;
       void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', endpointState === 'ready');
       output.info(`MCP lifecycle is ${endpointState}; configured port ${port}.`);
@@ -74,14 +78,14 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false);
       const message = error instanceof RangeError ? error.message : 'CodeAlongAI could not start MCP. Check that the configured loopback port is available.';
       output.error(`MCP lifecycle error (${error instanceof RangeError ? 'invalid_port' : 'bind_failed'}): ${String(error)}`);
-      if (!(error instanceof RangeError)) await config.update('enabled', false, vscode.ConfigurationTarget.Workspace);
+      if (!(error instanceof RangeError) && config.get<boolean>('enabled', false) === enabled && config.get<number>('port', 61337) === port) await config.update('enabled', false, vscode.ConfigurationTarget.Workspace);
       void vscode.window.showErrorMessage(message);
     }
   };
   void updateEndpoint();
   const disposeThreads = (): void => { for (const thread of threads.values()) thread.dispose(); threads.clear(); threadStopIds.clear(); };
   const showReplacementFailure = (requestId: string): void => {
-    const unavailable = endpointState !== 'ready';
+    const unavailable = !mcpReady();
     void vscode.window.showErrorMessage('CodeAlongAI could not replace the walkthrough. Your current walkthrough is unchanged.', unavailable ? 'Enable MCP' : 'Retry replacement', 'Keep current walkthrough').then((action) => {
       if (action === 'Enable MCP') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.mcp.enabled');
       if (action === 'Retry replacement') void retryReplacement?.();
@@ -114,10 +118,10 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const replacement = authority.getPendingReplacement();
     const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
-    if (!current && endpointState !== 'ready') { showStartUnavailable(request.id); return undefined; }
+    if (!current && !mcpReady()) { showStartUnavailable(request.id); return undefined; }
     try {
       if (current) {
-        if (endpointState !== 'ready') throw new Error('the MCP endpoint is disabled');
+        if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
         await commitDeterministicReplacement(activePort!, request.id, current.id, current.revision, descriptor);
       } else await commitDeterministicOrigin(vscode.workspace.getConfiguration('codealongai.mcp').get<number>('port', 61337), request.id, descriptor);
       const session = authority.getSession();
@@ -132,7 +136,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       if (current) {
         retryReplacement = async () => {
           try {
-            if (endpointState !== 'ready') throw new Error('the MCP endpoint is disabled');
+            if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
             await commitDeterministicReplacement(activePort!, request.id, current.id, current.revision, descriptor);
             const session = authority.getSession();
             if (!session) throw new Error('the producer did not create a walkthrough');
@@ -169,7 +173,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const session = authority.getSession();
     if (!session) return;
     const pending = authority.getPendingQuestion() ?? retryQuestionRequest;
-    if (endpointState !== 'ready') {
+    if (!mcpReady()) {
       if (pending) void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint to finish the pending question.', 'Enable MCP', 'Discard question').then((action) => {
         if (action === 'Enable MCP') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.mcp.enabled');
         if (action === 'Discard question') discardQuestion(pending.id);
@@ -247,7 +251,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     if (selected) await navigateDestination(selected.stopId);
   });
   context.subscriptions.push(askWalkthroughCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
-    if (endpointState !== 'ready') return;
+    if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();
     if (replacement) showReplacementFailure(replacement.id);
     const start = authority.getPendingStart();
@@ -255,7 +259,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const question = authority.getPendingQuestion();
     if (question) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry question').then((action) => { if (action === 'Retry question') void retryQuestion?.(); });
   }); }), { dispose: () => { disposeThreads(); void lifecycle.dispose(); } });
-  return { get endpointState() { return endpointState; }, get session() { return authority.getSession(); } };
+  return { get endpointState() { return lifecycle.state; }, get session() { return authority.getSession(); } };
 }
 
 export function deactivate(): void {}
