@@ -79,12 +79,6 @@ export class WorkspaceReader {
   }
 }
 
-export function pageAfter<T>(items: readonly T[], cursor: string | undefined, key: (item: T) => string): { items: T[]; nextCursor?: string } {
-  const start = cursor === undefined ? 0 : items.findIndex((item) => key(item) > cursor);
-  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + workspaceResultLimit);
-  return { items: page, ...(page.length === workspaceResultLimit && page.length < items.length - (start < 0 ? items.length : start) ? { nextCursor: key(page[page.length - 1]) } : {}) };
-}
-
 const utf16Compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
 
 function preview(line: string, start: number, length: number): string {

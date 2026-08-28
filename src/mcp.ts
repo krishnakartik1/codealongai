@@ -24,7 +24,10 @@ export class LoopbackMcpEndpoint {
     const server = new McpServer({ name: 'CodeAlongAI', version: '0.0.1' });
     server.registerTool('codealongai_get_walkthrough', {
       description: 'Read the current walkthrough snapshot.', annotations: readAnnotations
-    }, () => ({ structuredContent: this.walkthroughSnapshot(), content: [{ type: 'text', text: JSON.stringify(this.walkthroughSnapshot()) }] }));
+    }, () => {
+      const snapshot = this.walkthroughSnapshot();
+      return { structuredContent: snapshot, content: [{ type: 'text', text: JSON.stringify(snapshot) }] };
+    });
     server.registerTool('codealongai_get_walkthrough_request', {
       description: 'Read one immutable human-authorized walkthrough request.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1) }).strict(), annotations: readAnnotations
