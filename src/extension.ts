@@ -22,6 +22,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   let retryStart: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
   let retryQuestionRequest: QuestionRequest | undefined;
+  let navigationInProgress = false;
   const threadFor = (stop: WalkthroughStop, document: vscode.TextDocument): vscode.CommentThread => {
     const existing = threads.get(stop.id);
     if (existing) return existing;
@@ -137,7 +138,10 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const target = authority.navigationTarget(sourceStopId, direction);
     if (!target) { void vscode.window.showErrorMessage(`CodeAlongAI ${direction} is unavailable for this walkthrough stop.`); return; }
     const tabsBefore = visibleTextTabLocations();
-    const threadsBefore = new Map([...threads].map(([stopId, item]) => [stopId, item.collapsibleState]));
+    if (navigationInProgress) { void vscode.window.showErrorMessage('CodeAlongAI navigation is already in progress.'); return; }
+    navigationInProgress = true;
+    const threadsBefore = new Map([...threads].map(([stopId, currentThread]) => [stopId, currentThread.collapsibleState]));
+    const editorRangesBefore = visibleTextEditorRanges();
     try {
       const document = await openStopDocument(target);
       await showStopDocument(document, target, session.origin);
@@ -145,9 +149,11 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       refreshThreads(session, target.id);
       authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId, direction });
     } catch {
-      await restorePreparedNavigation(tabsBefore, threads, threadsBefore);
+      await restorePreparedNavigation(tabsBefore, editorRangesBefore, threads, threadsBefore);
+      const current = authority.getSession();
+      if (current) refreshThreads(current, current.attentionStopId);
       void vscode.window.showErrorMessage('CodeAlongAI could not navigate to that walkthrough stop.');
-    }
+    } finally { navigationInProgress = false; }
   };
   const backCommand = vscode.commands.registerCommand('codealongai.walkthrough.back', (thread?: vscode.CommentThread) => navigate('back', thread));
   const nextCommand = vscode.commands.registerCommand('codealongai.walkthrough.next', (thread?: vscode.CommentThread) => navigate('next', thread));
@@ -186,7 +192,11 @@ function visibleTextTabLocations(): Set<string> {
   return new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs).flatMap((tab) => tab.input instanceof vscode.TabInputText ? [`${tab.input.uri.toString()}\u0000${tab.group.viewColumn}`] : []));
 }
 
-async function restorePreparedNavigation(tabsBefore: ReadonlySet<string>, threads: Map<string, vscode.CommentThread>, threadsBefore: ReadonlyMap<string, vscode.CommentThreadCollapsibleState>): Promise<void> {
+function visibleTextEditorRanges(): readonly { uri: string; viewColumn: vscode.ViewColumn | undefined; range: vscode.Range }[] {
+  return vscode.window.visibleTextEditors.map((editor) => ({ uri: editor.document.uri.toString(), viewColumn: editor.viewColumn, range: editor.visibleRanges[0] ?? editor.document.lineAt(0).range }));
+}
+
+async function restorePreparedNavigation(tabsBefore: ReadonlySet<string>, editorRangesBefore: readonly { uri: string; viewColumn: vscode.ViewColumn | undefined; range: vscode.Range }[], threads: Map<string, vscode.CommentThread>, threadsBefore: ReadonlyMap<string, vscode.CommentThreadCollapsibleState>): Promise<void> {
   for (const [stopId, thread] of threads) {
     const previous = threadsBefore.get(stopId);
     if (previous === undefined) { thread.dispose(); threads.delete(stopId); }
@@ -194,6 +204,7 @@ async function restorePreparedNavigation(tabsBefore: ReadonlySet<string>, thread
   }
   const addedTabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => tab.input instanceof vscode.TabInputText && !tabsBefore.has(`${tab.input.uri.toString()}\u0000${tab.group.viewColumn}`));
   if (addedTabs.length) await vscode.window.tabGroups.close(addedTabs, true);
+  for (const previous of editorRangesBefore) vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === previous.uri && editor.viewColumn === previous.viewColumn)?.revealRange(previous.range, vscode.TextEditorRevealType.Default);
 }
 
 async function captureQuestionSnapshot(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): Promise<{ stopExcerpts: { stopId: string; path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string; documentVersion?: number }[]; editorState: { visibleEditors: string[]; activeVisibleEditorIndex?: number } }> {
