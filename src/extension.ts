@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { commitDeterministicOrigin, commitDeterministicQuestion, LoopbackMcpEndpoint } from './mcp';
-import { deriveOrigin, type OriginDescriptor, type QuestionOutcome, WalkthroughAuthority } from './walkthrough';
+import { deriveOrigin, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
@@ -18,7 +18,15 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   let endpointState: 'off' | 'ready' = 'off';
   let thread: vscode.CommentThread | undefined;
   const threadStopIds = new Map<vscode.CommentThread, string>();
+  const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
+  let retryQuestion: (() => Promise<void>) | undefined;
+  let retryQuestionRequest: QuestionRequest | undefined;
+  const discardQuestion = (requestId: string): void => {
+    if (authority.getPendingQuestion()?.id === requestId) authority.discardQuestion(requestId);
+    questionOutcomes.delete(requestId);
+    if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
+  };
   const updateEndpoint = async (): Promise<void> => {
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
     const enabled = config.get<boolean>('enabled', false);
@@ -45,6 +53,8 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       await commitDeterministicOrigin(vscode.workspace.getConfiguration('codealongai.mcp').get<number>('port', 61337), request.id, descriptor);
       const session = authority.getSession();
       if (!session) throw new Error('the producer did not create a walkthrough');
+      const pendingQuestion = authority.getPendingQuestion();
+      if (pendingQuestion) discardQuestion(pendingQuestion.id);
       thread?.dispose();
       thread = controller.createCommentThread(editor.document.uri, new vscode.Range(origin.range.start.line, origin.range.start.character, origin.range.end.line, origin.range.end.character), [{ body: invitation, mode: vscode.CommentMode.Preview, author: { name: 'CodeAlongAI' } }]);
       thread.label = 'CodeAlongAI · Origin';
@@ -66,25 +76,39 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const text = reply.text.trim();
     if (!sourceStopId || !text) return;
     const session = authority.getSession();
-    if (!session || endpointState !== 'ready') return;
-    const pending = authority.getPendingQuestion();
-    if (pending && (pending.sessionId !== session.id || pending.revision !== session.revision || pending.sourceStopId !== sourceStopId || pending.text !== text)) {
+    if (!session) return;
+    const pending = authority.getPendingQuestion() ?? retryQuestionRequest;
+    if (endpointState !== 'ready') {
+      if (pending) void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint to finish the pending question.', 'Enable MCP', 'Discard question').then((action) => {
+        if (action === 'Enable MCP') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.mcp.enabled');
+        if (action === 'Discard question') discardQuestion(pending.id);
+      });
+      return;
+    }
+    if (pending && (pending.sourceStopId !== sourceStopId || pending.text !== text)) {
       void vscode.window.showWarningMessage('Finish or discard the pending CodeAlongAI question before submitting another.', 'Retry question', 'Discard question').then((action) => {
-        if (action === 'Retry question') void vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
-        if (action === 'Discard question') authority.discardQuestion();
+        if (action === 'Retry question') void retryQuestion?.();
+        if (action === 'Discard question') discardQuestion(pending.id);
       });
       return;
     }
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
+    retryQuestionRequest = request;
+    retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
+    const outcome = questionOutcomes.get(request.id) ?? deterministicQuestionOutcome(session);
+    questionOutcomes.set(request.id, outcome);
     try {
-      await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: session.id, revision: session.revision }, deterministicQuestionOutcome(session));
+      const requestStatus = authority.getQuestionRequest(request.id)?.status;
+      await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome);
+      questionOutcomes.delete(request.id);
+      if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
       reply.thread.comments = source.conversation.map((comment) => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } }));
     } catch (error) {
       void vscode.window.showErrorMessage(`CodeAlongAI could not answer the question: ${String(error)}`, 'Retry question', 'Discard question').then((action) => {
-        if (action === 'Retry question') void vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
-        if (action === 'Discard question') authority.discardQuestion();
+        if (action === 'Retry question') void retryQuestion?.();
+        if (action === 'Discard question') discardQuestion(request.id);
       });
     }
   });

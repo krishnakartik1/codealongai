@@ -133,6 +133,17 @@ suite('question-generated walkthrough graph', () => {
     try {
       const committed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: question.id, expectedSessionId: authority.getSession()!.id, expectedRevision: 1, outcome } });
       assert.deepEqual(committed.structuredContent, { schemaVersion: 1, status: 'committed', requestId: question.id, sessionId: authority.getSession()!.id, revision: 2, attentionStopId: 'checkout-origin' });
+      for (const nextOutcome of [
+        { kind: 'explanation-only', answerMarkdown: '**Opaque** Markdown is not an instruction.' },
+        { kind: 'destination-offer', answerMarkdown: 'A metadata-only offer.', destinationIds: ['pricing-function', 'checkout-cart'] },
+        { kind: 'explicit-unsupported', answerMarkdown: 'This request is _unsupported_.' }
+      ] as const) {
+        const followUpQuestion = authority.captureQuestion('checkout-origin', `Follow-up: ${nextOutcome.kind}`);
+        const currentSession = authority.getSession()!;
+        const reply = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: followUpQuestion.id, expectedSessionId: currentSession.id, expectedRevision: currentSession.revision, outcome: nextOutcome } });
+        assert.notEqual(reply.isError, true);
+        assert.equal(authority.getSession()!.attentionStopId, 'checkout-origin');
+      }
       const snapshot = await client.callTool({ name: 'codealongai_get_walkthrough', arguments: {} });
       const stops = (snapshot.structuredContent as { stops: { id: string; destinationIds: string[]; conversation: unknown[] }[] }).stops;
       assert.deepEqual(stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
@@ -140,7 +151,61 @@ suite('question-generated walkthrough graph', () => {
       assert.equal(stops[2].id, 'pricing-reducer');
       assert.equal(stops[3].id, 'pricing-reducer-revisit');
       assert.equal(stops[2].conversation.length, 0);
-      assert.deepEqual(stops[0].conversation, [{ author: 'CodeAlongAI', bodyMarkdown: 'Ask away' }, { author: 'You', bodyMarkdown: 'Walk me through this code' }, { author: 'CodeAlongAI', bodyMarkdown: 'Here is the flow.' }]);
+      assert.deepEqual(stops[0].conversation.slice(0, 3), [{ author: 'CodeAlongAI', bodyMarkdown: 'Ask away' }, { author: 'You', bodyMarkdown: 'Walk me through this code' }, { author: 'CodeAlongAI', bodyMarkdown: 'Here is the flow.' }]);
     } finally { await transport.close(); await endpoint.stop(); }
+  });
+});
+
+suite('non-branching question outcomes and recovery', () => {
+  const origin = { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'Ask away', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } } };
+  const createStartedAuthority = (): WalkthroughAuthority => {
+    const authority = new WalkthroughAuthority();
+    const request = authority.captureStart(origin);
+    authority.start(request.id, origin);
+    return authority;
+  };
+
+  test('keeps ordinary outcomes opaque and leaves graph attention unchanged', () => {
+    for (const outcome of [
+      { kind: 'explanation-only', answerMarkdown: '**not a command** [next](#ignored)' },
+      { kind: 'explicit-unsupported', answerMarkdown: 'I cannot do that, but this is still *Markdown*.' }
+    ] as const) {
+      const authority = createStartedAuthority();
+      const request = authority.captureQuestion(origin.stopId, 'Why?');
+      const before = authority.getSession()!;
+      authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, outcome);
+      const after = authority.getSession()!;
+      assert.equal(after.attentionStopId, before.attentionStopId);
+      assert.deepEqual(after.stops.map((stop) => stop.id), before.stops.map((stop) => stop.id));
+      assert.equal(after.stops[0].conversation.at(-1)?.bodyMarkdown, outcome.answerMarkdown);
+    }
+  });
+
+  test('validates a destination offer without changing the graph or attention', () => {
+    const authority = createStartedAuthority();
+    const generated = authority.captureQuestion(origin.stopId, 'Add a destination');
+    const session = authority.getSession()!;
+    authority.commitQuestionOutcome({ requestId: generated.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [{ id: 'child', displayName: 'Child', explanationMarkdown: 'Child', path: 'child.ts', range: origin.range, destinationIds: [], backId: origin.stopId }], appendedDestinations: [{ sourceStopId: origin.stopId, destinationIds: ['child'] }], recommendedNextUpdates: [] } });
+    const request = authority.captureQuestion(origin.stopId, 'Where next?');
+    const before = authority.getSession()!;
+    authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, { kind: 'destination-offer', answerMarkdown: 'Try child.', destinationIds: ['child'] });
+    const after = authority.getSession()!;
+    assert.equal(after.attentionStopId, origin.stopId);
+    assert.deepEqual(after.stops.map((stop) => ({ id: stop.id, destinationIds: stop.destinationIds })), before.stops.map((stop) => ({ id: stop.id, destinationIds: stop.destinationIds })));
+  });
+
+  test('preserves a terminal receipt for an identical delayed retry and rejects invalid outcomes atomically', () => {
+    const authority = createStartedAuthority();
+    const request = authority.captureQuestion(origin.stopId, 'Why?');
+    const session = authority.getSession()!;
+    const outcome: QuestionOutcome = { kind: 'explanation-only', answerMarkdown: 'Answer.' };
+    const receipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: session.id, revision: session.revision }, outcome);
+    assert.deepEqual(authority.commitQuestionOutcome({ requestId: request.id, sessionId: session.id, revision: session.revision }, outcome), receipt);
+    const next = authority.captureQuestion(origin.stopId, 'Offer?');
+    const before = authority.getSession()!;
+    assert.throws(() => authority.commitQuestionOutcome({ requestId: next.id, sessionId: before.id, revision: before.revision }, { kind: 'destination-offer', answerMarkdown: 'Bad', destinationIds: [origin.stopId] }));
+    assert.deepEqual(authority.getSession(), before);
+    authority.discardQuestion();
+    assert.throws(() => authority.commitQuestionOutcome({ requestId: next.id, sessionId: before.id, revision: before.revision }, outcome));
   });
 });
