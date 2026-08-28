@@ -93,8 +93,8 @@ const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSour
 suite('walkthrough start authority', () => {
   test('exposes reply and destinations on every CodeAlongAI thread', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { menus: { 'comments/commentThread/context': { command: string; when: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
-    assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentThread == codealongai.walkthrough'));
-    assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread == codealongai.walkthrough'));
+    assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentThread =~ /codealongai\\.walkthrough/'));
+    assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongai\\.walkthrough\\.destinations/'));
   });
 
   test('uses the complete nonblank cursor line when there is no selection', () => {
