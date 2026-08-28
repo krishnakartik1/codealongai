@@ -273,7 +273,9 @@ function readBody(request: http.IncomingMessage, timeoutMs: number): Promise<Bod
       clearTimeout(timeout);
       request.off('data', onData);
       request.off('end', onEnd);
-      request.off('error', onError);
+      // An incomplete client can abort after this reader has timed out. Keep the
+      // error listener until the request closes so that late abort is observed.
+      request.once('close', onClose);
       resolve(result);
     };
     const onData = (chunk: Buffer | string): void => {
@@ -288,6 +290,10 @@ function readBody(request: http.IncomingMessage, timeoutMs: number): Promise<Bod
     };
     const onEnd = (): void => finish({ kind: 'body', body: Buffer.concat(chunks).toString('utf8') });
     const onError = (): void => finish({ kind: 'timed_out' });
+    const onClose = (): void => {
+      request.off('error', onError);
+      request.off('close', onClose);
+    };
     const timeout = setTimeout(() => {
       request.pause();
       finish({ kind: 'timed_out' });

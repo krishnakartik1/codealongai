@@ -317,7 +317,7 @@ suite('loopback endpoint traffic guard', () => {
     } finally { await endpoint.stop(); }
   });
 
-  test('bounds incomplete body admission and releases it after the deadline', async () => {
+  test('bounds an incomplete body when its client aborts after the deadline', async () => {
     const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), undefined, 20);
     await endpoint.start(0);
     let slowRequest: http.ClientRequest | undefined;
@@ -337,6 +337,8 @@ suite('loopback endpoint traffic guard', () => {
       const timeout = await expired;
       assert.equal(timeout.status, 408);
       assert.deepEqual(timeout.body, { jsonrpc: '2.0', error: { code: -32600, message: 'Request timed out' }, id: null });
+      slowRequest?.destroy();
+      await new Promise<void>((resolve) => setImmediate(resolve));
       const released = await fetch(`http://127.0.0.1:${endpoint.port}/mcp`, { method: 'POST', body: '{' });
       assert.equal(released.status, 400);
     } finally {
