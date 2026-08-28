@@ -8,12 +8,16 @@ import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
+export const commentThreadOptions = {
+  prompt: 'Ask CodeAlongAI about this walkthrough stop',
+  placeHolder: 'Type a question (try “Why is this negative?”)'
+};
 
 export function activate(context: vscode.ExtensionContext): { readonly endpointState: McpLifecycleState; readonly session: ReturnType<WalkthroughAuthority['getSession']> } {
   const authority = new WalkthroughAuthority();
   const controller = vscode.comments.createCommentController('codealongai.walkthrough', 'CodeAlongAI walkthrough');
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
-  controller.options = { prompt: 'Ask CodeAlongAI about this walkthrough stop' };
+  controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   let activePort: number | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
