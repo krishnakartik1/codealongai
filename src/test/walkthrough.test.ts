@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
@@ -90,6 +91,12 @@ suite('MCP lifecycle', () => {
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
 suite('walkthrough start authority', () => {
+  test('exposes reply and destinations on every CodeAlongAI thread', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { menus: { 'comments/commentThread/context': { command: string; when: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
+    assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentThread == codealongai.walkthrough'));
+    assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread == codealongai.walkthrough'));
+  });
+
   test('uses the complete nonblank cursor line when there is no selection', () => {
     assert.deepEqual(deriveOrigin('checkout.ts', {
       start: { line: 2, character: 4 }, end: { line: 2, character: 4 }

@@ -41,6 +41,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const created = controller.createCommentThread(document.uri, asVscodeRange(stop.range), stop.conversation.map(commentFor));
     created.label = threadLabel(stop, authority.getSession()!);
     created.contextValue = navigationContext(stop);
+    created.canReply = true;
     created.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
     threads.set(stop.id, created);
     threadStopIds.set(created, stop.id);
