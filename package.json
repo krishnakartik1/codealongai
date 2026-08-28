@@ -31,19 +31,23 @@
       },
       {
         "command": "codealongai.walkthrough.submitComment",
-        "title": "Reply to CodeAlongAI"
+        "title": "Reply to CodeAlongAI",
+        "icon": "$(send)"
       },
       {
         "command": "codealongai.walkthrough.back",
-        "title": "CodeAlongAI: Back"
+        "title": "CodeAlongAI: Back",
+        "icon": "$(arrow-left)"
       },
       {
         "command": "codealongai.walkthrough.next",
-        "title": "CodeAlongAI: Next"
+        "title": "CodeAlongAI: Next",
+        "icon": "$(arrow-right)"
       },
       {
         "command": "codealongai.walkthrough.destinations",
-        "title": "CodeAlongAI: Destinations"
+        "title": "CodeAlongAI: Destinations",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -72,7 +76,8 @@
       "comments/commentThread/context": [
         {
           "command": "codealongai.walkthrough.submitComment",
-          "when": "commentThread =~ /codealongai\\.walkthrough/"
+          "when": "commentController == codealongai.walkthrough",
+          "group": "inline"
         }
       ],
       "comments/commentThread/title": [

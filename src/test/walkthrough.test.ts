@@ -92,9 +92,10 @@ const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSour
 
 suite('walkthrough start authority', () => {
   test('exposes reply and destinations on every CodeAlongAI thread', () => {
-    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { menus: { 'comments/commentThread/context': { command: string; when: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
-    assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentThread =~ /codealongai\\.walkthrough/'));
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { commands: { command: string; icon?: string }[]; menus: { 'comments/commentThread/context': { command: string; when: string; group?: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
+    assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
     assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongai\\.walkthrough\\.destinations/'));
+    assert.deepEqual(manifest.contributes.commands.filter((item) => ['codealongai.walkthrough.back', 'codealongai.walkthrough.next', 'codealongai.walkthrough.destinations', 'codealongai.walkthrough.submitComment'].includes(item.command)).map((item) => item.icon), ['$(send)', '$(arrow-left)', '$(arrow-right)', '$(list-tree)']);
   });
 
   test('uses the complete nonblank cursor line when there is no selection', () => {
