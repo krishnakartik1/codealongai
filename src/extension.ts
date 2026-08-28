@@ -14,6 +14,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   let endpoint: LoopbackMcpEndpoint | undefined;
   let endpointState: 'off' | 'ready' = 'off';
   let thread: vscode.CommentThread | undefined;
+  let retryStart: (() => Promise<void>) | undefined;
   const updateEndpoint = async (): Promise<void> => {
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
     const enabled = config.get<boolean>('enabled', false);
@@ -32,7 +33,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(path.basename(editor.document.uri.fsPath), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
-    const request = authority.captureStart(origin);
+    const request = authority.getPendingStart() ?? authority.captureStart(origin);
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
     try {
       await commitDeterministicOrigin(vscode.workspace.getConfiguration('codealongai.mcp').get<number>('port', 61337), request.id, descriptor);
@@ -43,7 +44,14 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       thread.label = 'CodeAlongAI · Origin';
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
       return { endpointState, session };
-    } catch (error) { void vscode.window.showErrorMessage(`CodeAlongAI could not start the walkthrough: ${String(error)}`); return undefined; }
+    } catch (error) {
+      retryStart = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.ask'); };
+      void vscode.window.showErrorMessage(`CodeAlongAI could not start the walkthrough: ${String(error)}`, 'Retry walkthrough', 'Discard request').then((action) => {
+        if (action === 'Retry walkthrough') void retryStart?.();
+        if (action === 'Discard request') authority.discardStart();
+      });
+      return undefined;
+    }
   });
   context.subscriptions.push(ask, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { thread?.dispose(); void endpoint?.stop(); } });
   return { get endpointState() { return endpointState; }, get session() { return authority.getSession(); } };

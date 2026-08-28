@@ -31,4 +31,15 @@ suite('walkthrough start authority', () => {
       ...request.origin, stopId: 'other', displayName: 'Origin', explanation: 'again'
     }));
   });
+
+  test('retains an immutable pending request until the learner discards it', () => {
+    const authority = new WalkthroughAuthority();
+    const request = authority.captureStart({ document: 'checkout.ts', range: {
+      start: { line: 0, character: 0 }, end: { line: 0, character: 2 }
+    } });
+    request.origin.document = 'mutated.ts';
+    assert.equal(authority.getPendingStart()?.origin.document, 'checkout.ts');
+    authority.discardStart();
+    assert.equal(authority.getPendingStart(), undefined);
+  });
 });

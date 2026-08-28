@@ -57,6 +57,9 @@ export class WalkthroughAuthority {
   }
 
   public getSession(): WalkthroughSession | undefined { return this.session; }
+  public getPendingStart(): StartRequest | undefined {
+    return this.request?.status === 'pending' ? this.getStartRequest(this.request.id) : undefined;
+  }
 
   public start(requestId: string, origin: OriginDescriptor): WalkthroughSession {
     const request = this.request?.id === requestId ? this.request : undefined;
