@@ -15,6 +15,7 @@
     "ui"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:codealongai.walkthrough.ask"
   ],
   "main": "./out/extension.js",
@@ -22,7 +23,8 @@
     "commands": [
       {
         "command": "codealongai.walkthrough.ask",
-        "title": "CodeAlongAI: Ask about this code"
+        "title": "CodeAlongAI: Ask about this code",
+        "enablement": "codealongai.mcpReady"
       }
     ],
     "configuration": {

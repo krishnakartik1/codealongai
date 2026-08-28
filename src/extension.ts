@@ -18,12 +18,12 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
     const enabled = config.get<boolean>('enabled', false);
     const port = config.get<number>('port', 61337);
-    if (!enabled) { await endpoint?.stop(); endpoint = undefined; endpointState = 'off'; return; }
+    if (!enabled) { await endpoint?.stop(); endpoint = undefined; endpointState = 'off'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false); return; }
     if (!Number.isInteger(port) || port < 1024 || port > 65535) { endpointState = 'off'; void vscode.window.showErrorMessage('CodeAlongAI MCP port must be an integer from 1024 through 65535.'); return; }
     if (!endpoint) {
       endpoint = new LoopbackMcpEndpoint(authority);
-      try { await endpoint.start(port); endpointState = 'ready'; }
-      catch (error) { endpoint = undefined; endpointState = 'off'; void vscode.window.showErrorMessage(`CodeAlongAI could not start MCP: ${String(error)}`); }
+      try { await endpoint.start(port); endpointState = 'ready'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', true); }
+      catch (error) { endpoint = undefined; endpointState = 'off'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false); void vscode.window.showErrorMessage(`CodeAlongAI could not start MCP: ${String(error)}`); }
     }
   };
   void updateEndpoint();
