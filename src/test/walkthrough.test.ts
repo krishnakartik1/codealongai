@@ -99,6 +99,23 @@ suite('walkthrough start authority', () => {
     });
   });
 
+  test('projects VS Code position coordinates into the MCP range shape', () => {
+    const vsCodePosition = (line: number, character: number) => ({
+      _line: line,
+      _character: character,
+      get line() { return this._line; },
+      get character() { return this._character; }
+    });
+    const origin = deriveOrigin('checkout.ts', {
+      start: vsCodePosition(2, 3), end: vsCodePosition(2, 8)
+    }, 'return subtotal(cart);');
+
+    assert.deepEqual(origin, {
+      document: 'checkout.ts',
+      range: { start: { line: 2, character: 3 }, end: { line: 2, character: 8 } }
+    });
+  });
+
   test('does not derive an origin from a blank cursor line', () => {
     assert.equal(deriveOrigin('checkout.ts', {
       start: { line: 2, character: 0 }, end: { line: 2, character: 0 }
