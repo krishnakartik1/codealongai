@@ -527,7 +527,7 @@ suite('walkthrough destination projection', () => {
       { id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'a.ts', range, destinationIds: ['second'], recommendedNextId: 'second', conversation: [] },
       { id: 'second', stopId: 'second', displayName: 'Reducer', explanation: '', document: 'a.ts', range, destinationIds: [], conversation: [] }
     ] };
-    assert.deepEqual(destinationQuickPickItems(session).map((item) => item.label), ['Origin L1:C1', '   └─ Reducer $(location) L1:C1']);
+    assert.deepEqual(destinationQuickPickItems(session).map((item) => item.label), ['Origin L1:C1', '   └─ $(location) Reducer L1:C1']);
   });
 
   test('assigns stable ordinals to same-range thread identities and adds Initial value without moving attention', () => {

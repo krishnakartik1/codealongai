@@ -290,7 +290,7 @@ export function destinationQuickPickItems(session: WalkthroughSession): readonly
     const connector = row.depth === 0 ? '' : `${row.ancestorIsLast.map((last) => last ? '   ' : '│  ').join('')}${row.isLast ? '└─ ' : '├─ '}`;
     const markers = row.rejoinDisplayNames.map((name) => ` ↗ ${name}`).join('');
     const location = `L${stop.range.start.line + 1}:C${stop.range.start.character + 1}`;
-    return { stopId: stop.id, label: `${connector}${stop.displayName}${stop.id === session.attentionStopId ? ' $(location)' : ''}${markers} ${location}` };
+    return { stopId: stop.id, label: `${connector}${stop.id === session.attentionStopId ? '$(location) ' : ''}${stop.displayName}${markers} ${location}` };
   });
 }
 
