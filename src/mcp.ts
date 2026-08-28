@@ -24,14 +24,19 @@ export class LoopbackMcpEndpoint {
     const server = new McpServer({ name: 'CodeAlongAI', version: '0.0.1' });
     server.registerTool('codealongai_get_walkthrough', {
       description: 'Read the current walkthrough snapshot.', annotations: readAnnotations
-    }, () => {
-      const snapshot = this.walkthroughSnapshot();
+    }, async () => {
+      const snapshot = await this.walkthroughSnapshot();
       return { structuredContent: snapshot, content: [{ type: 'text', text: JSON.stringify(snapshot) }] };
     });
     server.registerTool('codealongai_get_walkthrough_request', {
       description: 'Read one immutable human-authorized walkthrough request.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1) }).strict(), annotations: readAnnotations
-    }, (input: { schemaVersion: 1; requestId: string }) => ({ structuredContent: this.authority.getStartRequest(input.requestId) ?? null, content: [{ type: 'text', text: JSON.stringify(this.authority.getStartRequest(input.requestId) ?? null) }] }));
+    }, async (input: { schemaVersion: 1; requestId: string }) => {
+      const request = this.authority.getStartRequest(input.requestId);
+      if (!request) return this.domainError('request_not_found', 'The requested walkthrough request is unavailable.', false);
+      const result = { schemaVersion: 1, requestId: request.id, status: request.status === 'consumed' ? 'committed' : request.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: request.snapshot.capturedAt, kind: 'start', authorizedAction: 'start', input: { origin: { path: request.origin.document, range: request.origin.range } }, snapshot: await this.walkthroughSnapshot() };
+      return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+    });
     server.registerTool('codealongai_list_workspace_files', {
       description: 'List workspace-relative text paths.', inputSchema: z.object({ schemaVersion, cursor: z.string().optional() }).strict(), annotations: readAnnotations
     }, async (input: { schemaVersion: 1; cursor?: string }) => this.workspaceResult(async () => {
@@ -92,15 +97,24 @@ export class LoopbackMcpEndpoint {
       return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
     } catch (error) {
       const code = error instanceof WorkspaceError ? error.code : 'internal_error';
-      const result: Record<string, unknown> = { schemaVersion: 1, code, message: code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', retryable: code === 'workspace_unavailable' || code === 'internal_error' };
-      return { isError: true, structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return this.domainError(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
     }
   }
 
-  private walkthroughSnapshot(): object {
+  private domainError(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
+    const structuredContent = { schemaVersion: 1, code, message, retryable };
+    return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
+  }
+
+  private async walkthroughSnapshot(): Promise<object> {
     const session = this.authority.getSession();
     if (!session) return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'inactive' };
-    return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'active', positionEncoding: 'utf-16', sessionId: session.id, revision: session.revision, humanOriginStopId: session.origin.stopId, attentionStopId: session.attentionStopId, stops: [{ id: session.origin.stopId, displayName: session.origin.displayName, explanation: session.origin.explanation, path: session.origin.document, range: session.origin.range, destinations: [], conversation: [] }], stopExcerpts: [], editorState: { visibleEditors: [] } };
+    let stopExcerpts: object[] = [];
+    try {
+      const excerpt = await this.workspace.read(session.origin.document, session.origin.range.start.line, session.origin.range.end.line + 1);
+      stopExcerpts = [{ stopId: session.origin.stopId, path: excerpt.path, range: session.origin.range, text: excerpt.text, ...(excerpt.documentVersion === undefined ? {} : { documentVersion: excerpt.documentVersion }) }];
+    } catch { /* A snapshot never widens the workspace boundary when an origin file is no longer readable. */ }
+    return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'active', positionEncoding: 'utf-16', sessionId: session.id, revision: session.revision, humanOriginStopId: session.origin.stopId, attentionStopId: session.attentionStopId, stops: [{ id: session.origin.stopId, displayName: session.origin.displayName, explanation: session.origin.explanation, path: session.origin.document, range: session.origin.range, destinations: [], conversation: [] }], stopExcerpts, editorState: { visibleEditors: [] } };
   }
 }
 

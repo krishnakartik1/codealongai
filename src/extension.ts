@@ -74,17 +74,17 @@ function vscodeWorkspaceSource(): WorkspaceSource {
       const openDocuments = new Map(vscode.workspace.textDocuments.map((document) => [document.uri.toString(), document]));
       const workspaceRoot = folder.uri.scheme === 'file' ? await realpath(folder.uri.fsPath) : undefined;
       const files = await Promise.all(uris.map(async (uri) => {
-        const document = openDocuments.get(uri.toString());
-        if (document) return { path: vscode.workspace.asRelativePath(uri, false), text: document.getText(), dirty: document.isDirty, documentVersion: document.version };
         try {
           if (workspaceRoot && uri.scheme === 'file') {
             const resolved = await realpath(uri.fsPath);
-            if (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}${path.sep}`)) return undefined;
+            if (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}${path.sep}`)) return { path: vscode.workspace.asRelativePath(uri, false), dirty: false, failure: 'path_outside_workspace' as const };
           }
+          const document = openDocuments.get(uri.toString());
+          if (document) return { path: vscode.workspace.asRelativePath(uri, false), text: document.getText(), dirty: document.isDirty, documentVersion: document.version };
           const bytes = await vscode.workspace.fs.readFile(uri);
-          if (bytes.byteLength > 1024 * 1024) return undefined;
+          if (bytes.byteLength > 1024 * 1024) return { path: vscode.workspace.asRelativePath(uri, false), dirty: false, failure: 'file_too_large' as const };
           return { path: vscode.workspace.asRelativePath(uri, false), text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), dirty: false };
-        } catch { return undefined; }
+        } catch { return { path: vscode.workspace.asRelativePath(uri, false), dirty: false, failure: 'file_unsupported' as const }; }
       }));
       return files.filter((file): file is NonNullable<typeof file> => file !== undefined);
     }

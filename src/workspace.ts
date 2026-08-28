@@ -5,9 +5,10 @@ const maxFileBytes = 1024 * 1024;
 
 export interface WorkspaceFile {
   readonly path: string;
-  readonly text: string;
+  readonly text?: string;
   readonly dirty: boolean;
   readonly documentVersion?: number;
+  readonly failure?: 'file_unsupported' | 'file_too_large' | 'path_outside_workspace';
 }
 
 export interface WorkspaceSource {
@@ -46,7 +47,8 @@ export class WorkspaceReader {
     const requested = normalizeWorkspacePath(candidate);
     const file = (await this.availableFiles()).find((item) => item.path === requested);
     if (!file) throw new WorkspaceError('file_unsupported');
-    const lines = file.text.split(/\r\n|\n|\r/);
+    if (file.failure) throw new WorkspaceError(file.failure);
+    const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
     const actualEnd = endLine ?? lines.length;
     if (actualEnd > lines.length) throw new WorkspaceError('path_invalid');
@@ -57,7 +59,8 @@ export class WorkspaceReader {
     if (!query) throw new WorkspaceError('path_invalid');
     const matches: WorkspaceMatch[] = [];
     for (const file of await this.availableFiles()) {
-      const lines = file.text.split(/\r\n|\n|\r/);
+      if (file.failure) continue;
+      const lines = file.text!.split(/\r\n|\n|\r/);
       for (let line = 0; line < lines.length; line += 1) {
         let character = lines[line].indexOf(query);
         while (character !== -1) {
@@ -71,10 +74,11 @@ export class WorkspaceReader {
 
   private async availableFiles(): Promise<WorkspaceFile[]> {
     if (this.source.workspaceFolderCount() !== 1) throw new WorkspaceError('workspace_unavailable');
-    return (await this.source.files()).map((file) => ({ ...file, path: normalizeWorkspacePath(file.path) })).filter((file) => {
-      if (file.text.includes('\0')) return false;
-      if (Buffer.byteLength(file.text, 'utf8') > maxFileBytes) return false;
-      return true;
+    return (await this.source.files()).map((file) => ({ ...file, path: normalizeWorkspacePath(file.path) })).map((file) => {
+      if (file.failure) return file;
+      if (file.text!.includes('\0')) return { ...file, failure: 'file_unsupported' as const };
+      if (Buffer.byteLength(file.text!, 'utf8') > maxFileBytes) return { ...file, failure: 'file_too_large' as const };
+      return file;
     });
   }
 }
@@ -83,8 +87,9 @@ const utf16Compare = (left: string, right: string): number => left < right ? -1 
 
 function preview(line: string, start: number, length: number): string {
   if (line.length <= 200) return line;
+  const ellipses = 2;
   let windowStart = Math.max(0, start - 80);
-  if (windowStart + 200 > line.length) windowStart = line.length - 200;
-  const windowEnd = Math.min(line.length, windowStart + 200);
+  if (windowStart + 200 - ellipses > line.length) windowStart = line.length - (200 - ellipses);
+  const windowEnd = Math.min(line.length, windowStart + 200 - ellipses);
   return `${windowStart > 0 ? '…' : ''}${line.slice(windowStart, windowEnd)}${windowEnd < line.length ? '…' : ''}`;
 }
