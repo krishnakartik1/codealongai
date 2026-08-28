@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { z } from 'zod';
 import type { NavigationDirection, OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
@@ -16,9 +16,11 @@ const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal
 const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
+const maxRequestBytes = 1024 * 1024;
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
+  private toolCallInFlight = false;
   public constructor(private readonly authority: WalkthroughAuthority, workspace: WorkspaceSource = unavailableWorkspace) {
     this.workspace = new WorkspaceReader(workspace);
   }
@@ -85,8 +87,8 @@ export class LoopbackMcpEndpoint {
         const session = this.authority.start(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch (error) {
-        return { isError: true, content: [{ type: 'text', text: String(error) }] };
+      } catch {
+        return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false);
       }
     });
     server.registerTool('codealongai_replace_walkthrough', {
@@ -97,7 +99,7 @@ export class LoopbackMcpEndpoint {
       try {
         const receipt = this.authority.replace(input.requestId, input.expectedSessionId, input.expectedRevision, input.origin);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_reset_walkthrough', {
       description: 'Atomically clear an authorized walkthrough without changing editor state or source documents.',
@@ -107,7 +109,7 @@ export class LoopbackMcpEndpoint {
       try {
         const receipt = this.authority.reset(input.requestId, input.expectedSessionId, input.expectedRevision);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_commit_question_outcome', {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
@@ -117,7 +119,7 @@ export class LoopbackMcpEndpoint {
       try {
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_navigate_walkthrough', {
       description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next edge, or directly to one known stop.',
@@ -132,15 +134,10 @@ export class LoopbackMcpEndpoint {
           ? this.authority.navigateDestination({ sessionId: input.expectedSessionId, revision: input.expectedRevision, targetStopId: input.targetStopId })
           : this.authority.navigate({ sessionId: input.expectedSessionId, revision: input.expectedRevision, sourceStopId: input.sourceStopId, direction: input.direction });
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     }); return server; };
-    const validateHost = localhostHostValidation();
-    const validateOrigin = localhostOriginValidation();
     this.listener = http.createServer((request, response) => {
-      if (request.url !== '/mcp') { response.statusCode = 404; response.end(); return; }
-      if (!validateHost(request, response) || !validateOrigin(request, response)) return;
-      const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      void createServer().connect(transport).then(() => transport.handleRequest(request, response));
+      void this.handleRequest(request, response, createServer);
     });
     await new Promise<void>((resolve, reject) => {
       this.listener?.once('error', reject);
@@ -159,6 +156,39 @@ export class LoopbackMcpEndpoint {
     const address = this.listener?.address();
     return typeof address === 'object' && address ? address.port : undefined;
   }
+
+  private async handleRequest(request: http.IncomingMessage, response: http.ServerResponse, createServer: () => McpServer): Promise<void> {
+    if (request.url !== '/mcp') return this.httpError(response, 404, -32601, 'Not found');
+    // This endpoint is intentionally narrower than the SDK's localhost helpers:
+    // only a non-browser client addressed to this listener may enter the parser.
+    if (request.headers.origin !== undefined || request.headers.host !== `127.0.0.1:${this.port}`) return this.httpError(response, 403, -32600, 'Invalid request');
+    if (request.method !== 'POST') return this.httpError(response, 405, -32600, 'Invalid request');
+    const declaredLength = request.headers['content-length'];
+    const contentLength = declaredLength === undefined ? undefined : Number(declaredLength);
+    if (contentLength !== undefined && (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxRequestBytes)) return this.httpError(response, 413, -32600, 'Request too large');
+    let parsedBody: unknown;
+    try {
+      parsedBody = JSON.parse(await readBody(request));
+    } catch (error) {
+      if (error instanceof BodyTooLargeError) return this.httpError(response, 413, -32600, 'Request too large');
+      return this.httpError(response, 400, -32700, 'Parse error');
+    }
+    const isToolCall = isToolsCall(parsedBody);
+    if (isToolCall && this.toolCallInFlight) return this.json(response, 409, { jsonrpc: '2.0', id: requestId(parsedBody), result: domainErrorResult('endpoint_busy', 'The endpoint is busy. Retry the tool call.', true) });
+    if (isToolCall) this.toolCallInFlight = true;
+    try {
+      const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await createServer().connect(transport);
+      await transport.handleRequest(request, response, parsedBody);
+    } catch {
+      if (!response.headersSent) this.httpError(response, 500, -32603, 'Internal server error');
+    } finally {
+      if (isToolCall) this.toolCallInFlight = false;
+    }
+  }
+
+  private httpError(response: http.ServerResponse, status: number, code: number, message: string): void { this.json(response, status, { jsonrpc: '2.0', error: { code, message }, id: null }); }
+  private json(response: http.ServerResponse, status: number, body: object): void { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(body)); }
 
   private async workspaceResult<T>(operation: () => Promise<T>): Promise<{ structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }]; isError?: true }> {
     try {
@@ -203,6 +233,34 @@ function decodeCursor(cursor: string | undefined, tool: string, query: string): 
     if (decoded.tool !== tool || decoded.query !== query || typeof decoded.after !== 'string') throw new Error('cursor');
     return decoded.after;
   } catch { throw new WorkspaceError('path_invalid'); }
+}
+
+async function readBody(request: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += value.length;
+    if (bytes > maxRequestBytes) throw new BodyTooLargeError();
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+class BodyTooLargeError extends Error {}
+
+function isToolsCall(body: unknown): boolean {
+  return !!body && typeof body === 'object' && !Array.isArray(body) && (body as { method?: unknown }).method === 'tools/call';
+}
+
+function requestId(body: unknown): string | number | null {
+  const id = body && typeof body === 'object' && !Array.isArray(body) ? (body as { id?: unknown }).id : undefined;
+  return typeof id === 'string' || typeof id === 'number' ? id : null;
+}
+
+function domainErrorResult(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
+  const structuredContent = { schemaVersion: 1, code, message, retryable };
+  return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
 }
 
 /** The model-free producer uses the same public transport a future producer will use. */

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import * as http from 'node:http';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
@@ -228,6 +229,33 @@ suite('workspace context over loopback MCP', () => {
       await transport.close();
       await endpoint.stop();
     }
+  });
+});
+
+suite('loopback endpoint traffic guard', () => {
+  test('fails closed before parsing unexpected routes, origins, hosts, and oversized bodies', async () => {
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority());
+    await endpoint.start(0);
+    const url = `http://127.0.0.1:${endpoint.port}`;
+    try {
+      for (const [path, init, expected] of [
+        ['/health', {}, 404],
+        ['/mcp', { headers: { origin: 'http://127.0.0.1' } }, 403],
+        ['/mcp', { method: 'POST', body: '{', headers: { 'content-type': 'application/json' } }, 400],
+        ['/mcp', { method: 'POST', body: 'x'.repeat(1024 * 1024 + 1), headers: { 'content-type': 'application/json' } }, 413]
+      ] as const) {
+        const response = await fetch(`${url}${path}`, init);
+        assert.equal(response.status, expected);
+        const body = await response.json() as { error: { message: string } };
+        assert.ok(['Not found', 'Invalid request', 'Parse error', 'Request too large'].includes(body.error.message));
+      }
+      const invalidHost = await new Promise<number>((resolve, reject) => {
+        const request = http.request({ host: '127.0.0.1', port: endpoint.port, path: '/mcp', headers: { host: 'localhost:1' } }, (response) => resolve(response.statusCode!));
+        request.on('error', reject);
+        request.end();
+      });
+      assert.equal(invalidHost, 403);
+    } finally { await endpoint.stop(); }
   });
 });
 
