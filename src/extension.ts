@@ -277,7 +277,7 @@ export const threadComments = (stop: Pick<WalkthroughStop, 'explanation' | 'conv
 const asVscodeRange = (range: { start: { line: number; character: number }; end: { line: number; character: number } }): vscode.Range => new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
 export const navigationContext = (stop: WalkthroughStop): string => [
   'codealongaiWalkthrough',
-  stop.destinationIds.length === 0 ? undefined : 'hasDestinations',
+  'hasDestinations',
   stop.backId === undefined ? undefined : 'hasBack',
   stop.recommendedNextId === undefined ? undefined : 'hasNext'
 ].filter((part): part is string => part !== undefined).join('-');
@@ -290,7 +290,7 @@ export function destinationQuickPickItems(session: WalkthroughSession): readonly
     const connector = row.depth === 0 ? '' : `${row.ancestorIsLast.map((last) => last ? '   ' : '│  ').join('')}${row.isLast ? '└─ ' : '├─ '}`;
     const markers = row.rejoinDisplayNames.map((name) => ` ↗ ${name}`).join('');
     const location = `L${stop.range.start.line + 1}:C${stop.range.start.character + 1}`;
-    return { stopId: stop.id, label: `${stop.id === session.attentionStopId ? '$(location) ' : ''}${connector}${stop.displayName}${markers} ${location}` };
+    return { stopId: stop.id, label: `${connector}${stop.displayName}${stop.id === session.attentionStopId ? ' $(location)' : ''}${markers} ${location}` };
   });
 }
 

@@ -100,6 +100,7 @@ suite('walkthrough start authority', () => {
 
   test('uses native comment context tokens for available navigation actions', () => {
     assert.equal(navigationContext({ id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: ['definition'], recommendedNextId: 'definition', conversation: [] }), 'codealongaiWalkthrough-hasDestinations-hasNext');
+    assert.equal(navigationContext({ id: 'terminal', stopId: 'terminal', displayName: 'Terminal', explanation: '', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: [], conversation: [] }), 'codealongaiWalkthrough-hasDestinations');
   });
 
   test('renders every generated stop with its initial CodeAlongAI explanation', () => {
@@ -526,7 +527,7 @@ suite('walkthrough destination projection', () => {
       { id: 'origin', stopId: 'origin', displayName: 'Origin', explanation: '', document: 'a.ts', range, destinationIds: ['second'], recommendedNextId: 'second', conversation: [] },
       { id: 'second', stopId: 'second', displayName: 'Reducer', explanation: '', document: 'a.ts', range, destinationIds: [], conversation: [] }
     ] };
-    assert.deepEqual(destinationQuickPickItems(session).map((item) => item.label), ['Origin L1:C1', '$(location)    └─ Reducer L1:C1']);
+    assert.deepEqual(destinationQuickPickItems(session).map((item) => item.label), ['Origin L1:C1', '   └─ Reducer $(location) L1:C1']);
   });
 
   test('assigns stable ordinals to same-range thread identities and adds Initial value without moving attention', () => {
