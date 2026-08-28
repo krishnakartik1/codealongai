@@ -43,11 +43,11 @@ headers. Registration, initial discovery, disconnected discovery, and
 rediscovery returned HTTP 200, 200, 502, and 200 respectively. This is only a
 runner preflight; the decision still requires the native-Windows output.
 
-The runner chooses unused IPv4 loopback ports, keeps TrueForge state in a
-temporary SQLite database, shortens MCP failure timeouts, and removes the
-database after both child processes stop. It configures no provider, agent,
-session, model turn, authentication, editor access, filesystem access, or
-CodeAlongAI domain tool.
+The runner chooses unused IPv4 loopback ports, binds both processes explicitly
+to `127.0.0.1`, keeps TrueForge state in a temporary SQLite database, shortens
+MCP failure timeouts, and removes the database after both child processes
+stop. It configures no provider, agent, session, model turn, authentication,
+editor access, filesystem access, or CodeAlongAI domain tool.
 
 Pinned TrueForge 0.1.4 delegates migrations to a Kysely file provider that
 passes native absolute paths directly to dynamic `import()`. Node.js rejects a

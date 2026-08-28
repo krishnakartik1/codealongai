@@ -190,6 +190,7 @@ try {
     trueforgeArguments,
     {
       env: {
+        HOST: "127.0.0.1",
         SQLITE_PATH: join(temporaryDirectory, "trueforge.sqlite"),
         LOG_LEVEL: "debug",
         MCP_CONNECT_TIMEOUT_MS: "2000",
