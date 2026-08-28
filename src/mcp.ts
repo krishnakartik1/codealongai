@@ -11,6 +11,7 @@ export class LoopbackMcpEndpoint {
 
   public async start(port: number): Promise<void> {
     if (this.listener) return;
+    const createServer = (): McpServer => {
     const server = new McpServer({ name: 'CodeAlongAI', version: '0.0.1' });
     server.registerTool('codealongai_get_walkthrough_request', {
       description: 'Read one immutable human-authorized walkthrough request.',
@@ -18,23 +19,23 @@ export class LoopbackMcpEndpoint {
     }, (input: { requestId: string }) => ({ structuredContent: this.authority.getStartRequest(input.requestId) ?? null, content: [{ type: 'text', text: JSON.stringify(this.authority.getStartRequest(input.requestId) ?? null) }] }));
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
-      inputSchema: z.object({ requestId: z.string(), origin: z.object({}).passthrough() }).strict()
+      inputSchema: z.object({ requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict()
     }, (input) => {
       try {
-        const session = this.authority.start(input.requestId, input.origin as unknown as OriginDescriptor);
+        const session = this.authority.start(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch (error) {
         return { isError: true, content: [{ type: 'text', text: String(error) }] };
       }
-    });
+    }); return server; };
     const validateHost = localhostHostValidation();
     const validateOrigin = localhostOriginValidation();
     this.listener = http.createServer((request, response) => {
       if (request.url !== '/mcp') { response.statusCode = 404; response.end(); return; }
       if (!validateHost(request, response) || !validateOrigin(request, response)) return;
       const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      void server.connect(transport).then(() => transport.handleRequest(request, response));
+      void createServer().connect(transport).then(() => transport.handleRequest(request, response));
     });
     await new Promise<void>((resolve, reject) => {
       this.listener?.once('error', reject);

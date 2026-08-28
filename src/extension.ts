@@ -1,4 +1,3 @@
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { commitDeterministicOrigin, LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, type OriginDescriptor, WalkthroughAuthority } from './walkthrough';
@@ -12,6 +11,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
   controller.options = { prompt: 'Ask CodeAlongAI about this walkthrough stop' };
   let endpoint: LoopbackMcpEndpoint | undefined;
+  let activePort: number | undefined;
   let endpointState: 'off' | 'ready' = 'off';
   let thread: vscode.CommentThread | undefined;
   let retryStart: (() => Promise<void>) | undefined;
@@ -21,17 +21,19 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const port = config.get<number>('port', 61337);
     if (!enabled) { await endpoint?.stop(); endpoint = undefined; endpointState = 'off'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false); return; }
     if (!Number.isInteger(port) || port < 1024 || port > 65535) { endpointState = 'off'; void vscode.window.showErrorMessage('CodeAlongAI MCP port must be an integer from 1024 through 65535.'); return; }
+    if (endpoint && activePort !== port) { await endpoint.stop(); endpoint = undefined; endpointState = 'off'; }
     if (!endpoint) {
       endpoint = new LoopbackMcpEndpoint(authority);
-      try { await endpoint.start(port); endpointState = 'ready'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', true); }
+      try { await endpoint.start(port); activePort = port; endpointState = 'ready'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', true); }
       catch (error) { endpoint = undefined; endpointState = 'off'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false); void vscode.window.showErrorMessage(`CodeAlongAI could not start MCP: ${String(error)}`); }
     }
   };
   void updateEndpoint();
   const ask = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
-    if (endpointState !== 'ready') return undefined;
+    await updateEndpoint();
+    if (endpointState !== 'ready') { void vscode.window.showWarningMessage('Enable the CodeAlongAI MCP endpoint to start a walkthrough.'); return undefined; }
     const editor = vscode.window.activeTextEditor;
-    const origin = editor && deriveOrigin(path.basename(editor.document.uri.fsPath), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
+    const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
     const request = authority.getPendingStart() ?? authority.captureStart(origin);
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
