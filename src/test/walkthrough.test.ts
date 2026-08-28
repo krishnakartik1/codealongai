@@ -299,6 +299,52 @@ suite('loopback endpoint traffic guard', () => {
     } finally { await endpoint.stop(); }
   });
 
+  test('returns a structured 413 for an oversized chunked body', async () => {
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority());
+    await endpoint.start(0);
+    try {
+      const rejected = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const request = http.request({ host: '127.0.0.1', port: endpoint.port, path: '/mcp', method: 'POST', headers: { 'transfer-encoding': 'chunked' } }, (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.on('end', () => resolve({ status: response.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+        });
+        request.on('error', reject);
+        request.end(Buffer.alloc(1024 * 1024 + 1));
+      });
+      assert.equal(rejected.status, 413);
+      assert.deepEqual(rejected.body, { jsonrpc: '2.0', error: { code: -32600, message: 'Request too large' }, id: null });
+    } finally { await endpoint.stop(); }
+  });
+
+  test('bounds incomplete body admission and releases it after the deadline', async () => {
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), undefined, 20);
+    await endpoint.start(0);
+    let slowRequest: http.ClientRequest | undefined;
+    try {
+      const expired = new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        slowRequest = http.request({ host: '127.0.0.1', port: endpoint.port, path: '/mcp', method: 'POST', headers: { 'content-type': 'application/json' } }, (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.on('end', () => resolve({ status: response.statusCode!, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+        });
+        slowRequest.on('error', reject);
+        slowRequest.write('{');
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const busy = await fetch(`http://127.0.0.1:${endpoint.port}/mcp`, { method: 'POST', body: '{' });
+      assert.equal(busy.status, 503);
+      const timeout = await expired;
+      assert.equal(timeout.status, 408);
+      assert.deepEqual(timeout.body, { jsonrpc: '2.0', error: { code: -32600, message: 'Request timed out' }, id: null });
+      const released = await fetch(`http://127.0.0.1:${endpoint.port}/mcp`, { method: 'POST', body: '{' });
+      assert.equal(released.status, 400);
+    } finally {
+      slowRequest?.destroy();
+      await endpoint.stop();
+    }
+  });
+
   test('returns a retryable busy tool result through the MCP client', async () => {
     let beginList: (() => void) | undefined;
     const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), {

@@ -22,6 +22,7 @@ const defaultToolCallDeadlineMs = 30_000;
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
   private toolCallInFlight = false;
+  private bodyReadInFlight = false;
   public constructor(private readonly authority: WalkthroughAuthority, workspace: WorkspaceSource = unavailableWorkspace, private readonly toolCallDeadlineMs = defaultToolCallDeadlineMs) {
     this.workspace = new WorkspaceReader(workspace);
   }
@@ -172,11 +173,20 @@ export class LoopbackMcpEndpoint {
     const declaredLength = request.headers['content-length'];
     const contentLength = declaredLength === undefined ? undefined : Number(declaredLength);
     if (contentLength !== undefined && (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxRequestBytes)) return this.httpError(response, 413, -32600, 'Request too large');
+    if (this.bodyReadInFlight) return this.httpError(response, 503, -32600, 'Endpoint busy');
+    this.bodyReadInFlight = true;
+    let bodyRead: BodyReadResult;
+    try {
+      bodyRead = await readBody(request, this.toolCallDeadlineMs);
+    } finally {
+      this.bodyReadInFlight = false;
+    }
+    if (bodyRead.kind === 'too_large') return this.respondThenCloseRequest(request, response, 413, -32600, 'Request too large');
+    if (bodyRead.kind === 'timed_out') return this.respondThenCloseRequest(request, response, 408, -32600, 'Request timed out');
     let parsedBody: unknown;
     try {
-      parsedBody = JSON.parse(await readBody(request));
-    } catch (error) {
-      if (error instanceof BodyTooLargeError) return this.httpError(response, 413, -32600, 'Request too large');
+      parsedBody = JSON.parse(bodyRead.body);
+    } catch {
       return this.httpError(response, 400, -32700, 'Parse error');
     }
     const isToolCall = isToolsCall(parsedBody);
@@ -204,6 +214,10 @@ export class LoopbackMcpEndpoint {
   }
 
   private httpError(response: http.ServerResponse, status: number, code: number, message: string): void { this.json(response, status, { jsonrpc: '2.0', error: { code, message }, id: null }); }
+  private respondThenCloseRequest(request: http.IncomingMessage, response: http.ServerResponse, status: number, code: number, message: string): void {
+    response.once('finish', () => request.destroy());
+    this.httpError(response, status, code, message);
+  }
   private json(response: http.ServerResponse, status: number, body: object): void { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(body)); }
 
   private async workspaceResult<T>(operation: () => Promise<T>): Promise<{ structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }]; isError?: true }> {
@@ -246,19 +260,43 @@ function decodeCursor(cursor: string | undefined, tool: string, query: string): 
   } catch { throw new WorkspaceError('path_invalid'); }
 }
 
-async function readBody(request: http.IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of request) {
-    const bodyChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += bodyChunk.length;
-    if (bytes > maxRequestBytes) throw new BodyTooLargeError();
-    chunks.push(bodyChunk);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
+type BodyReadResult = { kind: 'body'; body: string } | { kind: 'too_large' } | { kind: 'timed_out' };
 
-class BodyTooLargeError extends Error {}
+function readBody(request: http.IncomingMessage, timeoutMs: number): Promise<BodyReadResult> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const finish = (result: BodyReadResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('error', onError);
+      resolve(result);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const bodyChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += bodyChunk.length;
+      if (bytes > maxRequestBytes) {
+        request.pause();
+        finish({ kind: 'too_large' });
+        return;
+      }
+      chunks.push(bodyChunk);
+    };
+    const onEnd = (): void => finish({ kind: 'body', body: Buffer.concat(chunks).toString('utf8') });
+    const onError = (): void => finish({ kind: 'timed_out' });
+    const timeout = setTimeout(() => {
+      request.pause();
+      finish({ kind: 'timed_out' });
+    }, timeoutMs);
+    request.on('data', onData);
+    request.once('end', onEnd);
+    request.once('error', onError);
+  });
+}
 class ToolCallDeadlineError extends Error {}
 
 function isToolsCall(body: unknown): boolean {
