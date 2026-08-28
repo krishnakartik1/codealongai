@@ -298,6 +298,67 @@ suite('loopback endpoint traffic guard', () => {
       assert.equal(invalidHost, 403);
     } finally { await endpoint.stop(); }
   });
+
+  test('returns a retryable busy tool result through the MCP client', async () => {
+    let beginList: (() => void) | undefined;
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), {
+      workspaceFolderCount: () => 1,
+      listFiles: async () => new Promise<string[]>((resolve) => { beginList = () => resolve([]); }),
+      readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' })
+    });
+    await endpoint.start(0);
+    const firstTransport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+    const firstClient = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+    await firstClient.connect(firstTransport);
+    const firstCall = firstClient.callTool({ name: 'codealongai_list_workspace_files', arguments: { schemaVersion: 1 } });
+    try {
+      while (!beginList) await new Promise<void>((resolve) => setImmediate(resolve));
+      const busyResponse = await fetch(`http://127.0.0.1:${endpoint.port}/mcp`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'busy', method: 'tools/call', params: { name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId: 'missing' } } })
+      });
+      assert.equal(busyResponse.status, 200);
+      assert.deepEqual(await busyResponse.json(), { jsonrpc: '2.0', id: 'busy', result: { isError: true, structuredContent: { schemaVersion: 1, code: 'endpoint_busy', message: 'The endpoint is busy. Retry the tool call.', retryable: true }, content: [{ type: 'text', text: JSON.stringify({ schemaVersion: 1, code: 'endpoint_busy', message: 'The endpoint is busy. Retry the tool call.', retryable: true }) }] } });
+    } finally {
+      beginList?.();
+      await firstCall;
+      await firstTransport.close();
+      await endpoint.stop();
+    }
+  });
+
+  test('releases the tool-call guard after an expired read request', async () => {
+    let beginList: (() => void) | undefined;
+    const authority = new WalkthroughAuthority();
+    const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+    const start = authority.captureStart(origin);
+    const endpoint = new LoopbackMcpEndpoint(authority, {
+      workspaceFolderCount: () => 1,
+      listFiles: async () => new Promise<string[]>((resolve) => { beginList = () => resolve([]); }),
+      readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' })
+    }, 10);
+    await endpoint.start(0);
+    const firstTransport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+    const firstClient = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+    await firstClient.connect(firstTransport);
+    const firstCall = firstClient.callTool({ name: 'codealongai_list_workspace_files', arguments: { schemaVersion: 1 } });
+    void firstCall.catch(() => undefined);
+    try {
+      while (!beginList) await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      const retryTransport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+      const retryClient = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+      await retryClient.connect(retryTransport);
+      try {
+        const result = await retryClient.callTool({ name: 'codealongai_start_walkthrough', arguments: { schemaVersion: 1, requestId: start.id, origin } });
+        assert.equal(result.isError, undefined);
+      } finally { await retryTransport.close(); }
+    } finally {
+      beginList?.();
+      await firstTransport.close();
+      await endpoint.stop();
+    }
+  });
 });
 
 suite('replacement and reset over loopback MCP', () => {

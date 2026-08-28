@@ -17,12 +17,12 @@ const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.st
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
-const toolCallDeadlineMs = 30_000;
+const defaultToolCallDeadlineMs = 30_000;
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
   private toolCallInFlight = false;
-  public constructor(private readonly authority: WalkthroughAuthority, workspace: WorkspaceSource = unavailableWorkspace) {
+  public constructor(private readonly authority: WalkthroughAuthority, workspace: WorkspaceSource = unavailableWorkspace, private readonly toolCallDeadlineMs = defaultToolCallDeadlineMs) {
     this.workspace = new WorkspaceReader(workspace);
   }
   private readonly workspace: WorkspaceReader;
@@ -59,7 +59,7 @@ export class LoopbackMcpEndpoint {
         const result = { schemaVersion: 1, requestId: reset.id, status: reset.status === 'consumed' ? 'committed' : reset.status === 'cancelled' ? 'canceled' : 'pending', kind: 'reset', authorizedAction: 'reset', input: { expectedSessionId: reset.sessionId, expectedRevision: reset.revision } };
         return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
-      if (!request) return this.domainError('request_not_found', 'The requested walkthrough request is unavailable.', false);
+      if (!request) return domainErrorResult('request_not_found', 'The requested walkthrough request is unavailable.', false);
       const snapshot = { schemaVersion: 1, capturedAt: request.snapshot.capturedAt, status: 'inactive', positionEncoding: 'utf-16', origin: { path: request.snapshot.origin.document, range: request.snapshot.origin.range } };
       const result = { schemaVersion: 1, requestId: request.id, status: request.status === 'consumed' ? 'committed' : request.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: request.snapshot.capturedAt, kind: 'start', authorizedAction: 'start', input: { origin: { path: request.origin.document, range: request.origin.range } }, snapshot };
       return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -84,13 +84,13 @@ export class LoopbackMcpEndpoint {
       description: 'Commit an authorized origin-only walkthrough.',
       inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
-      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
+      if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const session = this.authority.start(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch {
-        return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false);
+        return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false);
       }
     });
     server.registerTool('codealongai_replace_walkthrough', {
@@ -98,33 +98,33 @@ export class LoopbackMcpEndpoint {
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), origin: originDescriptor }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
-      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
+      if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.replace(input.requestId, input.expectedSessionId, input.expectedRevision, input.origin);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_reset_walkthrough', {
       description: 'Atomically clear an authorized walkthrough without changing editor state or source documents.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive() }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
-      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
+      if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.reset(input.requestId, input.expectedSessionId, input.expectedRevision);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_commit_question_outcome', {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), outcome: questionOutcome }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
-      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
+      if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_navigate_walkthrough', {
       description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next edge, or directly to one known stop.',
@@ -134,13 +134,13 @@ export class LoopbackMcpEndpoint {
       ]),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
     }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection } | { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; targetStopId: string }, context) => {
-      if (context.mcpReq.signal.aborted) return this.domainError('request_cancelled', 'The request was cancelled before commit.', true);
+      if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         const receipt = 'targetStopId' in input
           ? this.authority.navigateDestination({ sessionId: input.expectedSessionId, revision: input.expectedRevision, targetStopId: input.targetStopId })
           : this.authority.navigate({ sessionId: input.expectedSessionId, revision: input.expectedRevision, sourceStopId: input.sourceStopId, direction: input.direction });
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return this.domainError('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     }); return server; };
     this.listener = http.createServer((request, response) => {
       void this.handleRequest(request, response, createServer);
@@ -180,15 +180,23 @@ export class LoopbackMcpEndpoint {
       return this.httpError(response, 400, -32700, 'Parse error');
     }
     const isToolCall = isToolsCall(parsedBody);
-    if (isToolCall && this.toolCallInFlight) return this.json(response, 409, { jsonrpc: '2.0', id: requestId(parsedBody), result: domainErrorResult('endpoint_busy', 'The endpoint is busy. Retry the tool call.', true) });
+    if (isToolCall && this.toolCallInFlight) return this.json(response, 200, { jsonrpc: '2.0', id: requestId(parsedBody), result: domainErrorResult('endpoint_busy', 'The endpoint is busy. Retry the tool call.', true) });
     if (isToolCall) this.toolCallInFlight = true;
-    const deadline = isToolCall ? setTimeout(() => response.destroy(), toolCallDeadlineMs) : undefined;
+    let deadline: NodeJS.Timeout | undefined;
+    const deadlineExpired = isToolCall ? new Promise<never>((_resolve, reject) => {
+      deadline = setTimeout(() => {
+        request.destroy();
+        response.destroy();
+        reject(new ToolCallDeadlineError());
+      }, this.toolCallDeadlineMs);
+    }) : undefined;
     try {
       const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await createServer().connect(transport);
-      await transport.handleRequest(request, response, parsedBody);
+      const handling = transport.handleRequest(request, response, parsedBody);
+      await (deadlineExpired ? Promise.race([handling, deadlineExpired]) : handling);
     } catch {
-      if (!response.headersSent) this.httpError(response, 500, -32603, 'Internal server error');
+      if (!response.headersSent && !response.destroyed) this.httpError(response, 500, -32603, 'Internal server error');
     } finally {
       if (deadline) clearTimeout(deadline);
       if (isToolCall) this.toolCallInFlight = false;
@@ -205,12 +213,8 @@ export class LoopbackMcpEndpoint {
       return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
     } catch (error) {
       const code = error instanceof WorkspaceError ? error.code : 'internal_error';
-      return this.domainError(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
+      return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
     }
-  }
-
-  private domainError(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
-    return domainErrorResult(code, message, retryable);
   }
 
   private async walkthroughSnapshot(): Promise<object> {
@@ -246,15 +250,16 @@ async function readBody(request: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
-    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += value.length;
+    const bodyChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += bodyChunk.length;
     if (bytes > maxRequestBytes) throw new BodyTooLargeError();
-    chunks.push(value);
+    chunks.push(bodyChunk);
   }
   return Buffer.concat(chunks).toString('utf8');
 }
 
 class BodyTooLargeError extends Error {}
+class ToolCallDeadlineError extends Error {}
 
 function isToolsCall(body: unknown): boolean {
   return !!body && typeof body === 'object' && !Array.isArray(body) && (body as { method?: unknown }).method === 'tools/call';
