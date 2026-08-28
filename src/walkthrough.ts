@@ -48,7 +48,7 @@ export class WalkthroughAuthority {
       snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending'
     };
     this.request = request;
-    return request;
+    return this.getStartRequest(request.id)!;
   }
 
   public getStartRequest(id: string): StartRequest | undefined {

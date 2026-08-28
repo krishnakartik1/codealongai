@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
+import { realpath } from 'node:fs/promises';
+import * as path from 'node:path';
 import { commitDeterministicOrigin, LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, type OriginDescriptor, WalkthroughAuthority } from './walkthrough';
+import type { WorkspaceSource } from './workspace';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -23,7 +26,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     if (!Number.isInteger(port) || port < 1024 || port > 65535) { endpointState = 'off'; void vscode.window.showErrorMessage('CodeAlongAI MCP port must be an integer from 1024 through 65535.'); return; }
     if (endpoint && activePort !== port) { await endpoint.stop(); endpoint = undefined; endpointState = 'off'; }
     if (!endpoint) {
-      endpoint = new LoopbackMcpEndpoint(authority);
+      endpoint = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
       try { await endpoint.start(port); activePort = port; endpointState = 'ready'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', true); }
       catch (error) { endpoint = undefined; endpointState = 'off'; void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false); void vscode.window.showErrorMessage(`CodeAlongAI could not start MCP: ${String(error)}`); }
     }
@@ -60,3 +63,30 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
 }
 
 export function deactivate(): void {}
+
+function vscodeWorkspaceSource(): WorkspaceSource {
+  return {
+    workspaceFolderCount: () => vscode.workspace.workspaceFolders?.length ?? 0,
+    files: async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) return [];
+      const uris = await vscode.workspace.findFiles('**/*');
+      const openDocuments = new Map(vscode.workspace.textDocuments.map((document) => [document.uri.toString(), document]));
+      const workspaceRoot = folder.uri.scheme === 'file' ? await realpath(folder.uri.fsPath) : undefined;
+      const files = await Promise.all(uris.map(async (uri) => {
+        const document = openDocuments.get(uri.toString());
+        if (document) return { path: vscode.workspace.asRelativePath(uri, false), text: document.getText(), dirty: document.isDirty, documentVersion: document.version };
+        try {
+          if (workspaceRoot && uri.scheme === 'file') {
+            const resolved = await realpath(uri.fsPath);
+            if (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}${path.sep}`)) return undefined;
+          }
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          if (bytes.byteLength > 1024 * 1024) return undefined;
+          return { path: vscode.workspace.asRelativePath(uri, false), text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), dirty: false };
+        } catch { return undefined; }
+      }));
+      return files.filter((file): file is NonNullable<typeof file> => file !== undefined);
+    }
+  };
+}
