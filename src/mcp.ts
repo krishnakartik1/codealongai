@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import type { OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
+import type { NavigationDirection, OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
@@ -85,6 +85,16 @@ export class LoopbackMcpEndpoint {
     }, (input) => {
       try {
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
+        return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
+    });
+    server.registerTool('codealongai_navigate_walkthrough', {
+      description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next graph edge.',
+      inputSchema: z.object({ schemaVersion, expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), sourceStopId: z.string().min(1), direction: z.enum(['back', 'next']) }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
+    }, (input: { schemaVersion: 1; expectedSessionId: string; expectedRevision: number; sourceStopId: string; direction: NavigationDirection }) => {
+      try {
+        const receipt = this.authority.navigate({ sessionId: input.expectedSessionId, revision: input.expectedRevision, sourceStopId: input.sourceStopId, direction: input.direction });
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     }); return server; };

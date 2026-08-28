@@ -209,3 +209,64 @@ suite('non-branching question outcomes and recovery', () => {
     assert.throws(() => authority.commitQuestionOutcome({ requestId: next.id, sessionId: before.id, revision: before.revision }, outcome));
   });
 });
+
+suite('walkthrough navigation', () => {
+  const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 2 } } };
+  const startedAuthority = (): WalkthroughAuthority => {
+    const authority = new WalkthroughAuthority();
+    const start = authority.captureStart(origin);
+    authority.start(start.id, origin);
+    const question = authority.captureQuestion(origin.stopId, 'Add stops');
+    const session = authority.getSession()!;
+    authority.commitQuestionOutcome({ requestId: question.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [
+      { id: 'same-file', displayName: 'Same', explanationMarkdown: 'Same', path: 'checkout.ts', range: origin.range, destinationIds: ['other-file'], recommendedNextId: 'other-file', backId: 'origin' },
+      { id: 'other-file', displayName: 'Other', explanationMarkdown: 'Other', path: 'pricing.ts', range: origin.range, destinationIds: [], backId: 'same-file' }
+    ], appendedDestinations: [{ sourceStopId: 'origin', destinationIds: ['same-file'] }], recommendedNextUpdates: [{ sourceStopId: 'origin', targetStopId: 'same-file' }] } });
+    return authority;
+  };
+
+  test('uses graph Back and producer-selected Next, never visit history', () => {
+    const authority = startedAuthority();
+    const before = authority.getSession()!;
+    assert.deepEqual(authority.navigate({ sessionId: before.id, revision: before.revision, sourceStopId: 'origin', direction: 'next' }), { schemaVersion: 1, sessionId: before.id, revision: before.revision + 1, attentionStopId: 'same-file', sourceStopId: 'origin', targetStopId: 'same-file' });
+    const afterNext = authority.getSession()!;
+    assert.equal(authority.navigate({ sessionId: afterNext.id, revision: afterNext.revision, sourceStopId: 'same-file', direction: 'back' }).targetStopId, 'origin');
+  });
+
+  test('uses an explicitly supplied historical source instead of current attention', () => {
+    const authority = startedAuthority();
+    let session = authority.getSession()!;
+    authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId: 'origin', direction: 'next' });
+    session = authority.getSession()!;
+    authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId: 'same-file', direction: 'next' });
+    session = authority.getSession()!;
+    const receipt = authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId: 'same-file', direction: 'back' });
+    assert.equal(receipt.targetStopId, 'origin');
+    assert.equal(receipt.attentionStopId, 'origin');
+  });
+
+  test('rejects terminal and stale navigation without changing the session', () => {
+    const authority = startedAuthority();
+    const session = authority.getSession()!;
+    assert.throws(() => authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId: 'other-file', direction: 'next' }));
+    assert.throws(() => authority.navigate({ sessionId: session.id, revision: session.revision - 1, sourceStopId: 'origin', direction: 'next' }));
+    assert.deepEqual(authority.getSession(), session);
+  });
+
+  test('navigates through the real loopback endpoint and reports conflicts', async () => {
+    const authority = startedAuthority();
+    const endpoint = new LoopbackMcpEndpoint(authority);
+    await endpoint.start(0);
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+    const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+    await client.connect(transport);
+    try {
+      const session = authority.getSession()!;
+      const moved = await client.callTool({ name: 'codealongai_navigate_walkthrough', arguments: { schemaVersion: 1, expectedSessionId: session.id, expectedRevision: session.revision, sourceStopId: 'origin', direction: 'next' } });
+      assert.deepEqual(moved.structuredContent, { schemaVersion: 1, sessionId: session.id, revision: session.revision + 1, attentionStopId: 'same-file', sourceStopId: 'origin', targetStopId: 'same-file' });
+      const conflict = await client.callTool({ name: 'codealongai_navigate_walkthrough', arguments: { schemaVersion: 1, expectedSessionId: session.id, expectedRevision: session.revision, sourceStopId: 'origin', direction: 'next' } });
+      assert.equal(conflict.isError, true);
+      assert.equal(authority.getSession()!.revision, session.revision + 1);
+    } finally { await transport.close(); await endpoint.stop(); }
+  });
+});

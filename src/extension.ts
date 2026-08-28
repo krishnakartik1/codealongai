@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { commitDeterministicOrigin, commitDeterministicQuestion, LoopbackMcpEndpoint } from './mcp';
-import { deriveOrigin, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, WalkthroughAuthority } from './walkthrough';
+import { deriveOrigin, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
@@ -16,12 +16,32 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
   let endpoint: LoopbackMcpEndpoint | undefined;
   let activePort: number | undefined;
   let endpointState: 'off' | 'ready' = 'off';
-  let thread: vscode.CommentThread | undefined;
+  const threads = new Map<string, vscode.CommentThread>();
   const threadStopIds = new Map<vscode.CommentThread, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
   let retryQuestionRequest: QuestionRequest | undefined;
+  const threadFor = (stop: WalkthroughStop, document: vscode.TextDocument): vscode.CommentThread => {
+    const existing = threads.get(stop.id);
+    if (existing) return existing;
+    const created = controller.createCommentThread(document.uri, asVscodeRange(stop.range), stop.conversation.map(commentFor));
+    created.label = `CodeAlongAI · ${stop.displayName}`;
+    created.contextValue = navigationContext(stop);
+    created.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    threads.set(stop.id, created);
+    threadStopIds.set(created, stop.id);
+    return created;
+  };
+  const refreshThreads = (session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>, targetId: string): void => {
+    for (const stop of session.stops) {
+      const current = threads.get(stop.id);
+      if (!current) continue;
+      current.comments = stop.conversation.map(commentFor);
+      current.contextValue = navigationContext(stop);
+      current.collapsibleState = stop.id === targetId ? vscode.CommentThreadCollapsibleState.Expanded : vscode.CommentThreadCollapsibleState.Collapsed;
+    }
+  };
   const discardQuestion = (requestId: string): void => {
     if (authority.getPendingQuestion()?.id === requestId) authority.discardQuestion(requestId);
     questionOutcomes.delete(requestId);
@@ -55,12 +75,9 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       if (!session) throw new Error('the producer did not create a walkthrough');
       const pendingQuestion = authority.getPendingQuestion();
       if (pendingQuestion) discardQuestion(pendingQuestion.id);
-      thread?.dispose();
-      thread = controller.createCommentThread(editor.document.uri, new vscode.Range(origin.range.start.line, origin.range.start.character, origin.range.end.line, origin.range.end.character), [{ body: invitation, mode: vscode.CommentMode.Preview, author: { name: 'CodeAlongAI' } }]);
-      thread.label = 'CodeAlongAI · Origin';
-      thread.contextValue = 'codealongai.walkthrough';
-      thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
-      threadStopIds.set(thread, session.origin.stopId);
+      for (const oldThread of threads.values()) oldThread.dispose();
+      threads.clear();
+      threadFor(session.stops[0], editor.document);
       return { endpointState, session };
     } catch (error) {
       retryStart = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.ask'); };
@@ -104,7 +121,8 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
-      reply.thread.comments = source.conversation.map((comment) => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } }));
+      reply.thread.comments = source.conversation.map(commentFor);
+      refreshThreads(committed, committed.attentionStopId);
     } catch (error) {
       void vscode.window.showErrorMessage(`CodeAlongAI could not answer the question: ${String(error)}`, 'Retry question', 'Discard question').then((action) => {
         if (action === 'Retry question') void retryQuestion?.();
@@ -112,11 +130,69 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       });
     }
   });
-  context.subscriptions.push(askWalkthroughCommand, submitCommentCommand, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { thread?.dispose(); void endpoint?.stop(); } });
+  const navigate = async (direction: NavigationDirection, thread?: vscode.CommentThread): Promise<void> => {
+    const session = authority.getSession();
+    const sourceStopId = thread ? threadStopIds.get(thread) : session?.attentionStopId;
+    if (!session || !sourceStopId) return;
+    const target = authority.navigationTarget(sourceStopId, direction);
+    if (!target) { void vscode.window.showErrorMessage(`CodeAlongAI ${direction} is unavailable for this walkthrough stop.`); return; }
+    const visibleBefore = new Set(vscode.window.visibleTextEditors.map((editor) => editor.document.uri.toString()));
+    const threadsBefore = new Map([...threads].map(([stopId, item]) => [stopId, item.collapsibleState]));
+    try {
+      const document = await openStopDocument(target);
+      await showStopDocument(document, target, session.origin);
+      threadFor(target, document);
+      refreshThreads(session, target.id);
+      authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId, direction });
+    } catch {
+      restorePreparedNavigation(visibleBefore, threads, threadsBefore);
+      void vscode.window.showErrorMessage('CodeAlongAI could not navigate to that walkthrough stop.');
+    }
+  };
+  const backCommand = vscode.commands.registerCommand('codealongai.walkthrough.back', (thread?: vscode.CommentThread) => navigate('back', thread));
+  const nextCommand = vscode.commands.registerCommand('codealongai.walkthrough.next', (thread?: vscode.CommentThread) => navigate('next', thread));
+  context.subscriptions.push(askWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, controller, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint(); }), { dispose: () => { for (const thread of threads.values()) thread.dispose(); void endpoint?.stop(); } });
   return { get endpointState() { return endpointState; }, get session() { return authority.getSession(); } };
 }
 
 export function deactivate(): void {}
+
+const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
+const asVscodeRange = (range: { start: { line: number; character: number }; end: { line: number; character: number } }): vscode.Range => new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
+const navigationContext = (stop: WalkthroughStop): string => `codealongai.walkthrough${stop.backId === undefined ? '' : '.back'}${stop.recommendedNextId === undefined ? '' : '.next'}`;
+
+async function openStopDocument(stop: Pick<WalkthroughStop, 'document' | 'range'>): Promise<vscode.TextDocument> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) throw new Error('workspace unavailable');
+  const path = normalizeWorkspacePath(stop.document);
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, ...path.split('/')));
+  if (stop.range.start.line >= document.lineCount || stop.range.end.line >= document.lineCount || stop.range.start.character > document.lineAt(stop.range.start.line).range.end.character || stop.range.end.character > document.lineAt(stop.range.end.line).range.end.character) throw new Error('stop range unavailable');
+  return document;
+}
+
+async function showStopDocument(document: vscode.TextDocument, stop: WalkthroughStop, origin: OriginDescriptor): Promise<void> {
+  let viewColumn: vscode.ViewColumn | undefined;
+  if (stop.id === origin.stopId) viewColumn = vscode.ViewColumn.One;
+  else if (stop.document !== origin.document) {
+    const originDocument = await openStopDocument(origin);
+    await vscode.window.showTextDocument(originDocument, { viewColumn: vscode.ViewColumn.One, preserveFocus: true, preview: false });
+    viewColumn = vscode.ViewColumn.Two;
+  } else viewColumn = vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === document.uri.toString())?.viewColumn ?? vscode.window.activeTextEditor?.viewColumn;
+  const editor = await vscode.window.showTextDocument(document, { viewColumn, preserveFocus: true, preview: false });
+  editor.revealRange(asVscodeRange(stop.range), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+}
+
+function restorePreparedNavigation(visibleBefore: ReadonlySet<string>, threads: Map<string, vscode.CommentThread>, threadsBefore: ReadonlyMap<string, vscode.CommentThreadCollapsibleState>): void {
+  for (const [stopId, thread] of threads) {
+    const previous = threadsBefore.get(stopId);
+    if (previous === undefined) { thread.dispose(); threads.delete(stopId); }
+    else thread.collapsibleState = previous;
+  }
+  for (const editor of vscode.window.visibleTextEditors) if (!visibleBefore.has(editor.document.uri.toString())) {
+    const tab = vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((item) => item.input instanceof vscode.TabInputText && item.input.uri.toString() === editor.document.uri.toString());
+    if (tab) void vscode.window.tabGroups.close(tab, true);
+  }
+}
 
 async function captureQuestionSnapshot(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): Promise<{ stopExcerpts: { stopId: string; path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string; documentVersion?: number }[]; editorState: { visibleEditors: string[]; activeVisibleEditorIndex?: number } }> {
   const documents = await Promise.all(session.stops.map(async (stop) => {

@@ -29,6 +29,14 @@
       {
         "command": "codealongai.walkthrough.submitComment",
         "title": "Reply to CodeAlongAI"
+      },
+      {
+        "command": "codealongai.walkthrough.back",
+        "title": "CodeAlongAI: Back"
+      },
+      {
+        "command": "codealongai.walkthrough.next",
+        "title": "CodeAlongAI: Next"
       }
     ],
     "menus": {
@@ -36,12 +44,32 @@
         {
           "command": "codealongai.walkthrough.submitComment",
           "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.back",
+          "when": "false"
+        },
+        {
+          "command": "codealongai.walkthrough.next",
+          "when": "false"
         }
       ],
       "comments/commentThread/context": [
         {
           "command": "codealongai.walkthrough.submitComment",
           "when": "commentThread == codealongai.walkthrough"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "codealongai.walkthrough.back",
+          "when": "commentThreadContext =~ /codealongai\\.walkthrough\\.back/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codealongai.walkthrough.next",
+          "when": "commentThreadContext =~ /codealongai\\.walkthrough\\.next/",
+          "group": "navigation@2"
         }
       ]
     },
