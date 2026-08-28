@@ -3,11 +3,16 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import type { OriginDescriptor, WalkthroughAuthority } from './walkthrough';
+import type { OriginDescriptor, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
 const pathInput = z.object({ schemaVersion, path: z.string().min(1), startLine: z.number().int().nonnegative().optional(), endLine: z.number().int().nonnegative().optional() }).strict();
+const position = z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict();
+const range = z.object({ start: position, end: position }).strict();
+const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
+const graphPatch = z.object({ addedStops: z.array(addedStop), appendedDestinations: z.array(z.object({ sourceStopId: z.string().min(1), destinationIds: z.array(z.string().min(1)) }).strict()), recommendedNextUpdates: z.array(z.object({ sourceStopId: z.string().min(1), targetStopId: z.string().min(1) }).strict()) }).strict();
+const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal('explanation-only'), answerMarkdown: z.string() }).strict(), z.object({ kind: z.literal('destination-offer'), answerMarkdown: z.string(), destinationIds: z.array(z.string().min(1)) }).strict(), z.object({ kind: z.literal('generated-walkthrough'), answerMarkdown: z.string(), patch: graphPatch }).strict(), z.object({ kind: z.literal('explicit-unsupported'), answerMarkdown: z.string() }).strict()]);
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 
@@ -33,6 +38,13 @@ export class LoopbackMcpEndpoint {
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1) }).strict(), annotations: readAnnotations
     }, async (input: { schemaVersion: 1; requestId: string }) => {
       const request = this.authority.getStartRequest(input.requestId);
+      const question = this.authority.getQuestionRequest(input.requestId);
+      if (question) {
+        const sessionSnapshot = question.snapshot.session;
+        const snapshot = { sessionId: sessionSnapshot.id, revision: sessionSnapshot.revision, humanOriginStopId: sessionSnapshot.origin.stopId, attentionStopId: sessionSnapshot.attentionStopId, origin: sessionSnapshot.origin, stops: sessionSnapshot.stops, stopExcerpts: question.snapshot.stopExcerpts, editorState: question.snapshot.editorState };
+        const result = { schemaVersion: 1, requestId: question.id, status: question.status === 'consumed' ? 'committed' : question.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: question.capturedAt, kind: 'question', authorizedAction: 'question', input: { sessionId: question.sessionId, revision: question.revision, sourceStopId: question.sourceStopId, text: question.text }, snapshot };
+        return { structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
       if (!request) return this.domainError('request_not_found', 'The requested walkthrough request is unavailable.', false);
       const snapshot = { schemaVersion: 1, capturedAt: request.snapshot.capturedAt, status: 'inactive', positionEncoding: 'utf-16', origin: { path: request.snapshot.origin.document, range: request.snapshot.origin.range } };
       const result = { schemaVersion: 1, requestId: request.id, status: request.status === 'consumed' ? 'committed' : request.status === 'cancelled' ? 'canceled' : 'pending', capturedAt: request.snapshot.capturedAt, kind: 'start', authorizedAction: 'start', input: { origin: { path: request.origin.document, range: request.origin.range } }, snapshot };
@@ -65,6 +77,16 @@ export class LoopbackMcpEndpoint {
       } catch (error) {
         return { isError: true, content: [{ type: 'text', text: String(error) }] };
       }
+    });
+    server.registerTool('codealongai_commit_question_outcome', {
+      description: 'Atomically commit one authorized question outcome and append-only graph patch.',
+      inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), outcome: questionOutcome }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    }, (input) => {
+      try {
+        const receipt = this.authority.commitQuestionOutcome(input.requestId, input.expectedSessionId, input.expectedRevision, input.outcome as QuestionOutcome);
+        return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } catch (error) { return { isError: true, content: [{ type: 'text', text: String(error) }] }; }
     }); return server; };
     const validateHost = localhostHostValidation();
     const validateOrigin = localhostOriginValidation();
@@ -111,12 +133,11 @@ export class LoopbackMcpEndpoint {
   private async walkthroughSnapshot(): Promise<object> {
     const session = this.authority.getSession();
     if (!session) return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'inactive' };
-    let stopExcerpts: object[] = [];
-    try {
-      const excerpt = await this.workspace.read({ path: session.origin.document, startLine: session.origin.range.start.line, endLine: session.origin.range.end.line + 1 });
-      stopExcerpts = [{ stopId: session.origin.stopId, path: excerpt.path, range: session.origin.range, text: excerpt.text, ...(excerpt.documentVersion === undefined ? {} : { documentVersion: excerpt.documentVersion }) }];
-    } catch { /* A snapshot never widens the workspace boundary when an origin file is no longer readable. */ }
-    return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'active', positionEncoding: 'utf-16', sessionId: session.id, revision: session.revision, humanOriginStopId: session.origin.stopId, attentionStopId: session.attentionStopId, stops: [{ id: session.origin.stopId, displayName: session.origin.displayName, explanation: session.origin.explanation, path: session.origin.document, range: session.origin.range, destinations: [], conversation: [] }], stopExcerpts, editorState: { visibleEditors: [] } };
+    const stopExcerpts = await Promise.all(session.stops.map(async (stop) => {
+      try { const excerpt = await this.workspace.read({ path: stop.document, startLine: stop.range.start.line, endLine: stop.range.end.line + 1 }); return { stopId: stop.id, path: excerpt.path, range: stop.range, text: excerpt.text, ...(excerpt.documentVersion === undefined ? {} : { documentVersion: excerpt.documentVersion }) }; }
+      catch { return undefined; }
+    }));
+    return { schemaVersion: 1, capturedAt: new Date().toISOString(), status: 'active', positionEncoding: 'utf-16', sessionId: session.id, revision: session.revision, humanOriginStopId: session.origin.stopId, attentionStopId: session.attentionStopId, origin: session.origin, stops: session.stops.map((stop) => ({ id: stop.id, displayName: stop.displayName, explanation: stop.explanation, path: stop.document, range: stop.range, destinationIds: stop.destinationIds, ...(stop.recommendedNextId === undefined ? {} : { recommendedNextId: stop.recommendedNextId }), ...(stop.backId === undefined ? {} : { backId: stop.backId }), conversation: stop.conversation })), stopExcerpts: stopExcerpts.filter((excerpt): excerpt is Exclude<typeof excerpt, undefined> => excerpt !== undefined), editorState: { visibleEditors: [] } };
   }
 }
 
@@ -151,4 +172,17 @@ export async function commitDeterministicOrigin(port: number, requestId: string,
   } finally {
     await transport.close();
   }
+}
+
+/** The deterministic question producer exercises the same loopback command boundary. */
+export async function commitDeterministicQuestion(port: number, requestId: string, sessionId: string, revision: number, outcome: QuestionOutcome): Promise<void> {
+  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+  await client.connect(transport);
+  try {
+    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
+    if (request.isError || request.structuredContent === null) throw new Error('the authorized question request is unavailable');
+    const result = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId, expectedSessionId: sessionId, expectedRevision: revision, outcome } });
+    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
+  } finally { await transport.close(); }
 }

@@ -1,81 +1,45 @@
 export interface Position { line: number; character: number; }
 export interface Range { start: Position; end: Position; }
 export interface OriginAnchor { document: string; range: Range; }
-export interface OriginDescriptor extends OriginAnchor {
-  stopId: string;
-  displayName: string;
-  explanation: string;
-}
-export interface StartRequest {
-  id: string;
-  readonly kind: 'start';
-  readonly origin: OriginAnchor;
-  readonly snapshot: { readonly capturedAt: string; readonly origin: OriginAnchor };
-  status: 'pending' | 'consumed' | 'cancelled';
-}
-export interface WalkthroughSession {
-  readonly id: string;
-  readonly revision: 1;
-  readonly origin: OriginDescriptor;
-  readonly attentionStopId: string;
-}
-
+export interface OriginDescriptor extends OriginAnchor { stopId: string; displayName: string; explanation: string; }
+export interface ConversationComment { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string; }
+export interface WalkthroughStop extends OriginDescriptor { id: string; destinationIds: string[]; recommendedNextId?: string; backId?: string; conversation: ConversationComment[]; }
+export interface AddedStop { id: string; displayName: string; explanationMarkdown: string; path: string; range: Range; destinationIds: string[]; recommendedNextId?: string; backId?: string; }
+export interface GraphPatch { addedStops: AddedStop[]; appendedDestinations: { sourceStopId: string; destinationIds: string[] }[]; recommendedNextUpdates: { sourceStopId: string; targetStopId: string }[]; }
+export type QuestionOutcome = { kind: 'explanation-only'; answerMarkdown: string } | { kind: 'destination-offer'; answerMarkdown: string; destinationIds: string[] } | { kind: 'generated-walkthrough'; answerMarkdown: string; patch: GraphPatch } | { kind: 'explicit-unsupported'; answerMarkdown: string };
+export interface StartRequest { id: string; readonly kind: 'start'; readonly origin: OriginAnchor; readonly snapshot: { readonly capturedAt: string; readonly origin: OriginAnchor }; status: 'pending' | 'consumed' | 'cancelled'; }
+export interface StopExcerpt { stopId: string; path: string; range: Range; text: string; documentVersion?: number; }
+export interface QuestionSnapshot { session: WalkthroughSession; stopExcerpts: readonly StopExcerpt[]; editorState: { readonly visibleEditors: readonly string[]; readonly activeVisibleEditorIndex?: number }; }
+export interface QuestionRequest { id: string; readonly kind: 'question'; readonly sessionId: string; readonly revision: number; readonly sourceStopId: string; readonly text: string; readonly capturedAt: string; readonly snapshot: QuestionSnapshot; status: 'pending' | 'consumed' | 'cancelled'; }
+export interface WalkthroughSession { readonly id: string; readonly revision: number; readonly origin: OriginDescriptor; readonly attentionStopId: string; readonly stops: readonly WalkthroughStop[]; }
 let nextId = 1;
 const identifier = (prefix: string): string => `${prefix}-${nextId++}`;
-const copyAnchor = (origin: OriginAnchor): OriginAnchor => ({ document: origin.document, range: { start: { ...origin.range.start }, end: { ...origin.range.end } } });
-
+const copyRange = (range: Range): Range => ({ start: { ...range.start }, end: { ...range.end } });
+const copyAnchor = (anchor: OriginAnchor): OriginAnchor => ({ document: anchor.document, range: copyRange(anchor.range) });
+const copyStop = (stop: WalkthroughStop): WalkthroughStop => ({ ...stop, range: copyRange(stop.range), destinationIds: [...stop.destinationIds], conversation: stop.conversation.map((comment) => ({ ...comment })) });
 export function deriveOrigin(document: string, selection: Range, lineText: string): OriginAnchor | undefined {
-  if (selection.start.line !== selection.end.line || selection.start.character !== selection.end.character) {
-    return { document, range: selection };
-  }
-  if (lineText.trim().length === 0) return undefined;
-  return {
-    document,
-    range: {
-      start: { line: selection.start.line, character: 0 },
-      end: { line: selection.start.line, character: lineText.length }
-    }
-  };
+  if (selection.start.line !== selection.end.line || selection.start.character !== selection.end.character) return { document, range: copyRange(selection) };
+  if (!lineText.trim()) return undefined;
+  return { document, range: { start: { line: selection.start.line, character: 0 }, end: { line: selection.start.line, character: lineText.length } } };
 }
-
 export class WalkthroughAuthority {
-  private request: StartRequest | undefined;
+  private startRequest: StartRequest | undefined;
+  private questionRequest: QuestionRequest | undefined;
   private session: WalkthroughSession | undefined;
-
-  public captureStart(origin: OriginAnchor): StartRequest {
-    const request: StartRequest = {
-      id: identifier('request'), kind: 'start', origin: copyAnchor(origin),
-      snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending'
-    };
-    this.request = request;
-    return this.getStartRequest(request.id)!;
-  }
-
-  public getStartRequest(id: string): StartRequest | undefined {
-    const request = this.request?.id === id ? this.request : undefined;
-    return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, origin: copyAnchor(request.snapshot.origin) } };
-  }
-
-  public getSession(): WalkthroughSession | undefined { return this.session; }
-  public getPendingStart(): StartRequest | undefined {
-    return this.request?.status === 'pending' ? this.getStartRequest(this.request.id) : undefined;
-  }
-
-  public start(requestId: string, origin: OriginDescriptor): WalkthroughSession {
-    const request = this.request?.id === requestId ? this.request : undefined;
-    if (!request || request.status !== 'pending') throw new Error('start request is unavailable');
-    if (!sameAnchor(request.origin, origin)) throw new Error('origin does not match the authorized request');
-    const session: WalkthroughSession = {
-      id: identifier('walkthrough'), revision: 1, origin, attentionStopId: origin.stopId
-    };
-    request.status = 'consumed';
-    this.session = session;
-    return session;
-  }
-
-  public discardStart(): void { if (this.request?.status === 'pending') this.request.status = 'cancelled'; }
+  public captureStart(origin: OriginAnchor): StartRequest { const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; return this.getStartRequest(request.id)!; }
+  public getStartRequest(id: string): StartRequest | undefined { const request = this.startRequest?.id === id ? this.startRequest : undefined; return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, origin: copyAnchor(request.snapshot.origin) } }; }
+  public getSession(): WalkthroughSession | undefined { return this.session && { ...this.session, origin: { ...this.session.origin, range: copyRange(this.session.origin.range) }, stops: this.session.stops.map(copyStop) }; }
+  public getPendingStart(): StartRequest | undefined { return this.startRequest?.status === 'pending' ? this.getStartRequest(this.startRequest.id) : undefined; }
+  public start(requestId: string, origin: OriginDescriptor): WalkthroughSession { const request = this.startRequest?.id === requestId ? this.startRequest : undefined; if (!request || request.status !== 'pending') throw new Error('start request is unavailable'); if (!sameAnchor(request.origin, origin)) throw new Error('origin does not match the authorized request'); const originStop: WalkthroughStop = { ...origin, id: origin.stopId, range: copyRange(origin.range), destinationIds: [], conversation: [{ author: 'CodeAlongAI', bodyMarkdown: origin.explanation }] }; this.session = { id: identifier('walkthrough'), revision: 1, origin: { ...origin, range: copyRange(origin.range) }, attentionStopId: origin.stopId, stops: [originStop] }; request.status = 'consumed'; return this.getSession()!; }
+  public captureQuestion(sourceStopId: string, text: string, details: Omit<QuestionSnapshot, 'session'> = { stopExcerpts: [], editorState: { visibleEditors: [] } }): QuestionRequest { const session = this.session; const trimmed = text.trim(); if (!session || !session.stops.some((stop) => stop.id === sourceStopId)) throw new Error('question source is unavailable'); if (!trimmed) throw new Error('question text is empty'); if (this.questionRequest?.status === 'pending') throw new Error('question request is already pending'); const request: QuestionRequest = { id: identifier('request'), kind: 'question', sessionId: session.id, revision: session.revision, sourceStopId, text: trimmed, capturedAt: new Date().toISOString(), snapshot: { session: this.getSession()!, stopExcerpts: details.stopExcerpts.map((excerpt) => ({ ...excerpt, range: copyRange(excerpt.range) })), editorState: { ...details.editorState, visibleEditors: [...details.editorState.visibleEditors] } }, status: 'pending' }; this.questionRequest = request; return this.getQuestionRequest(request.id)!; }
+  public getQuestionRequest(id: string): QuestionRequest | undefined { return this.questionRequest?.id === id ? { ...this.questionRequest, snapshot: { session: { ...this.questionRequest.snapshot.session, stops: this.questionRequest.snapshot.session.stops.map(copyStop) }, stopExcerpts: this.questionRequest.snapshot.stopExcerpts.map((excerpt) => ({ ...excerpt, range: copyRange(excerpt.range) })), editorState: { ...this.questionRequest.snapshot.editorState, visibleEditors: [...this.questionRequest.snapshot.editorState.visibleEditors] } } } : undefined; }
+  public getPendingQuestion(): QuestionRequest | undefined { return this.questionRequest?.status === 'pending' ? this.getQuestionRequest(this.questionRequest.id) : undefined; }
+  public discardQuestion(): void { if (this.questionRequest?.status === 'pending') this.questionRequest.status = 'cancelled'; }
+  public commitQuestionOutcome(requestId: string, sessionId: string, revision: number, outcome: QuestionOutcome): { schemaVersion: 1; status: 'committed'; requestId: string; sessionId: string; revision: number; attentionStopId: string } { const request = this.questionRequest?.id === requestId ? this.questionRequest : undefined; const session = this.session; if (!request || request.status !== 'pending' || !session || request.sessionId !== sessionId || session.id !== sessionId || request.revision !== revision || session.revision !== revision) throw new Error('question request is unavailable or stale'); const stops = session.stops.map(copyStop); if (outcome.kind === 'generated-walkthrough') applyPatch(stops, outcome.patch); if (outcome.kind === 'destination-offer') validateOffer(stops, request.sourceStopId, outcome.destinationIds); const source = stops.find((stop) => stop.id === request.sourceStopId); if (!source) throw new Error('question source is unavailable'); source.conversation.push({ author: 'You', bodyMarkdown: request.text }, { author: 'CodeAlongAI', bodyMarkdown: outcome.answerMarkdown }); validateGraph(stops, session.origin.stopId); this.session = { ...session, revision: session.revision + 1, stops }; request.status = 'consumed'; return { schemaVersion: 1, status: 'committed', requestId, sessionId, revision: this.session.revision, attentionStopId: this.session.attentionStopId }; }
+  public discardStart(): void { if (this.startRequest?.status === 'pending') this.startRequest.status = 'cancelled'; }
 }
-
-export function sameAnchor(left: OriginAnchor, right: OriginAnchor): boolean {
-  return left.document === right.document && JSON.stringify(left.range) === JSON.stringify(right.range);
-}
+function applyPatch(stops: WalkthroughStop[], patch: GraphPatch): void { const ids = new Set(stops.map((stop) => stop.id)); if (!patch.addedStops.length && !patch.appendedDestinations.length && !patch.recommendedNextUpdates.length) throw new Error('graph patch has no append'); for (const added of patch.addedStops) { if (ids.has(added.id)) throw new Error('graph patch rewrites an existing stop'); ids.add(added.id); stops.push({ id: added.id, stopId: added.id, displayName: added.displayName, explanation: added.explanationMarkdown, document: added.path, range: copyRange(added.range), destinationIds: [...added.destinationIds], ...(added.recommendedNextId === undefined ? {} : { recommendedNextId: added.recommendedNextId }), ...(added.backId === undefined ? {} : { backId: added.backId }), conversation: [] }); } for (const append of patch.appendedDestinations) { const source = stops.find((stop) => stop.id === append.sourceStopId); if (!source || append.destinationIds.some((id) => source.destinationIds.includes(id) || !ids.has(id))) throw new Error('graph patch has invalid destination append'); source.destinationIds.push(...append.destinationIds); } for (const update of patch.recommendedNextUpdates) { const source = stops.find((stop) => stop.id === update.sourceStopId); if (!source || source.recommendedNextId !== undefined || !source.destinationIds.includes(update.targetStopId)) throw new Error('graph patch rewrites recommended next'); source.recommendedNextId = update.targetStopId; } }
+function reachable(stops: readonly WalkthroughStop[], startId: string): Set<string> { const byId = new Map(stops.map((stop) => [stop.id, stop])); const found = new Set<string>(); const pending = [startId]; while (pending.length) { const id = pending.pop()!; if (found.has(id)) continue; found.add(id); for (const target of byId.get(id)?.destinationIds ?? []) pending.push(target); } return found; }
+function validateOffer(stops: readonly WalkthroughStop[], sourceId: string, ids: readonly string[]): void { if (!ids.length || new Set(ids).size !== ids.length || ids.includes(sourceId) || ids.some((id) => !reachable(stops, sourceId).has(id))) throw new Error('destination offer is invalid'); }
+function validateGraph(stops: readonly WalkthroughStop[], originId: string): void { const ids = new Set(stops.map((stop) => stop.id)); if (ids.size !== stops.length || !ids.has(originId)) throw new Error('graph has duplicate or missing stops'); for (const stop of stops) if (new Set(stop.destinationIds).size !== stop.destinationIds.length || stop.destinationIds.some((id) => !ids.has(id)) || (stop.recommendedNextId !== undefined && !stop.destinationIds.includes(stop.recommendedNextId)) || (stop.backId !== undefined && !ids.has(stop.backId))) throw new Error('graph has unresolved references'); if (reachable(stops, originId).size !== stops.length) throw new Error('graph has disconnected stops'); }
+export function sameAnchor(left: OriginAnchor, right: OriginAnchor): boolean { return left.document === right.document && JSON.stringify(left.range) === JSON.stringify(right.range); }

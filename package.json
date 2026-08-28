@@ -25,8 +25,26 @@
         "command": "codealongai.walkthrough.ask",
         "title": "CodeAlongAI: Ask about this code",
         "enablement": "codealongai.mcpReady"
+      },
+      {
+        "command": "codealongai.walkthrough.submitComment",
+        "title": "Reply to CodeAlongAI"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "codealongai.walkthrough.submitComment",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "codealongai.walkthrough.submitComment",
+          "when": "commentThread == codealongai.walkthrough"
+        }
+      ]
+    },
     "configuration": {
       "title": "CodeAlongAI",
       "properties": {
