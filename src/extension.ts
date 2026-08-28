@@ -136,7 +136,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     if (!session || !sourceStopId) return;
     const target = authority.navigationTarget(sourceStopId, direction);
     if (!target) { void vscode.window.showErrorMessage(`CodeAlongAI ${direction} is unavailable for this walkthrough stop.`); return; }
-    const visibleBefore = new Set(vscode.window.visibleTextEditors.map((editor) => editor.document.uri.toString()));
+    const tabsBefore = visibleTextTabLocations();
     const threadsBefore = new Map([...threads].map(([stopId, item]) => [stopId, item.collapsibleState]));
     try {
       const document = await openStopDocument(target);
@@ -145,7 +145,7 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
       refreshThreads(session, target.id);
       authority.navigate({ sessionId: session.id, revision: session.revision, sourceStopId, direction });
     } catch {
-      restorePreparedNavigation(visibleBefore, threads, threadsBefore);
+      await restorePreparedNavigation(tabsBefore, threads, threadsBefore);
       void vscode.window.showErrorMessage('CodeAlongAI could not navigate to that walkthrough stop.');
     }
   };
@@ -182,16 +182,18 @@ async function showStopDocument(document: vscode.TextDocument, stop: Walkthrough
   editor.revealRange(asVscodeRange(stop.range), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 }
 
-function restorePreparedNavigation(visibleBefore: ReadonlySet<string>, threads: Map<string, vscode.CommentThread>, threadsBefore: ReadonlyMap<string, vscode.CommentThreadCollapsibleState>): void {
+function visibleTextTabLocations(): Set<string> {
+  return new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs).flatMap((tab) => tab.input instanceof vscode.TabInputText ? [`${tab.input.uri.toString()}\u0000${tab.group.viewColumn}`] : []));
+}
+
+async function restorePreparedNavigation(tabsBefore: ReadonlySet<string>, threads: Map<string, vscode.CommentThread>, threadsBefore: ReadonlyMap<string, vscode.CommentThreadCollapsibleState>): Promise<void> {
   for (const [stopId, thread] of threads) {
     const previous = threadsBefore.get(stopId);
     if (previous === undefined) { thread.dispose(); threads.delete(stopId); }
     else thread.collapsibleState = previous;
   }
-  for (const editor of vscode.window.visibleTextEditors) if (!visibleBefore.has(editor.document.uri.toString())) {
-    const tab = vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((item) => item.input instanceof vscode.TabInputText && item.input.uri.toString() === editor.document.uri.toString());
-    if (tab) void vscode.window.tabGroups.close(tab, true);
-  }
+  const addedTabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => tab.input instanceof vscode.TabInputText && !tabsBefore.has(`${tab.input.uri.toString()}\u0000${tab.group.viewColumn}`));
+  if (addedTabs.length) await vscode.window.tabGroups.close(addedTabs, true);
 }
 
 async function captureQuestionSnapshot(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): Promise<{ stopExcerpts: { stopId: string; path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string; documentVersion?: number }[]; editorState: { visibleEditors: string[]; activeVisibleEditorIndex?: number } }> {
