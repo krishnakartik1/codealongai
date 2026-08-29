@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as http from 'node:http';
+import * as vscode from 'vscode';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
@@ -8,6 +9,70 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { LoopbackMcpEndpoint } from '../mcp';
 import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadComments, threadLabel } from '../extension';
 import { McpLifecycle } from '../lifecycle';
+
+interface WalkthroughTestApi {
+  readonly endpointState: string;
+  readonly session: WalkthroughSession | undefined;
+  threadAt(stopId: string): vscode.CommentThread | undefined;
+}
+
+async function activeWalkthrough(): Promise<WalkthroughTestApi> {
+  const extension = vscode.extensions.getExtension<WalkthroughTestApi>('krishnakartik1.codealongai');
+  assert.ok(extension, 'the CodeAlongAI extension should be installed in the Extension Development Host');
+  return extension.activate();
+}
+
+async function eventually<T>(read: () => T | undefined, message: string): Promise<T> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(message);
+}
+
+suite('Extension Development Host walkthrough', () => {
+  test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
+    const api = await activeWalkthrough();
+    const configuration = vscode.workspace.getConfiguration('codealongai.mcp');
+    await configuration.update('enabled', true, vscode.ConfigurationTarget.Workspace);
+    await eventually(() => api.endpointState === 'ready' ? true : undefined, 'the loopback MCP endpoint should become ready');
+
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'the approved two-file workspace should be open');
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+    const editor = await vscode.window.showTextDocument(document);
+    const selection = new vscode.Selection(2, 0, 2, 22);
+    editor.selection = selection;
+    const sourceBefore = document.getText();
+
+    await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+    const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
+    assert.deepEqual(origin.origin, {
+      stopId: 'checkout-origin',
+      displayName: 'Origin',
+      explanation: 'What would you like to understand about this code?',
+      document: 'checkout.ts',
+      range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } }
+    });
+
+    const thread = await eventually(() => api.threadAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
+    await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread, text: 'Follow this value.' });
+    const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
+    assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
+    assert.equal(document.getText(), sourceBefore);
+    assert.deepEqual(editor.selection, selection);
+
+    await vscode.commands.executeCommand('codealongai.walkthrough.next');
+    const definition = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
+    const definitionThread = await eventually(() => api.threadAt(definition.attentionStopId), 'Definition should render a native CodeAlongAI comment thread');
+    await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: definitionThread, text: 'Where does the reducer start?' });
+    const complete = await eventually(() => api.session?.stops.length === 6 ? api.session : undefined, 'the second native reply should add Initial value');
+    assert.deepEqual(complete.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart', 'initial-value']);
+    assert.equal(complete.attentionStopId, 'pricing-function');
+    assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
+  });
+});
 
 suite('MCP lifecycle', () => {
   test('serializes setting churn so the last valid configuration wins', async () => {
@@ -91,8 +156,27 @@ suite('MCP lifecycle', () => {
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
 suite('walkthrough start authority', () => {
-  test('exposes reply and destinations on every CodeAlongAI thread', () => {
-    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { commands: { command: string; icon?: string }[]; menus: { 'comments/commentThread/context': { command: string; when: string; group?: string }[]; 'comments/commentThread/title': { command: string; when: string }[] } } };
+  test('publishes the stable walkthrough command, menu, and MCP-setting contract', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { commands: { command: string; title: string; icon?: string }[]; menus: { commandPalette: { command: string; when: string }[]; 'comments/commentThread/context': { command: string; when: string; group?: string }[]; 'comments/commentThread/title': { command: string; when: string; group?: string }[] }; configuration: { properties: Record<string, { type: string; default: unknown; scope: string; description: string }> } }; keybindings?: unknown };
+    assert.deepEqual(manifest.contributes.commands.filter((item) => item.command !== 'codealongai.walkthrough.submitComment').map(({ command, title }) => ({ command, title })), [
+      { command: 'codealongai.walkthrough.ask', title: 'CodeAlongAI: Ask about this code' },
+      { command: 'codealongai.walkthrough.reset', title: 'CodeAlongAI: Reset walkthrough' },
+      { command: 'codealongai.walkthrough.back', title: 'CodeAlongAI: Back' },
+      { command: 'codealongai.walkthrough.next', title: 'CodeAlongAI: Next' },
+      { command: 'codealongai.walkthrough.destinations', title: 'CodeAlongAI: Destinations' }
+    ]);
+    assert.equal(manifest.keybindings, undefined);
+    assert.deepEqual(manifest.contributes.menus.commandPalette, [
+      { command: 'codealongai.walkthrough.submitComment', when: 'false' },
+      { command: 'codealongai.walkthrough.reset', when: 'false' },
+      { command: 'codealongai.walkthrough.back', when: 'false' },
+      { command: 'codealongai.walkthrough.next', when: 'false' },
+      { command: 'codealongai.walkthrough.destinations', when: 'false' }
+    ]);
+    assert.deepEqual(manifest.contributes.configuration.properties, {
+      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
+      'codealongai.mcp.port': { type: 'number', default: 61337, scope: 'window', description: 'Loopback port for the CodeAlongAI MCP endpoint.' }
+    });
     assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
     assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/'));
     assert.deepEqual(manifest.contributes.commands.filter((item) => ['codealongai.walkthrough.back', 'codealongai.walkthrough.next', 'codealongai.walkthrough.destinations', 'codealongai.walkthrough.submitComment'].includes(item.command)).map((item) => item.icon), ['$(send)', '$(arrow-left)', '$(arrow-right)', '$(list-tree)']);

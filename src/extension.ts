@@ -13,7 +13,18 @@ export const commentThreadOptions = {
   placeHolder: 'Type a question (try “Why is this negative?”)'
 };
 
-export function activate(context: vscode.ExtensionContext): { readonly endpointState: McpLifecycleState; readonly session: ReturnType<WalkthroughAuthority['getSession']> } {
+/**
+ * The extension export is deliberately observation-only.  Extension Development
+ * Host tests use a native thread as the command argument, but cannot alter
+ * walkthrough state except through registered VS Code commands.
+ */
+export interface WalkthroughTestApi {
+  readonly endpointState: McpLifecycleState;
+  readonly session: ReturnType<WalkthroughAuthority['getSession']>;
+  threadAt(stopId: string): vscode.CommentThread | undefined;
+}
+
+export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const authority = new WalkthroughAuthority();
   const controller = vscode.comments.createCommentController('codealongai.walkthrough', 'CodeAlongAI walkthrough');
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
@@ -264,7 +275,11 @@ export function activate(context: vscode.ExtensionContext): { readonly endpointS
     const question = authority.getPendingQuestion();
     if (question) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry question').then((action) => { if (action === 'Retry question') void retryQuestion?.(); });
   }); }), { dispose: () => { disposeThreads(); void lifecycle.dispose(); } });
-  return { get endpointState() { return lifecycle.state; }, get session() { return authority.getSession(); } };
+  return {
+    get endpointState() { return lifecycle.state; },
+    get session() { return authority.getSession(); },
+    threadAt(stopId) { return threads.get(stopId); }
+  };
 }
 
 export function deactivate(): void {}
