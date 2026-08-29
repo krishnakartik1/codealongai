@@ -293,7 +293,7 @@ suite('TrueForge setup sidecar', () => {
     const ports = [48123, 48124];
     const runtime: TrueForgeRuntime = {
       producer,
-      start: async ({ port }) => { calls.push(`start:${port}`); }, health: async () => true, verifyCapability: async () => true,
+      start: async ({ port }) => { calls.push(`start:${port}`); ownsChild = true; }, health: async () => true, verifyCapability: async () => true,
       hasExited: () => false, ownsRunningChild: async () => ownsChild, open: async (url) => { calls.push(`open:${url}`); }, stop: async () => { calls.push('stop'); }
     };
     const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => ports.shift()!);
