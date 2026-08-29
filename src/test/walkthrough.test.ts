@@ -671,17 +671,23 @@ suite('Daytona producer readiness', () => {
   test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
-    const probesBefore = commandRuntime.probeCalls;
-    commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-    await vscode.commands.executeCommand('codealongai.trueforge.configure');
-    assert.deepEqual(api.session, before);
-    assert.equal(api.hasPendingWalkthroughRequest, false);
-    assert.equal(commandRuntime.probeCalls, probesBefore + 1);
-    commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-    await vscode.commands.executeCommand('codealongai.trueforge.configure');
-    assert.deepEqual(api.session, before);
-    assert.equal(api.hasPendingWalkthroughRequest, false);
-    assert.equal(commandRuntime.probeCalls, probesBefore + 2);
+    await withMcpEnabled(api, async () => {
+      const probesBefore = commandRuntime.probeCalls;
+      try {
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+        await vscode.commands.executeCommand('codealongai.trueforge.configure');
+        assert.deepEqual(api.session, before);
+        assert.equal(api.hasPendingWalkthroughRequest, false);
+        assert.equal(commandRuntime.probeCalls, probesBefore + 1);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        await vscode.commands.executeCommand('codealongai.trueforge.configure');
+        assert.deepEqual(api.session, before);
+        assert.equal(api.hasPendingWalkthroughRequest, false);
+        assert.equal(commandRuntime.probeCalls, probesBefore + 2);
+      } finally {
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      }
+    });
   });
 
   test('proves the disposable public lifecycle and retains only its safe result', async () => {
