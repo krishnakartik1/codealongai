@@ -17,7 +17,7 @@ export async function recoverStaleOwnership(lockPath: string): Promise<boolean> 
   if (!record || processIsAlive(record.ownerPid)) return false;
   const candidate = await findRecordedChild(record);
   if (candidate === 'unsafe') return false;
-  if (candidate !== undefined && !await terminateOwnedProcess(candidate)) return false;
+  if (candidate !== undefined && !await terminateOwnedProcess(candidate, record)) return false;
   await unlink(lockPath).catch(() => undefined);
   return true;
 }
@@ -73,10 +73,11 @@ export async function processStartTime(pid: number): Promise<string> {
 
 function processIsAlive(pid: number): boolean { try { process.kill(pid, 0); return pid > 0; } catch { return false; } }
 
-async function terminateOwnedProcess(pid: number): Promise<boolean> {
+async function terminateOwnedProcess(pid: number, record: OwnershipRecord): Promise<boolean> {
+  if (!await ownsRecordedChild(record)) return false;
   process.kill(pid, 'SIGTERM');
   if (await waitForPidExit(pid, 5_000)) return true;
-  if (processIsAlive(pid)) process.kill(pid, 'SIGKILL');
+  if (processIsAlive(pid) && await ownsRecordedChild(record)) process.kill(pid, 'SIGKILL');
   return waitForPidExit(pid, 5_000);
 }
 

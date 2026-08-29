@@ -36,7 +36,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const trueForge = new TrueForgeSidecar(
     new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
-      () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined
+      () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
+      (message) => output.error(message)
     ),
     context.globalStorageUri.fsPath
   );

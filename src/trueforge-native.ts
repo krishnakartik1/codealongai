@@ -11,8 +11,8 @@ import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
-  private child: ChildProcess | undefined; private ownership: FileHandle | undefined; private ownershipPath: string | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined;
-  public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined) {}
+  private child: ChildProcess | undefined; private ownership: FileHandle | undefined; private ownershipPath: string | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
+  public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
     if (this.child && this.child.exitCode === null) throw new Error('The owned TrueForge sidecar is already running.');
@@ -25,8 +25,8 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
       await this.writeOwnership(record);
       const child = spawn(node, [cli, '--port', String(options.port)], { cwd: dataPath, detached: false, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', SQLITE_PATH: path.join(dataPath, 'trueforge.sqlite'), XDG_DATA_HOME: dataPath, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
       this.child = child; this.port = options.port; this.childExited = false;
-      child.once('error', () => { this.childExited = true; this.child = undefined; this.port = undefined; void this.releaseOwnership(); });
-      child.once('exit', () => { this.childExited = true; this.child = undefined; this.port = undefined; void this.releaseOwnership(); });
+      child.once('error', (error) => { this.reportExit(`TrueForge sidecar failed: ${error.message}`); });
+      child.once('exit', (code, signal) => { this.reportExit(`TrueForge sidecar exited unexpectedly (${signal ?? `code ${String(code)}`}).`); });
       if (!child.pid) throw new Error('TrueForge could not start.');
       this.record = { ...record, childPid: child.pid, childStartTime: await processStartTime(child.pid) };
       await this.writeOwnership(this.record);
@@ -35,13 +35,14 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public health(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}healthz`, (status, body) => status === 200 && body === 'OK!'); }
   public verifyCapability(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}api/v1/capabilities`, (status, body) => status === 200 && body.trimStart().startsWith('{')); }
   public async open(url: string): Promise<void> { if (!await this.openExternal(url)) throw new Error('VS Code could not open the TrueForge setup UI.'); }
-  public async stop(): Promise<void> { const child = this.child; this.child = undefined; this.port = undefined; this.record = undefined; if (child && child.exitCode === null) { child.kill('SIGTERM'); if (!await waitForExit(child, terminationGraceMs) && child.exitCode === null) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); } } await this.releaseOwnership(); }
+  public async stop(): Promise<void> { const child = this.child; const record = this.record; this.stopping = true; this.child = undefined; this.port = undefined; this.record = undefined; if (child && child.exitCode === null && record && await ownsRecordedChild(record)) { child.kill('SIGTERM'); if (!await waitForExit(child, terminationGraceMs) && child.exitCode === null && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); } } await this.releaseOwnership(); this.stopping = false; }
   public hasExited(): boolean { return this.childExited || this.child === undefined || this.child.exitCode !== null; }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   private async acquireOwnership(dataPath: string): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath); } }
   private async openOwnership(lockPath: string): Promise<void> { this.ownership = await open(lockPath, 'wx'); this.ownershipPath = lockPath; }
   private async writeOwnership(record: OwnershipRecord): Promise<void> { await this.ownership?.truncate(0); await this.ownership?.writeFile(JSON.stringify(record)); await this.ownership?.sync(); }
   private async releaseOwnership(): Promise<void> { const ownershipPath = this.ownershipPath; await this.ownership?.close(); this.ownership = undefined; this.ownershipPath = undefined; if (ownershipPath) await unlink(ownershipPath).catch(() => undefined); }
+  private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
 }
 
 function requestStatus(url: string, accepts: (status: number | undefined, body: string) => boolean): Promise<boolean> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve(accepts(response.statusCode, body))); }); request.once('error', () => resolve(false)); request.setTimeout(1_000, () => { request.destroy(); resolve(false); }); }); }
