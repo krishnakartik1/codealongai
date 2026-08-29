@@ -14,11 +14,14 @@ import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
 let testReadinessActionSelector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined;
+let testReadinessSelectorGeneration = 0;
 
 /** Test harness registration only; production never calls this. */
 export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
 /** Test-only notification seam; production always uses VS Code's notification UI. */
-export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; }
+export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; testReadinessSelectorGeneration += 1; }
+/** Exercises the same test-only notification selector and ephemeral retry dispatch used by the reporter. */
+export async function selectReadinessRetryForTests(actions: readonly string[], retry: () => Thenable<unknown>): Promise<void> { const generation = testReadinessSelectorGeneration; const action = await testReadinessActionSelector?.(actions); if (generation === testReadinessSelectorGeneration && (action === 'Retry Setup' || action === 'Retry TrueForge')) await retry(); }
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';

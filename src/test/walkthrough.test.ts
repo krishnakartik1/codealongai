@@ -12,7 +12,7 @@ import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setReadinessActionSelectorForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
@@ -661,6 +661,32 @@ suite('Daytona producer readiness', () => {
 });
 
 suite('producer readiness', () => {
+  test('selector retries the Ask origin only for Retry Setup', async () => {
+    let asks = 0; let replies = 0;
+    setReadinessActionSelectorForTests(async () => 'Retry Setup');
+    await selectReadinessRetryForTests(['Open TrueForge Setup', 'Retry Setup'], async () => { asks += 1; });
+    setReadinessActionSelectorForTests(undefined);
+    assert.deepEqual({ asks, replies }, { asks: 1, replies: 0 });
+  });
+
+  test('selector retries the Reply origin only for Retry TrueForge', async () => {
+    let asks = 0; let replies = 0;
+    setReadinessActionSelectorForTests(async () => 'Retry TrueForge');
+    await selectReadinessRetryForTests(['Retry TrueForge', 'Show CodeAlongAI Output'], async () => { replies += 1; });
+    setReadinessActionSelectorForTests(undefined);
+    assert.deepEqual({ asks, replies }, { asks: 0, replies: 1 });
+  });
+
+  test('a superseded selector cannot invoke the older readiness origin', async () => {
+    let oldCalls = 0; let currentCalls = 0;
+    let selectOld: ((value: string) => void) | undefined;
+    setReadinessActionSelectorForTests(async () => new Promise((resolve) => { selectOld = resolve; }));
+    const stale = selectReadinessRetryForTests(['Retry Setup'], async () => { oldCalls += 1; });
+    setReadinessActionSelectorForTests(async () => 'Retry TrueForge');
+    await selectReadinessRetryForTests(['Retry TrueForge'], async () => { currentCalls += 1; });
+    selectOld!('Retry Setup'); await stale; setReadinessActionSelectorForTests(undefined);
+    assert.deepEqual({ oldCalls, currentCalls }, { oldCalls: 0, currentCalls: 1 });
+  });
   test('runtime double preserves its external producer identity until a replacement is explicit', () => {
     const runtime = new TrueForgeRuntimeDouble();
     const first = runtime.producer;
