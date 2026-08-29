@@ -1,5 +1,5 @@
 /** Safe, public outcome of the disposable Daytona readiness lifecycle. */
-export type DaytonaReadinessPhase = 'provider' | 'authentication' | 'sandboxes' | 'snapshots' | 'sandbox-create' | 'cleanup' | 'ready';
+export type DaytonaReadinessPhase = 'provider' | 'authentication' | 'model' | 'sandboxes' | 'snapshots' | 'sandbox-create' | 'cleanup' | 'ready';
 export type DaytonaReadinessOutcome = 'ready' | 'failed' | 'residual';
 
 export interface DaytonaProbeResult {

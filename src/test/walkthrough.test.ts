@@ -420,7 +420,7 @@ suite('TrueForge setup sidecar', () => {
   test('maps the complete producer contract through the pinned SDK client seam', async () => {
     const calls: unknown[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', (baseUrl) => ({
-      settings: { modelProviders: { list: async () => { calls.push([baseUrl, 'configured-providers']); return 'providers'; } }, skills: { list: async () => { calls.push('configured-skills'); return 'skills'; } }, sandboxProviders: { get: async () => { calls.push('configured-sandbox'); return 'sandbox'; } } },
+      settings: { modelProviders: { list: async () => { calls.push([baseUrl, 'configured-providers']); return 'providers'; } }, skills: { list: async () => { calls.push('configured-skills'); return 'skills'; } }, sandboxProviders: { get: async () => { calls.push('configured-sandbox'); return 'sandbox'; }, createOrUpdate: async () => 'sandbox' } },
       catalogs: { modelProviders: { list: async () => { calls.push('catalog-providers'); return 'catalog'; } } },
       models: { list: async () => { calls.push('models'); return 'models'; } }, skills: { list: async () => { calls.push('skills'); return 'skills'; } },
       sessions: {
@@ -466,12 +466,15 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(api.session, before);
     assert.equal(commandRuntime.probeCalls, probesBefore + 1);
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+    await vscode.commands.executeCommand('codealongai.trueforge.configure');
+    assert.deepEqual(api.session, before);
+    assert.equal(commandRuntime.probeCalls, probesBefore + 2);
   });
 
   test('proves the disposable public lifecycle and retains only its safe result', async () => {
     const calls: string[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
-      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => { calls.push('refresh'); return ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }); } } },
       catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
       sessions: {
         create: async (request) => { calls.push(JSON.stringify(request)); return { data: { id: 'probe-session' } }; },
@@ -481,7 +484,8 @@ suite('Daytona producer readiness', () => {
     }));
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls.map((call) => call.startsWith('{') ? JSON.parse(call) : call), [
-      { agent: { spec: { model: { name: 'configured-model' }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Do not use tools or a sandbox command. Reply READY.', messages: [{ type: 'user.message', content: 'Reply READY.' }] } } },
+      'refresh',
+      { agent: { spec: { model: { name: 'configured-model' }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } } },
       'turn:probe-session', 'delete:probe-session'
     ]);
   });
@@ -489,12 +493,27 @@ suite('Daytona producer readiness', () => {
   test('reports a snapshot permission failure without retaining the runtime error', async () => {
     const calls: string[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
-      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => { throw new Error('sentinel secret is never retained'); } } },
       catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
       sessions: { create: async () => ({ data: { id: 'probe-session' } }), createTurn: async () => { throw new Error('snapshots permission denied: secret-never-recorded'); }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async (id) => { calls.push(id); return undefined; } }
     }));
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed' });
-    assert.deepEqual(calls, ['probe-session']);
+    assert.deepEqual(calls, []);
+  });
+
+  test('retries a residual public cleanup without creating another probe or retaining its opaque identity', async () => {
+    let creates = 0;
+    let deletes = 0;
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+      sessions: { create: async () => { creates += 1; return { data: { id: 'opaque-session-id' } }; }, createTurn: async () => ({ data: { id: 'probe-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'sandbox.created' }; })(), cancel: async () => undefined, delete: async () => { deletes += 1; if (deletes === 1) throw new Error('unavailable'); return undefined; } }
+    }));
+    const residual = await sdk.probeDaytona();
+    assert.deepEqual(residual, { provider: 'daytona', phase: 'cleanup', outcome: 'residual' });
+    assert.doesNotMatch(JSON.stringify(residual), /opaque-session-id/);
+    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
+    assert.deepEqual({ creates, deletes }, { creates: 1, deletes: 2 });
   });
 });
 
