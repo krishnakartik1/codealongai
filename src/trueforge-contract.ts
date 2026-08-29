@@ -25,7 +25,7 @@ export interface TrueForgeProducerRuntime {
   discoverProviders(): Promise<unknown>;
   discoverModels(): Promise<unknown>;
   discoverSkills(): Promise<unknown>;
-  createSession(input: unknown): Promise<unknown>;
+  createSession(sessionRequest: unknown): Promise<unknown>;
   runTurn(input: TrueForgeTurnRequest): Promise<unknown>;
   events(sessionId: string, turnId: string): AsyncIterable<unknown>;
   cancelTurn(sessionId: string): Promise<void>;

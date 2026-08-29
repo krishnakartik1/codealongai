@@ -9,7 +9,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
   public discoverSkills(): Promise<unknown> { return this.readSkills(); }
-  public createSession(input: unknown): Promise<unknown> { return this.client.sessions.create(input as never); }
+  public createSession(sessionRequest: unknown): Promise<unknown> { return this.client.sessions.create(sessionRequest as never); }
   public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.client.sessions.createTurn(turnInput.sessionId, turnInput.request as never); }
   public async *events(sessionId: string, turnId: string): AsyncIterable<unknown> { for await (const event of await this.client.sessions.subscribeToTurn(sessionId, turnId)) yield event; }
   public async cancelTurn(sessionId: string): Promise<void> { await this.client.sessions.cancel(sessionId); }
@@ -24,6 +24,6 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
 export interface TrueForgeSdkClient {
   settings: { modelProviders: { list(): Promise<unknown> }; skills: { list(): Promise<unknown> }; sandboxProviders: { get(): Promise<unknown> } };
   catalogs: { modelProviders: { list(): Promise<unknown> } }; models: { list(): Promise<unknown> }; skills: { list(): Promise<unknown> };
-  sessions: { create(input: unknown): Promise<unknown>; createTurn(sessionId: string, input: unknown): Promise<unknown>; subscribeToTurn(sessionId: string, turnId: string): Promise<AsyncIterable<unknown>>; cancel(sessionId: string): Promise<unknown>; delete(sessionId: string): Promise<unknown>; };
+  sessions: { create(sessionRequest: unknown): Promise<unknown>; createTurn(sessionId: string, turnRequest: unknown): Promise<unknown>; subscribeToTurn(sessionId: string, turnId: string): Promise<AsyncIterable<unknown>>; cancel(sessionId: string): Promise<unknown>; delete(sessionId: string): Promise<unknown>; };
 }
 export type TrueForgeSdkClientFactory = (baseUrl: string) => TrueForgeSdkClient;

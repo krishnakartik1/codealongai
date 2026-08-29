@@ -3,6 +3,7 @@ import * as path from 'node:path';
 
 export interface OwnershipRecord {
   readonly ownerPid: number;
+  readonly ownerStartTime: string;
   readonly launchId: string;
   readonly executable: string;
   readonly cli: string;
@@ -14,10 +15,11 @@ export interface OwnershipRecord {
 
 export async function recoverStaleOwnership(lockPath: string): Promise<boolean> {
   const record = await readOwnership(lockPath);
-  if (!record || processIsAlive(record.ownerPid)) return false;
-  const candidate = await findRecordedChild(record);
-  if (candidate === 'unsafe') return false;
-  if (candidate !== undefined && !await terminateOwnedProcess(candidate, record)) return false;
+  if (!record) { await unlink(lockPath).catch(() => undefined); return true; }
+  if (await ownerIsAlive(record)) return false;
+  const recordedChild = await findRecordedChild(record);
+  if (recordedChild === 'unsafe') return false;
+  if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, record)) return false;
   await unlink(lockPath).catch(() => undefined);
   return true;
 }
@@ -29,8 +31,13 @@ export async function ownsRecordedChild(record: OwnershipRecord): Promise<boolea
 async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefined> {
   try {
     const record = JSON.parse(await readFile(lockPath, 'utf8')) as OwnershipRecord;
-    return Number.isInteger(record.ownerPid) && typeof record.launchId === 'string' && typeof record.executable === 'string' && typeof record.cli === 'string' && Number.isInteger(record.port) && typeof record.dataPath === 'string' ? record : undefined;
+    return Number.isInteger(record.ownerPid) && typeof record.ownerStartTime === 'string' && typeof record.launchId === 'string' && typeof record.executable === 'string' && typeof record.cli === 'string' && Number.isInteger(record.port) && typeof record.dataPath === 'string' ? record : undefined;
   } catch { return undefined; }
+}
+
+async function ownerIsAlive(record: OwnershipRecord): Promise<boolean> {
+  if (!processIsAlive(record.ownerPid)) return false;
+  try { return await processStartTime(record.ownerPid) === record.ownerStartTime; } catch { return false; }
 }
 
 async function findRecordedChild(record: OwnershipRecord): Promise<number | 'unsafe' | undefined> {

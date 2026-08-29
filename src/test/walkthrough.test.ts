@@ -203,11 +203,15 @@ suite('TrueForge setup sidecar', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-test-'));
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     try {
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), true);
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, childPid: 987654321, executable: '/missing/node', cli: '/missing/cli' }));
+      await writeFile(lock, '{partial');
+      assert.equal(await recoverStaleOwnership(lock), true);
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'unknown', childPid: 987654321, executable: '/missing/node', cli: '/missing/cli', port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), false);
-      await writeFile(lock, JSON.stringify({ ownerPid: process.pid }));
+      const stat = readFileSync('/proc/self/stat', 'utf8');
+      const ownerStartTime = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+      await writeFile(lock, JSON.stringify({ ownerPid: process.pid, ownerStartTime, launchId: 'live-owner', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), false);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
