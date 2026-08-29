@@ -5,7 +5,7 @@ import { commitDeterministicOrigin, commitDeterministicQuestion, commitDetermini
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
-import { NativeTrueForgeRuntime, TrueForgeSidecar } from './trueforge';
+import { NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 
@@ -28,7 +28,8 @@ export interface WalkthroughTestApi {
   replyTargetAt(stopId: string): object | undefined;
 }
 
-export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
+/** Test-only seam: production activation omits it and always constructs NativeTrueForgeRuntime. */
+export function activate(context: vscode.ExtensionContext, createRuntime: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined = undefined): WalkthroughTestApi {
   const authority = new WalkthroughAuthority();
   const controller = vscode.comments.createCommentController('codealongai.walkthrough', 'CodeAlongAI walkthrough');
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
@@ -36,7 +37,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
   const trueForge = new TrueForgeSidecar(
-    new NativeTrueForgeRuntime(
+    createRuntime?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
       (message) => output.error(message)

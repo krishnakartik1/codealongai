@@ -1,0 +1,19 @@
+import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from '../trueforge';
+
+/** Contract-faithful external-runtime double for public Configure command tests. */
+export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
+  public readonly calls: string[] = [];
+  public healthy = true;
+  public owned = true;
+  public readonly producer: TrueForgeProducerRuntime = {
+    discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
+    createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
+  };
+  public async start(options: TrueForgeStartOptions): Promise<void> { this.calls.push(`start:${options.port}`); }
+  public async health(): Promise<boolean> { return this.healthy; }
+  public async verifyCapability(): Promise<boolean> { return this.healthy; }
+  public hasExited(): boolean { return false; }
+  public async ownsRunningChild(): Promise<boolean> { return this.owned; }
+  public async open(url: string): Promise<void> { this.calls.push(`open:${url}`); }
+  public async stop(): Promise<void> { this.calls.push('stop'); }
+}
