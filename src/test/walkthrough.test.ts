@@ -228,6 +228,13 @@ suite('TrueForge setup sidecar', () => {
     const launchId = 'crash-before-pid-regression';
     const child = spawn(process.execPath, [cli, '--port', '0'], { cwd: directory, stdio: 'ignore', env: { ...process.env, XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
     try {
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      let tokenPublished = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (readFileSync(`/proc/${String(child.pid)}/environ`, 'utf8').includes(`CODEALONGAI_TRUEFORGE_LAUNCH_ID=${launchId}`)) { tokenPublished = true; break; }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.equal(tokenPublished, true);
       await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId, executable: process.execPath, cli, port: 0, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), true);
       await new Promise<void>((resolve) => child.once('exit', () => resolve()));
