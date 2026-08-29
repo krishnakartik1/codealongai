@@ -22,6 +22,7 @@ test('the bundled pinned TrueForge adapter serves a credential-free discovery ro
     await within(runtime.start({ port, dataPath }), 8_000, 'sidecar did not spawn');
     for (let attempt = 0; attempt < 100 && !await runtime.health(port); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 100));
     assert.equal(await runtime.health(port), true);
+    assert.strictEqual(runtime.producer, runtime.producer);
     const catalog = await within(runtime.producer.discoverProviders() as Promise<{ data?: unknown[] }>, 5_000, 'catalog discovery timed out');
     assert.ok(Array.isArray(catalog.data));
     assert.equal(readFileSync('demo-workspace/checkout.ts', 'utf8'), workspaceBefore);

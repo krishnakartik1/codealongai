@@ -29,6 +29,8 @@ export const commentThreadOptions = {
 export interface WalkthroughTestApi {
   readonly endpointState: McpLifecycleState;
   readonly session: ReturnType<WalkthroughAuthority['getSession']>;
+  /** Observation-only test seam; setup cannot create walkthrough authority. */
+  readonly hasPendingWalkthroughRequest: boolean;
   replyTargetAt(stopId: string): object | undefined;
 }
 
@@ -200,7 +202,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         void vscode.window.showInformationMessage('TrueForge setup is ready. Daytona v1 is ready as the producer sandbox.');
         return;
       }
-      output.warn(`Daytona readiness needs setup (${readiness.phase}).`);
+      output.warn(`Daytona readiness needs setup (${readiness.phase}, ${readiness.outcome}).`);
       void vscode.window.showWarningMessage(`Daytona setup needs ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup').then((action) => {
         if (action === 'Open TrueForge Setup' || action === 'Retry Setup') void daytona.configureOrRetry();
       });
@@ -317,6 +319,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   return {
     get endpointState() { return lifecycle.state; },
     get session() { return authority.getSession(); },
+    get hasPendingWalkthroughRequest() { return authority.getPendingStart() !== undefined || authority.getPendingReplacement() !== undefined || authority.getPendingQuestion() !== undefined; },
     replyTargetAt(stopId) {
       if (!threads.has(stopId)) return undefined;
       const existing = replyTargets.get(stopId);

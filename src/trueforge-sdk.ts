@@ -48,12 +48,14 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       const session = await this.createSession({ agent: { spec: { model: { name: model }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } } });
       sessionId = responseId(session);
       if (!sessionId) result = failed('sandbox-create');
-      else {
+    } catch (error) { result = failed(sandboxPhase(error)); }
+    if (sessionId && !result) {
+      try {
         const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } });
         const turnId = responseId(turn);
         if (!turnId || !await observedSandboxCreation(this, sessionId, turnId)) result = failed('sandbox-create');
-      }
-    } catch (error) { result = failed(phaseFor(error)); }
+      } catch (error) { result = failed(sandboxPhase(error)); }
+    }
     if (!sessionId) return result ?? failed('sandbox-create');
     try { await this.deleteSession(sessionId); }
     catch { this.residualProbeSessionId = sessionId; this.residualProbeResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
@@ -74,8 +76,8 @@ function sandboxStatus(value: unknown): string | undefined { const record = asRe
 function firstModelName(value: unknown): string | undefined { const record = asRecord(value); const values = Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; for (const candidate of values) { const name = asRecord(candidate)?.name; if (typeof name === 'string' && name.length > 0) return name; } return undefined; }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
 function configurationPhase(error: unknown): DaytonaReadinessPhase { return errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'provider'; }
-function snapshotPhase(error: unknown): DaytonaReadinessPhase { return errorStatus(error) === 401 || errorStatus(error) === 403 || errorStatus(error) === 422 ? 'authentication' : 'snapshots'; }
-function phaseFor(_error: unknown): DaytonaReadinessPhase { return 'sandboxes'; }
+function snapshotPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); if (status === 401 || status === 403) return 'authentication'; if (status === 422) return 'authentication-or-snapshots'; return 'snapshots'; }
+function sandboxPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); return status === 401 || status === 403 ? 'sandboxes' : 'sandbox-create'; }
 async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) if (asRecord(event)?.type === 'sandbox.created') return true; return false; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */

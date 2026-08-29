@@ -11,9 +11,9 @@ import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
-  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
+  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false; private producerRuntime: SdkTrueForgeProducerRuntime | undefined;
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
-  public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
+  public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return this.producerRuntime ??= new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
     if (this.child && !childHasExited(this.child)) throw new Error('The owned TrueForge sidecar is already running.');
     if (this.ownershipPath && this.ownershipLaunchId) await this.releaseOwnership();
@@ -25,7 +25,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
     await this.acquireOwnership(dataPath, record);
     try {
       const child = spawn(node, [cli, '--port', String(options.port)], { cwd: dataPath, detached: false, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', SQLITE_PATH: path.join(dataPath, 'trueforge.sqlite'), XDG_DATA_HOME: dataPath, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
-      this.child = child; this.port = options.port; this.childExited = false;
+      this.child = child; this.port = options.port; this.childExited = false; this.producerRuntime = undefined;
       child.once('error', (error) => { this.reportExit(`TrueForge sidecar failed: ${error.message}`); });
       child.once('exit', (code, signal) => { if (this.child === child) this.reportExit(`TrueForge sidecar exited unexpectedly (${signal ?? `code ${String(code)}`}).`); });
       if (!child.pid) throw new Error('TrueForge could not start.');
@@ -51,7 +51,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
         if (!await waitForExit(child, terminationGraceMs) && !childHasExited(child) && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); }
         if (!childHasExited(child)) throw new Error('TrueForge sidecar did not stop; ownership remains retained.');
       }
-      this.child = undefined; this.port = undefined; this.record = undefined;
+      this.child = undefined; this.port = undefined; this.record = undefined; this.producerRuntime = undefined;
       await this.releaseOwnership();
     } finally { this.stopping = false; }
   }
@@ -78,7 +78,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
     void release.finally(() => { if (this.ownershipRelease === release) this.ownershipRelease = undefined; });
     return release;
   }
-  private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
+  private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; this.producerRuntime = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
 }
 
 /** Narrow filesystem seam: cleanup removes only the lock record it published. */

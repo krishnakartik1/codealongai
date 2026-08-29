@@ -23,6 +23,7 @@ import { DaytonaReadiness } from '../daytona';
 interface WalkthroughTestApi {
   readonly endpointState: string;
   readonly session: WalkthroughSession | undefined;
+  readonly hasPendingWalkthroughRequest: boolean;
   replyTargetAt(stopId: string): object | undefined;
 }
 
@@ -308,9 +309,11 @@ suite('TrueForge setup sidecar', () => {
   test('runs the public Configure TrueForge command through the contract runtime double without changing walkthrough state', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
+    assert.equal(api.hasPendingWalkthroughRequest, false);
     commandRuntime.failStart = false;
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
     assert.deepEqual(api.session, before);
+    assert.equal(api.hasPendingWalkthroughRequest, false);
     assert.ok(commandRuntime.calls.some((call) => call.startsWith('start:')));
   });
   test('keeps walkthrough state unchanged when public Configure TrueForge setup fails', async () => {
@@ -464,6 +467,7 @@ suite('Daytona producer readiness', () => {
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
     assert.deepEqual(api.session, before);
+    assert.equal(api.hasPendingWalkthroughRequest, false);
     assert.equal(commandRuntime.probeCalls, probesBefore + 1);
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
@@ -499,6 +503,15 @@ suite('Daytona producer readiness', () => {
     }));
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed' });
     assert.deepEqual(calls, []);
+  });
+
+  test('reports an ambiguous public snapshot-build rejection without guessing at provider details', async () => {
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => { throw { statusCode: 422, message: 'provider payload must stay private' }; } } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [] }) }, skills: { list: async () => [] },
+      sessions: { create: async () => ({}), createTurn: async () => ({}), subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
+    }));
+    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'authentication-or-snapshots', outcome: 'failed' });
   });
 
   test('retries a residual public cleanup without creating another probe or retaining its opaque identity', async () => {
