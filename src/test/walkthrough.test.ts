@@ -98,7 +98,7 @@ function waitForChildExit(child: import('node:child_process').ChildProcess): Pro
 }
 
 suite('Extension Development Host walkthrough', () => {
-  test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
+  test('retries the captured Ask and Reply origins only after Daytona setup is ready', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0];
@@ -109,14 +109,19 @@ suite('Extension Development Host walkthrough', () => {
       editor.selection = selection;
       const sourceBefore = document.getText();
 
+      const askProbes = commandRuntime.probeCalls;
+      const askPrepares = commandRuntime.prepareCalls;
       commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      await vscode.commands.executeCommand('codealongai.walkthrough.ask');
-      assert.equal(api.session, undefined);
-      assert.equal(api.hasPendingWalkthroughRequest, false);
-
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      setReadinessActionSelectorForTests(async (actions) => {
+        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        return 'Retry Setup';
+      });
       await vscode.commands.executeCommand('codealongai.walkthrough.ask');
       const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
+      setReadinessActionSelectorForTests(undefined);
+      assert.equal(commandRuntime.probeCalls, askProbes + 3);
+      assert.equal(commandRuntime.prepareCalls, askPrepares + 1);
       assert.deepEqual(origin.origin, {
       stopId: 'checkout-origin',
       displayName: 'Origin',
@@ -127,18 +132,41 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
-      const beforeRejectedReply = api.session;
+      const replyProbes = commandRuntime.probeCalls;
+      const replyPrepares = commandRuntime.prepareCalls;
       commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
-      assert.deepEqual(api.session, beforeRejectedReply);
-      assert.equal(api.hasPendingWalkthroughRequest, false);
-
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      setReadinessActionSelectorForTests(async (actions) => {
+        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        return 'Retry Setup';
+      });
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
       const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
+      setReadinessActionSelectorForTests(undefined);
+      assert.equal(commandRuntime.probeCalls, replyProbes + 3);
+      assert.equal(commandRuntime.prepareCalls, replyPrepares + 1);
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
       assert.equal(document.getText(), sourceBefore);
       assert.deepEqual(editor.selection, selection);
+
+      let resolveOldSelection: ((action: string | undefined) => void) | undefined;
+      let selections = 0;
+      const stalePrepares = commandRuntime.prepareCalls;
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
+      setReadinessActionSelectorForTests(async () => {
+        selections += 1;
+        return selections === 1 ? new Promise((resolve) => { resolveOldSelection = resolve; }) : undefined;
+      });
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
+      await eventually(() => resolveOldSelection, 'the older Daytona notification should await its selection');
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
+      await eventually(() => selections === 2 ? true : undefined, 'the newer Daytona notification should supersede the older one');
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      resolveOldSelection!('Retry Setup');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      setReadinessActionSelectorForTests(undefined);
+      assert.equal(commandRuntime.prepareCalls, stalePrepares);
+      assert.equal(api.session?.stops.length, 5);
 
       await vscode.commands.executeCommand('codealongai.walkthrough.next');
       const definitionSession = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
