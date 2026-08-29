@@ -202,8 +202,10 @@ suite('TrueForge setup sidecar', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-test-'));
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     try {
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, childPid: 987654321, executable: '/missing/node', cli: '/missing/cli' }));
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), true);
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, childPid: 987654321, executable: '/missing/node', cli: '/missing/cli' }));
+      assert.equal(await recoverStaleOwnership(lock), false);
       await writeFile(lock, JSON.stringify({ ownerPid: process.pid }));
       assert.equal(await recoverStaleOwnership(lock), false);
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -215,6 +217,8 @@ suite('TrueForge setup sidecar', () => {
       producer,
       start: async (options) => { calls.push(`start:${options.port}:${options.dataPath}`); },
       health: async () => alive,
+      verifyCapability: async () => alive,
+      hasExited: () => false,
       open: async (url) => { calls.push(`open:${url}`); },
       stop: async () => { calls.push('stop'); alive = false; }
     };
@@ -233,7 +237,7 @@ suite('TrueForge setup sidecar', () => {
     const runtime: TrueForgeRuntime = {
       producer,
       start: async () => { calls.push('start'); await new Promise<void>((resolve) => { releaseStart = resolve; }); },
-      health: async () => true, open: async () => { calls.push('open'); }, stop: async () => { calls.push('stop'); }
+      health: async () => true, verifyCapability: async () => true, hasExited: () => false, open: async () => { calls.push('open'); }, stop: async () => { calls.push('stop'); }
     };
     const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => 48123);
     const first = sidecar.configure();
@@ -251,12 +255,32 @@ suite('TrueForge setup sidecar', () => {
       producer,
       start: async () => { calls.push('start'); throw new Error('crashed'); },
       health: async () => true,
+      verifyCapability: async () => true,
+      hasExited: () => true,
       open: async () => { calls.push('open'); },
       stop: async () => { calls.push('stop'); }
     };
     const sidecar = new TrueForgeSidecar(runtime, '/storage/trueforge');
     await assert.rejects(() => sidecar.configure(), /crashed/);
-    assert.deepEqual(calls, ['start', 'stop']);
+    assert.deepEqual(calls, ['start', 'stop', 'start', 'stop', 'start', 'stop']);
+  });
+
+  test('retries a released-port bind failure with a fresh allocation before opening setup', async () => {
+    const calls: string[] = [];
+    let startCount = 0;
+    const runtime: TrueForgeRuntime = {
+      producer,
+      start: async ({ port }) => { calls.push(`start:${port}`); startCount += 1; },
+      health: async () => startCount === 2,
+      verifyCapability: async () => startCount === 2,
+      hasExited: () => startCount === 1,
+      open: async (url) => { calls.push(`open:${url}`); },
+      stop: async () => { calls.push('stop'); }
+    };
+    const ports = [48123, 48124];
+    const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => ports.shift()!);
+    await sidecar.configure();
+    assert.deepEqual(calls, ['start:48123', 'stop', 'start:48124', 'open:http://127.0.0.1:48124/']);
   });
 
   test('maps the complete producer contract through the pinned SDK client seam', async () => {
