@@ -21,7 +21,8 @@ export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (me
 /** Test-only notification seam; production always uses VS Code's notification UI. */
 export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; testReadinessSelectorGeneration += 1; }
 /** Exercises the same test-only notification selector and ephemeral retry dispatch used by the reporter. */
-export async function selectReadinessRetryForTests(actions: readonly string[], retry: () => Thenable<unknown>): Promise<void> { const generation = testReadinessSelectorGeneration; const action = await testReadinessActionSelector?.(actions); if (generation === testReadinessSelectorGeneration && (action === 'Retry Setup' || action === 'Retry TrueForge')) await retry(); }
+export async function selectReadinessRetryForTests(actions: readonly string[], retry: () => Thenable<unknown>): Promise<void> { await dispatchReadinessSelection(() => testReadinessActionSelector?.(actions) ?? Promise.resolve(undefined), retry); }
+async function dispatchReadinessSelection(select: () => PromiseLike<string | undefined>, retry?: () => Thenable<unknown>): Promise<string | undefined> { const generation = testReadinessSelectorGeneration; const action = await select(); if (generation === testReadinessSelectorGeneration && (action === 'Retry Setup' || action === 'Retry TrueForge')) await retry?.(); return generation === testReadinessSelectorGeneration ? action : undefined; }
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -212,10 +213,9 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const reportProducerReadiness = (readiness: ProducerReadinessResult, retry?: () => Thenable<unknown>): void => {
     output.warn(`Producer readiness needs ${readiness.phase}.`);
     const actions = readiness.action === 'configure-node' ? ['Configure Node', 'Show CodeAlongAI Output'] : readiness.action === 'open-setup' ? ['Open TrueForge Setup', 'Retry Setup'] : readiness.action === 'retry-trueforge' ? ['Retry TrueForge', 'Show CodeAlongAI Output'] : ['Show CodeAlongAI Output'];
-    void (testReadinessActionSelector ? testReadinessActionSelector(actions) : vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions)).then((action) => {
+    void dispatchReadinessSelection(() => testReadinessActionSelector ? testReadinessActionSelector(actions) : vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions), retry).then((action) => {
       if (action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
       if (action === 'Configure Node') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.trueforge.nodePath');
-      if (action === 'Retry Setup' || action === 'Retry TrueForge') void retry?.();
       if (action === 'Show CodeAlongAI Output') output.show(true);
     });
   };
