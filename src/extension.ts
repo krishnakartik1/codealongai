@@ -13,9 +13,12 @@ import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
+let testReadinessActionSelector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined;
 
 /** Test harness registration only; production never calls this. */
 export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
+/** Test-only notification seam; production always uses VS Code's notification UI. */
+export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; }
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -206,7 +209,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const reportProducerReadiness = (readiness: ProducerReadinessResult, retry?: () => Thenable<unknown>): void => {
     output.warn(`Producer readiness needs ${readiness.phase}.`);
     const actions = readiness.action === 'configure-node' ? ['Configure Node', 'Show CodeAlongAI Output'] : readiness.action === 'open-setup' ? ['Open TrueForge Setup', 'Retry Setup'] : readiness.action === 'retry-trueforge' ? ['Retry TrueForge', 'Show CodeAlongAI Output'] : ['Show CodeAlongAI Output'];
-    void vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions).then((action) => {
+    void (testReadinessActionSelector ? testReadinessActionSelector(actions) : vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions)).then((action) => {
       if (action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
       if (action === 'Configure Node') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.trueforge.nodePath');
       if (action === 'Retry Setup' || action === 'Retry TrueForge') void retry?.();

@@ -151,6 +151,22 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('Configure TrueForge completes ready setup without creating a walkthrough session', async () => {
+    const api = await activeWalkthrough();
+    const before = api.session;
+    await withProducerConfigured(async () => {
+      await withMcpEnabled(api, async () => {
+        const checks = commandRuntime.prepareCalls;
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
+        await vscode.commands.executeCommand('codealongai.trueforge.configure');
+        assert.ok(commandRuntime.prepareCalls > checks);
+      });
+    });
+    assert.deepEqual(api.session, before);
+    assert.equal(api.hasPendingWalkthroughRequest, false);
+  });
+
 });
 
 suite('MCP lifecycle', () => {
