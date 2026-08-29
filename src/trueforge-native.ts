@@ -1,17 +1,17 @@
-import { link, mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import * as http from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
-import { ownsRecordedChild, processStartTime, recoverStaleOwnership, type OwnershipRecord } from './trueforge-ownership';
+import { createOwnershipLock, ownsRecordedChild, processStartTime, recoverStaleOwnership, releaseOwnershipIfCurrent as releaseCurrentOwnership, writeOwnership, type OwnershipRecord } from './trueforge-ownership';
 import { SdkTrueForgeProducerRuntime } from './trueforge-sdk';
 import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from './trueforge-contract';
 import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
-  private child: ChildProcess | undefined; private ownership: FileHandle | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
+  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
@@ -38,14 +38,14 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public hasExited(): boolean { return this.childExited || this.child === undefined || this.child.exitCode !== null; }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } this.ownershipLaunchId = ownershipRecord.launchId; }
-  private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const temporaryPath = `${lockPath}.${randomUUID()}`; const temporaryHandle = await open(temporaryPath, 'wx'); try { await temporaryHandle.writeFile(JSON.stringify(ownershipRecord)); await temporaryHandle.sync(); await temporaryHandle.close(); await link(temporaryPath, lockPath); this.ownership = await open(lockPath, 'r+'); this.ownershipPath = lockPath; } finally { await temporaryHandle.close().catch(() => undefined); await unlink(temporaryPath).catch(() => undefined); } }
-  private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); const temporaryPath = `${ownershipPath}.${randomUUID()}`; const temporaryHandle = await open(temporaryPath, 'wx'); try { await temporaryHandle.writeFile(JSON.stringify(record)); await temporaryHandle.sync(); await temporaryHandle.close(); await rename(temporaryPath, ownershipPath); await this.ownership?.close(); this.ownership = await open(ownershipPath, 'r+'); } finally { await temporaryHandle.close().catch(() => undefined); await unlink(temporaryPath).catch(() => undefined); } }
-  private async releaseOwnership(): Promise<void> { const ownershipPath = this.ownershipPath; const launchId = this.ownershipLaunchId; await this.ownership?.close(); this.ownership = undefined; this.ownershipPath = undefined; this.ownershipLaunchId = undefined; if (ownershipPath && launchId) await releaseOwnershipIfCurrent(ownershipPath, launchId); }
+  private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { await createOwnershipLock(lockPath, ownershipRecord); this.ownershipPath = lockPath; }
+  private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); await writeOwnership(ownershipPath, record); }
+  private async releaseOwnership(): Promise<void> { const ownershipPath = this.ownershipPath; const launchId = this.ownershipLaunchId; this.ownershipPath = undefined; this.ownershipLaunchId = undefined; if (ownershipPath && launchId) await releaseCurrentOwnership(ownershipPath, launchId); }
   private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
 }
 
 /** Narrow filesystem seam: cleanup removes only the lock record it published. */
-export async function releaseOwnershipIfCurrent(ownershipPath: string, launchId: string): Promise<void> { const current = await readFile(ownershipPath, 'utf8').then((text) => JSON.parse(text) as { launchId?: unknown }).catch(() => undefined); if (current?.launchId === launchId) await unlink(ownershipPath).catch(() => undefined); }
+export { releaseOwnershipIfCurrent } from './trueforge-ownership';
 
 function requestStatus(url: string, accepts: (status: number | undefined, body: string) => boolean): Promise<boolean> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve(accepts(response.statusCode, body))); }); request.once('error', () => resolve(false)); request.setTimeout(1_000, () => { request.destroy(); resolve(false); }); }); }
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> { if (child.exitCode !== null) return Promise.resolve(true); return new Promise((resolve) => { const timer = setTimeout(() => resolve(false), timeoutMs); child.once('exit', () => { clearTimeout(timer); resolve(true); }); }); }

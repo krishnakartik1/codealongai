@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync, realpathSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
@@ -17,6 +17,7 @@ import { TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 import { resolveNodeExecutable } from '../trueforge-environment';
+import { writeOwnership } from '../trueforge-ownership';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -54,6 +55,11 @@ async function withMcpEnabled<T>(api: WalkthroughTestApi, run: () => Promise<T>)
     await configuration.update('enabled', previous, vscode.ConfigurationTarget.Global);
     await eventually(() => api.endpointState === (wasEnabled ? 'ready' : 'off') ? true : undefined, 'the loopback MCP endpoint should return to its previous state after the test');
   }
+}
+
+async function writeOwnershipLock(lock: string, record: object | string): Promise<void> {
+  await mkdir(lock);
+  await writeFile(path.join(lock, 'ownership.json'), typeof record === 'string' ? record : JSON.stringify(record));
 }
 
 suite('Extension Development Host walkthrough', () => {
@@ -210,16 +216,18 @@ suite('TrueForge setup sidecar', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-test-'));
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     try {
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
+      await writeOwnershipLock(lock, { ownerPid: -1, ownerStartTime: '0', launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory });
       assert.equal(await recoverStaleOwnership(lock), true);
-      await writeFile(lock, '{partial');
+      await writeOwnershipLock(lock, '{partial');
       assert.equal(await recoverStaleOwnership(lock), false);
-      assert.equal(readFileSync(lock, 'utf8'), '{partial');
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'unknown', childPid: 987654321, executable: '/missing/node', cli: '/missing/cli', port: 48123, dataPath: directory }));
+      assert.equal(readFileSync(path.join(lock, 'ownership.json'), 'utf8'), '{partial');
+      await rm(lock, { recursive: true, force: true });
+      await writeOwnershipLock(lock, { ownerPid: -1, ownerStartTime: '0', launchId: 'unknown', childPid: 987654321, executable: '/missing/node', cli: '/missing/cli', port: 48123, dataPath: directory });
       assert.equal(await recoverStaleOwnership(lock), false);
+      await rm(lock, { recursive: true, force: true });
       const stat = readFileSync('/proc/self/stat', 'utf8');
       const ownerStartTime = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
-      await writeFile(lock, JSON.stringify({ ownerPid: process.pid, ownerStartTime, launchId: 'live-owner', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
+      await writeOwnershipLock(lock, { ownerPid: process.pid, ownerStartTime, launchId: 'live-owner', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory });
       assert.equal(await recoverStaleOwnership(lock), false);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -241,16 +249,51 @@ suite('TrueForge setup sidecar', () => {
       assert.equal(tokenPublished, true);
       assert.equal(readFileSync(`/proc/${String(child.pid)}/cmdline`, 'utf8').split('\0').filter(Boolean).join('|'), [executable, cli, '--port', String(port)].join('|'));
       const record = { ownerPid: -1, ownerStartTime: '0', launchId, executable, cli, port, dataPath: directory, childPid: child.pid! };
-      await writeFile(lock, JSON.stringify({ ...record, childPid: undefined }));
+      await writeOwnershipLock(lock, { ...record, childPid: undefined });
       assert.equal(await recoverStaleOwnership(lock), true);
-      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve()));
     } finally { if (child.exitCode === null) child.kill('SIGKILL'); if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve())); await rm(directory, { recursive: true, force: true }); }
   });
   test('cleanup preserves a valid ownership record atomically replaced by another launch', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-replacement-'));
     const lock = path.join(directory, 'codealongai-trueforge.lock');
-    const replacement = JSON.stringify({ launchId: 'launch-b', ownerPid: process.pid });
-    try { await writeFile(lock, replacement); await releaseOwnershipIfCurrent(lock, 'launch-a'); assert.equal(readFileSync(lock, 'utf8'), replacement); } finally { await rm(directory, { recursive: true, force: true }); }
+    const replacement = JSON.stringify({ launchId: 'launch-b', ownerPid: process.pid, ownerStartTime: '1', executable: process.execPath, cli: 'cli', port: 48123, dataPath: directory });
+    try { await writeOwnershipLock(lock, replacement); await releaseOwnershipIfCurrent(lock, 'launch-a'); assert.equal(readFileSync(path.join(lock, 'ownership.json'), 'utf8'), replacement); } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('serializes duplicate stale recovery so only one contender removes the lock directory', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-competing-recovery-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    try {
+      await writeOwnershipLock(lock, { ownerPid: -1, ownerStartTime: '0', launchId: 'stale-a', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory });
+      const results = await Promise.all([recoverStaleOwnership(lock), recoverStaleOwnership(lock)]);
+      assert.deepEqual(results.sort(), [false, true]);
+      assert.equal(existsSync(lock), false);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('duplicate cleanup cannot remove a replacement owner directory', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-duplicate-cleanup-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    const first = { ownerPid: process.pid, ownerStartTime: '1', launchId: 'launch-a', executable: process.execPath, cli: 'cli', port: 48123, dataPath: directory };
+    const replacement = { ...first, launchId: 'launch-b' };
+    try {
+      await writeOwnershipLock(lock, first);
+      await Promise.all([releaseOwnershipIfCurrent(lock, 'launch-a'), releaseOwnershipIfCurrent(lock, 'launch-a')]);
+      await writeOwnershipLock(lock, replacement);
+      await releaseOwnershipIfCurrent(lock, 'launch-a');
+      assert.deepEqual(JSON.parse(readFileSync(path.join(lock, 'ownership.json'), 'utf8')), replacement);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('cleanup and an ownership update leave either the replacement record or no lock', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-cleanup-write-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    const first = { ownerPid: process.pid, ownerStartTime: '1', launchId: 'launch-a', executable: process.execPath, cli: 'cli', port: 48123, dataPath: directory };
+    const replacement = { ...first, launchId: 'launch-b' };
+    try {
+      await writeOwnershipLock(lock, first);
+      const [writeResult] = await Promise.allSettled([writeOwnership(lock, replacement), releaseOwnershipIfCurrent(lock, 'launch-a')]);
+      if (writeResult.status === 'fulfilled') assert.deepEqual(JSON.parse(readFileSync(path.join(lock, 'ownership.json'), 'utf8')), replacement);
+      else assert.equal(existsSync(lock), false);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
   test('runs the public Configure TrueForge command through the contract runtime double without changing walkthrough state', async () => {
     const api = await activeWalkthrough();
