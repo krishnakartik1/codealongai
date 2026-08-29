@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -27,6 +27,7 @@ test('the bundled pinned TrueForge adapter serves a credential-free discovery ro
   } finally {
     await within(runtime.stop(), 8_000, 'sidecar did not stop');
     assert.equal(await runtime.health(port), false);
-    await rm(dataPath, { recursive: true, force: true });
+    assert.equal(existsSync(path.join(dataPath, 'codealongai-trueforge.lock')), false);
+    await rm(dataPath, { recursive: true });
   }
 });

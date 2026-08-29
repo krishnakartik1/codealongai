@@ -11,10 +11,11 @@ import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
-  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
+  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false;
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
+    await this.waitForOwnershipRelease();
     if (this.child && !childHasExited(this.child)) throw new Error('The owned TrueForge sidecar is already running.');
     if (!await isUbuntuX64()) throw new Error('TrueForge setup requires Ubuntu x86-64.');
     const node = await resolveNodeExecutable(this.configuredNodePath()); const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
@@ -25,7 +26,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
       const child = spawn(node, [cli, '--port', String(options.port)], { cwd: dataPath, detached: false, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', SQLITE_PATH: path.join(dataPath, 'trueforge.sqlite'), XDG_DATA_HOME: dataPath, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
       this.child = child; this.port = options.port; this.childExited = false;
       child.once('error', (error) => { this.reportExit(`TrueForge sidecar failed: ${error.message}`); });
-      child.once('exit', (code, signal) => { this.reportExit(`TrueForge sidecar exited unexpectedly (${signal ?? `code ${String(code)}`}).`); });
+      child.once('exit', (code, signal) => { if (this.child === child) this.reportExit(`TrueForge sidecar exited unexpectedly (${signal ?? `code ${String(code)}`}).`); });
       if (!child.pid) throw new Error('TrueForge could not start.');
       this.record = { ...record, childPid: child.pid, childStartTime: await processStartTime(child.pid) };
       await this.writeOwnership(this.record);
@@ -40,7 +41,16 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } this.ownershipLaunchId = ownershipRecord.launchId; }
   private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { await createOwnershipLock(lockPath, ownershipRecord); this.ownershipPath = lockPath; }
   private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); await writeOwnership(ownershipPath, record); }
-  private async releaseOwnership(): Promise<void> { const ownershipPath = this.ownershipPath; const launchId = this.ownershipLaunchId; this.ownershipPath = undefined; this.ownershipLaunchId = undefined; if (ownershipPath && launchId) await releaseCurrentOwnership(ownershipPath, launchId); }
+  private async waitForOwnershipRelease(): Promise<void> { await this.ownershipRelease; }
+  private releaseOwnership(): Promise<void> {
+    if (this.ownershipRelease) return this.ownershipRelease;
+    const ownershipPath = this.ownershipPath; const launchId = this.ownershipLaunchId;
+    this.ownershipPath = undefined; this.ownershipLaunchId = undefined;
+    const release = (async () => { if (ownershipPath && launchId) await releaseCurrentOwnership(ownershipPath, launchId); })().catch(() => undefined);
+    this.ownershipRelease = release;
+    void release.finally(() => { if (this.ownershipRelease === release) this.ownershipRelease = undefined; });
+    return release;
+  }
   private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
 }
 
