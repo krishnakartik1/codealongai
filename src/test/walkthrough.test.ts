@@ -645,6 +645,13 @@ suite('Daytona producer readiness', () => {
 });
 
 suite('producer readiness', () => {
+  test('runtime double preserves its external producer identity until a replacement is explicit', () => {
+    const runtime = new TrueForgeRuntimeDouble();
+    const first = runtime.producer;
+    assert.equal(runtime.producer, first);
+    runtime.replaceProducerForTests();
+    assert.notEqual(runtime.producer, first);
+  });
   test('serializes concurrent public readiness checks at the retained external-runtime boundary', async () => {
     let active = 0; let maximum = 0; let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -656,7 +663,7 @@ suite('producer readiness', () => {
   });
   test('maps each safe external readiness phase to a bounded operator action', async () => {
     for (const [phase, action] of [
-      ['model', 'open-setup'], ['network', 'retry-trueforge'], ['authentication', 'open-setup'], ['alias', 'open-setup'], ['reasoning', 'open-setup'], ['skill', 'open-setup'], ['connector', 'open-setup'], ['mcp-discovery', 'show-output']
+      ['node', 'configure-node'], ['architecture', 'show-output'], ['sidecar', 'retry-trueforge'], ['model', 'open-setup'], ['network', 'retry-trueforge'], ['authentication', 'open-setup'], ['alias', 'open-setup'], ['reasoning', 'open-setup'], ['skill', 'open-setup'], ['connector', 'open-setup'], ['mcp-discovery', 'show-output']
     ] as const) {
       const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => ({ phase, outcome: 'failed' }) });
       assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase, outcome: 'failed', action });

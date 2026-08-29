@@ -20,7 +20,9 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public prepareWait: Promise<void> | undefined;
   public daytonaProbe: DaytonaProbeResult = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   public producerReadiness: TrueForgeProducerReadinessResult = { phase: 'ready', outcome: 'ready' };
-  public get producer(): TrueForgeProducerRuntime { return { ...emptyTrueForgeProducer, probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } } }; }
+  private producerIdentity: TrueForgeProducerRuntime | undefined;
+  public get producer(): TrueForgeProducerRuntime { return this.producerIdentity ??= { ...emptyTrueForgeProducer, probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } } }; }
+  public replaceProducerForTests(): void { this.producerIdentity = undefined; }
   public async start(options: TrueForgeStartOptions): Promise<void> { this.calls.push(`start:${options.port}`); if (this.failStart) throw new Error('configured test sidecar failure'); }
   public async health(): Promise<boolean> { return this.healthy; }
   public async verifyCapability(): Promise<boolean> { return this.healthy; }
