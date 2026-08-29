@@ -143,6 +143,31 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (action === 'Keep walkthrough') authority.discardReset(requestId);
     });
   };
+  const reportDaytonaReadiness = (readiness: Awaited<ReturnType<DaytonaReadiness['check']>>, retrying = false): void => {
+    if (readiness.action === 'none') {
+      output.info(retrying ? 'Daytona readiness is ready after setup.' : 'Daytona readiness is ready.');
+      if (!retrying) void vscode.window.showInformationMessage('TrueForge setup is ready. Daytona v1 is ready as the producer sandbox.');
+      return;
+    }
+    const prefix = retrying ? 'Daytona setup still needs' : 'Daytona setup needs';
+    output.warn(`${prefix} ${readiness.phase} (${readiness.outcome}).`);
+    void vscode.window.showWarningMessage(`${prefix} ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup').then(async (action) => {
+      if (action !== 'Open TrueForge Setup' && action !== 'Retry Setup') return;
+      reportDaytonaReadiness(await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).configureOrRetry(), true);
+    });
+  };
+  const daytonaReadyForWalkthrough = async (): Promise<boolean> => {
+    try {
+      await trueForge.configure();
+      const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
+      if (readiness.action === 'none') return true;
+      reportDaytonaReadiness(readiness);
+    } catch (error) {
+      output.error(`TrueForge readiness failed: ${String(error)}`);
+      void vscode.window.showErrorMessage('CodeAlongAI could not verify TrueForge setup before creating a walkthrough request.');
+    }
+    return false;
+  };
   const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
     await updateEndpoint();
     const current = authority.getSession();
@@ -153,6 +178,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
+    if (!await daytonaReadyForWalkthrough()) return undefined;
     const replacement = authority.getPendingReplacement();
     const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
@@ -197,17 +223,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const configureTrueForgeCommand = vscode.commands.registerCommand('codealongai.trueforge.configure', async () => {
     try {
       await trueForge.configure();
-      const daytona = new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() });
-      const readiness = await daytona.check();
-      if (readiness.action === 'none') {
-        output.info('Daytona readiness is ready.');
-        void vscode.window.showInformationMessage('TrueForge setup is ready. Daytona v1 is ready as the producer sandbox.');
-        return;
-      }
-      output.warn(`Daytona readiness needs setup (${readiness.phase}, ${readiness.outcome}).`);
-      void vscode.window.showWarningMessage(`Daytona setup needs ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup').then((action) => {
-        if (action === 'Open TrueForge Setup' || action === 'Retry Setup') void daytona.configureOrRetry();
-      });
+      reportDaytonaReadiness(await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check());
     } catch (error) {
       output.error(`TrueForge setup failed: ${String(error)}`);
       void vscode.window.showErrorMessage('CodeAlongAI could not start TrueForge setup.');

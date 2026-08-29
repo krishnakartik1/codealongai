@@ -19,6 +19,7 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness } from '../daytona';
+import { DaytonaProbeState } from '../trueforge-sdk';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -468,6 +469,26 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(await ready.check(), { provider: 'daytona', phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
+  test('opens setup safely then rechecks readiness without throwing', async () => {
+    let checks = 0;
+    const readiness = new DaytonaReadiness({
+      probeDaytona: async () => {
+        checks += 1;
+        return checks === 1
+          ? { provider: 'daytona' as const, phase: 'snapshots' as const, outcome: 'failed' as const }
+          : { provider: 'daytona' as const, phase: 'ready' as const, outcome: 'ready' as const };
+      }
+    }, { open: async () => undefined });
+
+    assert.deepEqual(await readiness.configureOrRetry(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed', action: 'open-setup' });
+    assert.equal(checks, 1);
+    assert.deepEqual(await readiness.configureOrRetry(), { provider: 'daytona', phase: 'ready', outcome: 'ready', action: 'none' });
+    assert.equal(checks, 2);
+
+    const unavailable = new DaytonaReadiness({ probeDaytona: async () => ({ provider: 'daytona', phase: 'ready', outcome: 'ready' }) }, { open: async () => { throw new Error('external URI unavailable'); } });
+    assert.deepEqual(await unavailable.configureOrRetry(), { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' });
+  });
+
   test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
@@ -514,13 +535,13 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(calls, []);
   });
 
-  test('reports an ambiguous public snapshot-build rejection without guessing at provider details', async () => {
+  test('reports a public snapshot-build rejection as a safe snapshot phase', async () => {
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => { throw { statusCode: 422, message: 'provider payload must stay private' }; } } },
       catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [] }) }, skills: { list: async () => [] },
       sessions: { create: async () => ({}), createTurn: async () => ({}), subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
     }));
-    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'authentication-or-snapshots', outcome: 'failed' });
+    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed' });
   });
 
   test('classifies only standalone public sandbox permission statuses without retaining tool content', async () => {
@@ -551,6 +572,47 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(residual, { provider: 'daytona', phase: 'cleanup', outcome: 'residual' });
     assert.doesNotMatch(JSON.stringify(residual), /opaque-session-id/);
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
+    assert.deepEqual({ creates, deletes }, { creates: 1, deletes: 2 });
+  });
+
+  test('hydrates extension storage in a replacement adapter and clears a residual only after confirmed deletion', async () => {
+    let stored: { readonly sessionId: string; readonly result: { readonly provider: 'daytona'; readonly phase: 'ready'; readonly outcome: 'ready' } } | undefined;
+    const store = { read: async () => stored, write: async (value: typeof stored) => { stored = value; } };
+    let creates = 0;
+    let deletes = 0;
+    const createClient = () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+      sessions: { create: async () => { creates += 1; return { data: { id: 'opaque-session-id' } }; }, createTurn: async () => ({ data: { id: 'probe-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'sandbox.created' }; })(), cancel: async () => undefined, delete: async () => { deletes += 1; if (deletes === 1) throw new Error('temporary cleanup failure'); } }
+    });
+    const first = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', createClient, new DaytonaProbeState(store));
+    assert.deepEqual(await first.probeDaytona(), { provider: 'daytona', phase: 'cleanup', outcome: 'residual' });
+    assert.deepEqual(stored, { sessionId: 'opaque-session-id', result: { provider: 'daytona', phase: 'ready', outcome: 'ready' } });
+
+    const replacement = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', createClient, new DaytonaProbeState(store));
+    assert.deepEqual(await replacement.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
+    assert.equal(stored, undefined);
+    assert.deepEqual({ creates, deletes }, { creates: 1, deletes: 2 });
+  });
+
+  test('serializes concurrent readiness probes so a residual cannot be overwritten or lost', async () => {
+    let creates = 0;
+    let deletes = 0;
+    let allowFirstDelete: (() => void) | undefined;
+    const firstDelete = new Promise<void>((resolve) => { allowFirstDelete = resolve; });
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+      sessions: { create: async () => { creates += 1; return { data: { id: 'opaque-session-id' } }; }, createTurn: async () => ({ data: { id: 'probe-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'sandbox.created' }; })(), cancel: async () => undefined, delete: async () => { deletes += 1; if (deletes === 1) { await firstDelete; throw new Error('temporary cleanup failure'); } } }
+    }));
+    const first = sdk.probeDaytona();
+    const second = sdk.probeDaytona();
+    await eventually(() => allowFirstDelete, 'the first public cleanup should start');
+    allowFirstDelete!();
+    assert.deepEqual(await Promise.all([first, second]), [
+      { provider: 'daytona', phase: 'cleanup', outcome: 'residual' },
+      { provider: 'daytona', phase: 'ready', outcome: 'ready' }
+    ]);
     assert.deepEqual({ creates, deletes }, { creates: 1, deletes: 2 });
   });
 });

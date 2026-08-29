@@ -10,11 +10,11 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
   public discoverSkills(): Promise<unknown> { return this.readSkills(); }
-  public createSession(sessionRequest: unknown): Promise<unknown> { return this.client.sessions.create(sessionRequest as never); }
-  public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.client.sessions.createTurn(turnInput.sessionId, turnInput.request as never); }
-  public async *events(sessionId: string, turnId: string): AsyncIterable<unknown> { for await (const event of await this.client.sessions.subscribeToTurn(sessionId, turnId)) yield event; }
-  public async cancelTurn(sessionId: string): Promise<void> { await this.client.sessions.cancel(sessionId); }
-  public async deleteSession(sessionId: string): Promise<void> { await this.client.sessions.delete(sessionId); }
+  public createSession(sessionRequest: unknown): Promise<unknown> { return this.createSdkSession(sessionRequest); }
+  public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.createSdkTurn(turnInput); }
+  public async *events(sessionId: string, turnId: string): AsyncIterable<unknown> { for await (const event of await this.subscribeSdkTurn(sessionId, turnId)) yield event; }
+  public async cancelTurn(sessionId: string): Promise<void> { await this.cancelSdkSession(sessionId); }
+  public async deleteSession(sessionId: string): Promise<void> { await this.deleteSdkSession(sessionId); }
   public probeDaytona(): Promise<DaytonaProbeResult> { const operation = this.probeState.queue.catch(() => undefined).then(async () => { await this.probeState.hydrate(); return this.probeDaytonaOwned(); }); this.probeState.queue = operation.then(() => undefined, () => undefined); return operation; }
   private async probeDaytonaOwned(): Promise<DaytonaProbeResult> {
     if (this.probeState.residualSessionId) {
@@ -29,17 +29,17 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       catch { return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
     }
     let provider: unknown;
-    try { provider = await this.client.settings.sandboxProviders.get(); }
+    try { provider = await this.readConfiguredSandboxProvider(); }
     catch (error) { return failed(configurationPhase(error)); }
     if (!isDaytona(provider)) return failed('provider');
     const manifest = providerManifest(provider);
     if (!manifest) return failed('provider');
     let refreshed: unknown;
-    try { refreshed = await this.client.settings.sandboxProviders.createOrUpdate({ manifest }); }
+    try { refreshed = await this.refreshConfiguredSandboxProvider(manifest); }
     catch (error) { return failed(snapshotPhase(error)); }
     if (sandboxStatus(refreshed) !== 'ready') return failed('snapshots');
     let model: string | undefined;
-    try { model = firstModelName(await this.client.models.list()); }
+    try { model = firstModelName(await this.readConfiguredModels()); }
     catch { return failed('model'); }
     if (!model) return failed('model');
     let sessionId: string | undefined;
@@ -63,9 +63,19 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     catch { this.probeState.residualSessionId = sessionId; this.probeState.residualResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; await this.probeState.persist(); return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
     return result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   }
-  private readConfiguration(): Promise<unknown> { return Promise.all([this.client.settings.modelProviders.list(), this.client.settings.skills.list(), this.client.settings.sandboxProviders.get()]); }
+  private createSdkSession(sessionRequest: unknown): Promise<unknown> { return this.client.sessions.create(sessionRequest as never); }
+  private createSdkTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.client.sessions.createTurn(turnInput.sessionId, turnInput.request as never); }
+  private subscribeSdkTurn(sessionId: string, turnId: string): Promise<AsyncIterable<unknown>> { return this.client.sessions.subscribeToTurn(sessionId, turnId); }
+  private async cancelSdkSession(sessionId: string): Promise<void> { await this.client.sessions.cancel(sessionId); }
+  private async deleteSdkSession(sessionId: string): Promise<void> { await this.client.sessions.delete(sessionId); }
+  private readConfiguration(): Promise<unknown> { return Promise.all([this.readConfiguredModelProviders(), this.readConfiguredSkills(), this.readConfiguredSandboxProvider()]); }
+  private readConfiguredModelProviders(): Promise<unknown> { return this.client.settings.modelProviders.list(); }
+  private readConfiguredSkills(): Promise<unknown> { return this.client.settings.skills.list(); }
+  private readConfiguredSandboxProvider(): Promise<unknown> { return this.client.settings.sandboxProviders.get(); }
+  private refreshConfiguredSandboxProvider(manifest: Record<string, unknown>): Promise<unknown> { return this.client.settings.sandboxProviders.createOrUpdate({ manifest }); }
   private readCatalogProviders(): Promise<unknown> { return this.client.catalogs.modelProviders.list(); }
-  private readModels(): Promise<unknown> { return this.client.models.list(); }
+  private readConfiguredModels(): Promise<unknown> { return this.client.models.list(); }
+  private readModels(): Promise<unknown> { return this.readConfiguredModels(); }
   private readSkills(): Promise<unknown> { return this.client.skills.list(); }
 }
 
@@ -87,7 +97,7 @@ function sandboxStatus(value: unknown): string | undefined { const record = asRe
 function firstModelName(value: unknown): string | undefined { const record = asRecord(value); const values = Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; for (const candidate of values) { const name = asRecord(candidate)?.name; if (typeof name === 'string' && name.length > 0) return name; } return undefined; }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
 function configurationPhase(error: unknown): DaytonaReadinessPhase { return errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'provider'; }
-function snapshotPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); if (status === 401 || status === 403) return 'authentication'; if (status === 422) return 'authentication-or-snapshots'; return 'snapshots'; }
+function snapshotPhase(_error: unknown): DaytonaReadinessPhase { return 'snapshots'; }
 function sandboxPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); return status === 401 || status === 403 ? 'sandboxes' : 'sandbox-create'; }
 /** Pinned 0.1.4 has no structured sandbox-error event. Its only public status
  * signal is an HTTP token in sandbox-probe tool-response event text; inspect

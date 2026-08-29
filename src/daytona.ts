@@ -1,5 +1,5 @@
 /** Safe, public outcome of the disposable Daytona readiness lifecycle. */
-export type DaytonaReadinessPhase = 'provider' | 'authentication' | 'authentication-or-snapshots' | 'model' | 'sandboxes' | 'snapshots' | 'sandbox-create' | 'cleanup' | 'ready';
+export type DaytonaReadinessPhase = 'provider' | 'authentication' | 'authentication-or-snapshots' | 'model' | 'sandboxes' | 'snapshots' | 'sandbox-create' | 'cleanup' | 'setup' | 'ready';
 export type DaytonaReadinessOutcome = 'ready' | 'failed' | 'residual';
 
 export interface DaytonaProbeResult {
@@ -34,5 +34,11 @@ export class DaytonaReadiness {
     return { ...result, action: result.outcome === 'ready' ? 'none' : 'open-setup' };
   }
 
-  public async configureOrRetry(): Promise<void> { await this.setup.open(); }
+  /** Opens operator-owned setup, then proves readiness again without throwing into the command handler. */
+  public async configureOrRetry(): Promise<DaytonaReadinessResult> {
+    try { await this.setup.open(); }
+    catch { return { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' }; }
+    try { return await this.check(); }
+    catch { return { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' }; }
+  }
 }
