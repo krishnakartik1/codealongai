@@ -121,12 +121,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix; then
-            exit 0
-          fi
-          if gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name' | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
-            exit 0
-          fi
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix; then
+              exit 0
+            fi
+            if gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name' | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
           exit 1
 
       - if: steps.release-eligibility.outputs.release_should_publish == 'true'
