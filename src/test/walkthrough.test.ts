@@ -35,7 +35,7 @@ suite('Extension Development Host walkthrough', () => {
   test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
     const api = await activeWalkthrough();
     const configuration = vscode.workspace.getConfiguration('codealongai.mcp');
-    await configuration.update('enabled', true, vscode.ConfigurationTarget.Workspace);
+    await configuration.update('enabled', true, vscode.ConfigurationTarget.Global);
     await eventually(() => api.endpointState === 'ready' ? true : undefined, 'the loopback MCP endpoint should become ready');
 
     const workspace = vscode.workspace.workspaceFolders?.[0];
