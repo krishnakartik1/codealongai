@@ -81,15 +81,13 @@ function configurationPhase(error: unknown): DaytonaReadinessPhase { return erro
 function snapshotPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); if (status === 401 || status === 403) return 'authentication'; if (status === 422) return 'authentication-or-snapshots'; return 'snapshots'; }
 function sandboxPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); return status === 401 || status === 403 ? 'sandboxes' : 'sandbox-create'; }
 /** Pinned 0.1.4 has no structured sandbox-error event. Its only public status
- * signal is an HTTP token in sandbox-probe tool/terminal event text; inspect
+ * signal is an HTTP token in sandbox-probe tool-response event text; inspect
  * that token transiently and never retain or surface the text. */
 async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'created' | 'permission-denied' | 'absent'> {
   for await (const event of runtime.events(sessionId, turnId)) {
     const record = asRecord(event);
     if (record?.type === 'sandbox.created') return 'created';
     if (record?.type === 'tool.response' && hasSandboxPermissionStatus(record.content)) return 'permission-denied';
-    const state = asRecord(record?.state);
-    if (record?.type === 'turn.done' && state?.status === 'error' && hasSandboxPermissionStatus(state.message)) return 'permission-denied';
   }
   return 'absent';
 }

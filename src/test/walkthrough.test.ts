@@ -533,6 +533,12 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(await sdkWithProbeEvents([{ type: 'tool.response', content: 'sandbox request failed with 500; sentinel-secret' }]).probeDaytona(), { provider: 'daytona', phase: 'sandbox-create', outcome: 'failed' });
   });
 
+  test('does not confuse terminal model authentication with a sandbox permission failure', async () => {
+    const result = await sdkWithProbeEvents([{ type: 'turn.done', state: { status: 'error', message: 'model authorization 401; sentinel-secret' } }]).probeDaytona();
+    assert.deepEqual(result, { provider: 'daytona', phase: 'sandbox-create', outcome: 'failed' });
+    assert.doesNotMatch(JSON.stringify(result), /sentinel-secret/);
+  });
+
   test('retries a residual public cleanup without creating another probe or retaining its opaque identity', async () => {
     let creates = 0;
     let deletes = 0;
