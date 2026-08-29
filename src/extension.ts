@@ -15,9 +15,12 @@ let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
 let testReadinessActionSelector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined;
 let testReadinessSelectorGeneration = 0;
+let testEnvironment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined;
 
 /** Test harness registration only; production never calls this. */
 export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
+/** Test harness registration only; production uses the host environment checks. */
+export function setTrueForgeEnvironmentForTests(environment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined): void { testEnvironment = environment; }
 /** Test-only notification seam; production always uses VS Code's notification UI. */
 export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; testReadinessSelectorGeneration += 1; }
 /** Exercises the same test-only notification selector and ephemeral retry dispatch used by the reporter. */
@@ -182,8 +185,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
     try {
-      if (!await isUbuntuX64()) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'show-output' }, retry); return false; }
-      try { await resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined); }
+      if (!await (testEnvironment?.isUbuntuX64() ?? isUbuntuX64())) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'show-output' }, retry); return false; }
+      try { await (testEnvironment?.resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined) ?? resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined)); }
       catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }, retry); return false; }
       try { await trueForge.configure(); }
       catch { reportProducerReadiness({ phase: 'sidecar', outcome: 'failed', action: 'retry-trueforge' }, retry); return false; }

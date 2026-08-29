@@ -12,13 +12,13 @@ import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setReadinessActionSelectorForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
-import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
+import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerReadinessResult, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
-import { DaytonaReadiness } from '../daytona';
+import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
 import { DaytonaProbeState } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
@@ -132,6 +132,52 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
+      const blockedReadinessCases: { readonly name: string; readonly actions: readonly string[]; readonly environment?: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> }; readonly sidecar?: boolean; readonly daytona?: DaytonaProbeResult; readonly producer?: TrueForgeProducerReadinessResult }[] = [
+        { name: 'node', actions: ['Configure Node', 'Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => true, resolveNodeExecutable: async () => { throw new Error('node unavailable'); } } },
+        { name: 'architecture', actions: ['Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => false, resolveNodeExecutable: async () => process.execPath } },
+        { name: 'sidecar', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], sidecar: true },
+        ...(['provider', 'authentication', 'authentication-or-snapshots', 'model', 'sandboxes', 'snapshots', 'sandbox-create', 'cleanup', 'setup'] as const).map((phase) => ({ name: `daytona-${phase === 'provider' ? 'provider-project-configuration' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], daytona: { provider: 'daytona' as const, phase, outcome: phase === 'cleanup' ? 'residual' as const : 'failed' as const } })),
+        ...(['model', 'alias', 'reasoning', 'authentication', 'skill', 'connector'] as const).map((phase) => ({ name: `producer-${phase === 'authentication' ? 'terminal-authentication' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], producer: { phase, outcome: 'failed' as const } })),
+        { name: 'producer-terminal-network', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
+        { name: 'producer-paused-done', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
+        { name: 'producer-mcp-catalog', actions: ['Show CodeAlongAI Output'], producer: { phase: 'mcp-discovery' as const, outcome: 'failed' as const } }
+      ];
+      for (const readinessCase of blockedReadinessCases) {
+        const before = api.session;
+        commandRuntime.daytonaProbe = readinessCase.daytona ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        commandRuntime.producerReadiness = readinessCase.producer ?? { phase: 'ready', outcome: 'ready' };
+        commandRuntime.healthy = !readinessCase.sidecar;
+        commandRuntime.failStart = readinessCase.sidecar === true;
+        setTrueForgeEnvironmentForTests(readinessCase.environment);
+        let offered: readonly string[] | undefined;
+        setReadinessActionSelectorForTests(async (actions) => { offered = actions; return undefined; });
+        try {
+          await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: `Blocked readiness ${readinessCase.name}.` });
+          assert.deepEqual(await eventually(() => offered, `the ${readinessCase.name} public readiness warning should offer an action`), readinessCase.actions);
+          assert.deepEqual(api.session, before);
+          assert.equal(api.hasPendingWalkthroughRequest, false);
+
+          setReadinessActionSelectorForTests(undefined);
+          offered = undefined;
+          setReadinessActionSelectorForTests(async (actions) => { offered = actions; return undefined; });
+          const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+          const originalWarning = notificationWindow.showWarningMessage;
+          notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+          try {
+            await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+            assert.deepEqual(await eventually(() => offered, `the confirmed ${readinessCase.name} replacement should offer an action`), readinessCase.actions);
+            assert.deepEqual(api.session, before);
+            assert.equal(api.hasPendingWalkthroughRequest, false);
+          } finally { notificationWindow.showWarningMessage = originalWarning; }
+        } finally {
+          setReadinessActionSelectorForTests(undefined);
+          setTrueForgeEnvironmentForTests(undefined);
+          commandRuntime.healthy = true;
+          commandRuntime.failStart = false;
+          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+          commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
+        }
+      }
       const setupOpens = commandRuntime.calls.filter((call) => call.startsWith('open:')).length;
       const setupPrepares = commandRuntime.prepareCalls;
       const beforeSetup = api.session;
