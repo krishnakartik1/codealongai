@@ -808,6 +808,7 @@ suite('producer readiness', () => {
 
   test('requires the exact successful terminal turn contract from the SDK', async () => {
     const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
+    const done = { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] };
     const producerWithTerminal = (state: Record<string, unknown>) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
@@ -819,15 +820,20 @@ suite('producer readiness', () => {
       sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state }; })(), cancel: async () => undefined, delete: async () => undefined }
     }));
 
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {} }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, model: 'gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, model: 'other/gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, reasoningEffort: 'high' }), { phase: 'reasoning', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'completed', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'paused', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: null, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal(done).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(await producerWithTerminal({ ...done, completedAt: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, completedAt: 0 }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, type: 'model.message', id: 1 } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, model: 'gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, model: 'other/gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, reasoningEffort: 'high' }), { phase: 'reasoning', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, status: 'completed' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, status: 'paused' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: null }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model authorization 401 failed' }).prepareProducer(input), { phase: 'authentication', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model network timeout' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
   });
@@ -855,6 +861,8 @@ suite('producer readiness', () => {
 
   test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
     const calls: unknown[] = [];
+    const catalogNames = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
+    let catalog: unknown = { data: catalogNames.map((name) => ({ name })) };
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
@@ -862,8 +870,8 @@ suite('producer readiness', () => {
         mcpServers: { createOrUpdate: async (request) => { calls.push(request); return {}; } }
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
-      mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'safe-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'done', output: {}, requiredActions: [] } }; })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
+      mcpServers: { listTools: async () => catalog },
+      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'safe-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] } }; })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
     }));
     assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls, [
@@ -872,6 +880,15 @@ suite('producer readiness', () => {
       { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium' } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, file_downloads: false }, parallel_tool_calls: false }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
       ['safe-readiness-session', { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] }], 'delete:safe-readiness-session'
     ]);
+    for (const malformed of [
+      { data: [...catalogNames.map((name) => ({ name })), {}] },
+      { data: [...catalogNames.slice(0, -1).map((name) => ({ name })), null] },
+      { data: [...catalogNames.slice(0, -1).map((name) => ({ name })), { name: 7 }] },
+      { data: [...catalogNames.slice(0, -1).map((name) => ({ name })), { name: catalogNames[0] }] }
+    ]) {
+      catalog = malformed;
+      assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'mcp-discovery', outcome: 'failed' });
+    }
   });
 });
 
