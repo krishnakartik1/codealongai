@@ -7,10 +7,9 @@ import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
 import { processStartTime, recoverStaleOwnership, type OwnershipRecord } from './trueforge-ownership';
 import { SdkTrueForgeProducerRuntime } from './trueforge-sdk';
 import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from './trueforge-contract';
+import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
-export const loopbackUrl = (port: number): string => `http://127.0.0.1:${String(port)}/`;
-
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   private child: ChildProcess | undefined; private ownership: FileHandle | undefined; private ownershipPath: string | undefined; private port: number | undefined; private childExited = false;
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined) {}

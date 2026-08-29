@@ -194,8 +194,9 @@ suite('TrueForge setup sidecar', () => {
     createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
   };
   test('accepts only Ubuntu x86-64 for the native sidecar', async () => {
-    assert.equal(await isUbuntuX64(async () => 'NAME="Ubuntu"\nID=ubuntu\n'), process.platform === 'linux' && process.arch === 'x64');
-    assert.equal(await isUbuntuX64(async () => 'ID=debian\n'), false);
+    assert.equal(await isUbuntuX64(async () => 'NAME="Ubuntu"\nID=ubuntu\n', 'linux', 'x64'), true);
+    assert.equal(await isUbuntuX64(async () => 'ID=ubuntu\n', 'darwin', 'arm64'), false);
+    assert.equal(await isUbuntuX64(async () => 'ID=debian\n', 'linux', 'x64'), false);
   });
 
   test('recovers only a stale owner record and refuses a live second window', async () => {

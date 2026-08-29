@@ -33,8 +33,8 @@ function nodeVersion(executable: string): Promise<string> {
   });
 }
 
-export async function isUbuntuX64(readOsRelease: () => Promise<string> = () => readFile('/etc/os-release', 'utf8')): Promise<boolean> {
-  if (process.platform !== 'linux' || process.arch !== 'x64') return false;
+export async function isUbuntuX64(readOsRelease: () => Promise<string> = () => readFile('/etc/os-release', 'utf8'), platform = process.platform, architecture = process.arch): Promise<boolean> {
+  if (platform !== 'linux' || architecture !== 'x64') return false;
   const osRelease = await readOsRelease().catch(() => '');
   return /^ID=ubuntu$/m.test(osRelease) || /^ID="ubuntu"$/m.test(osRelease);
 }

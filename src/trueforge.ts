@@ -6,6 +6,8 @@ export { NativeTrueForgeRuntime } from './trueforge-native';
 export { recoverStaleOwnership } from './trueforge-ownership';
 export { SdkTrueForgeProducerRuntime, type TrueForgeSdkClient, type TrueForgeSdkClientFactory } from './trueforge-sdk';
 export { isUbuntuX64 } from './trueforge-environment';
+export { loopbackUrl } from './trueforge-url';
+import { loopbackUrl } from './trueforge-url';
 
 const healthTimeoutMs = 60_000;
 const startupAttempts = 3;
@@ -39,8 +41,6 @@ export class TrueForgeSidecar {
   }
   public async dispose(): Promise<void> { this.disposed = true; const operation = this.queue.catch(() => undefined).then(async () => { this.started = false; this.port = undefined; await this.runtime.stop(); }); this.queue = operation; await operation; }
 }
-
-export const loopbackUrl = (port: number): string => `http://127.0.0.1:${String(port)}/`;
 
 async function waitForOwnedCapability(runtime: TrueForgeRuntime, port: number): Promise<void> {
   const deadline = Date.now() + healthTimeoutMs;
