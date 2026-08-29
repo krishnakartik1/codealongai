@@ -34,9 +34,9 @@ test('the bundled pinned TrueForge adapter serves a credential-free discovery ro
 });
 
 test('the bundled pinned TrueForge adapter completes a disposable Daytona lifecycle when an operator enables it', { timeout: 90_000 }, async (context) => {
-  if (process.env.CODEALONGAI_DAYTONA_PROBE !== '1') { context.skip('Set CODEALONGAI_DAYTONA_PROBE=1 after configuring Daytona and a model in TrueForge.'); return; }
+  const dataPath = process.env.CODEALONGAI_TRUEFORGE_DATA_PATH;
+  if (process.env.CODEALONGAI_DAYTONA_PROBE !== '1' || !dataPath) { context.skip('Set CODEALONGAI_DAYTONA_PROBE=1 and CODEALONGAI_TRUEFORGE_DATA_PATH to an operator-configured TrueForge store.'); return; }
   if (!await isUbuntuX64()) { context.skip('Native TrueForge is supported only on Ubuntu x86-64.'); return; }
-  const dataPath = await mkdtemp(path.join(os.tmpdir(), 'codealongai-daytona-integration-'));
   const port = await reserveLoopbackPort();
   const runtime = new NativeTrueForgeRuntime(async () => true, () => undefined);
   try {
@@ -45,6 +45,5 @@ test('the bundled pinned TrueForge adapter completes a disposable Daytona lifecy
     assert.deepEqual(await runtime.producer.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
   } finally {
     await within(runtime.stop(), 8_000, 'sidecar did not stop');
-    await rm(dataPath, { recursive: true, force: true });
   }
 });
