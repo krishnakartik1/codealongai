@@ -210,7 +210,8 @@ suite('TrueForge setup sidecar', () => {
       await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), true);
       await writeFile(lock, '{partial');
-      assert.equal(await recoverStaleOwnership(lock), true);
+      assert.equal(await recoverStaleOwnership(lock), false);
+      assert.equal(readFileSync(lock, 'utf8'), '{partial');
       await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId: 'unknown', childPid: 987654321, executable: '/missing/node', cli: '/missing/cli', port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), false);
       const stat = readFileSync('/proc/self/stat', 'utf8');
