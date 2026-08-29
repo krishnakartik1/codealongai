@@ -150,6 +150,7 @@ suite('Extension Development Host walkthrough', () => {
       assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
     }));
   });
+
 });
 
 suite('MCP lifecycle', () => {
@@ -644,6 +645,15 @@ suite('Daytona producer readiness', () => {
 });
 
 suite('producer readiness', () => {
+  test('serializes concurrent public readiness checks at the retained external-runtime boundary', async () => {
+    let active = 0; let maximum = 0; let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => { active += 1; maximum = Math.max(maximum, active); try { await gate; return { phase: 'ready', outcome: 'ready' as const }; } finally { active -= 1; } } });
+    const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
+    const first = readiness.check(input); const second = readiness.check(input); release!();
+    assert.deepEqual(await Promise.all([first, second]), [{ phase: 'ready', outcome: 'ready', action: 'none' }, { phase: 'ready', outcome: 'ready', action: 'none' }]);
+    assert.equal(maximum, 1);
+  });
   test('maps each safe external readiness phase to a bounded operator action', async () => {
     for (const [phase, action] of [
       ['model', 'open-setup'], ['network', 'retry-trueforge'], ['authentication', 'open-setup'], ['alias', 'open-setup'], ['reasoning', 'open-setup'], ['skill', 'open-setup'], ['connector', 'open-setup'], ['mcp-discovery', 'show-output']
