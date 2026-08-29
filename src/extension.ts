@@ -7,6 +7,8 @@ import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { NativeTrueForgeRuntime, TrueForgeSidecar } from './trueforge';
 
+let disposeExtension: () => Promise<void> = async () => undefined;
+
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
 export const commentThreadOptions = {
@@ -287,6 +289,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
+  disposeExtension = async () => { disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
   context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();
@@ -295,7 +298,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (start) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry walkthrough').then((action) => { if (action === 'Retry walkthrough') void retryStart?.(); });
     const question = authority.getPendingQuestion();
     if (question) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry question').then((action) => { if (action === 'Retry question') void retryQuestion?.(); });
-  }); }), { dispose: () => { disposeThreads(); void lifecycle.dispose(); void trueForge.dispose(); } });
+  }); }), { dispose: () => { void disposeExtension(); } });
   return {
     get endpointState() { return lifecycle.state; },
     get session() { return authority.getSession(); },
@@ -311,7 +314,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
 }
 
-export function deactivate(): void {}
+export function deactivate(): Thenable<void> { return disposeExtension(); }
 
 const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
 export const threadComments = (stop: Pick<WalkthroughStop, 'explanation' | 'conversation'>): readonly { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }[] => {

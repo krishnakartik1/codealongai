@@ -19,7 +19,7 @@ export async function recoverStaleOwnership(lockPath: string): Promise<boolean> 
   if (await ownerIsAlive(ownershipRecord)) return false;
   const recordedChild = await findRecordedChild(ownershipRecord);
   if (recordedChild === 'unsafe') return false;
-  if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, ownershipRecord)) return false;
+  if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, ownershipRecord.childPid === undefined ? { ...ownershipRecord, childPid: recordedChild } : ownershipRecord)) return false;
   await unlink(lockPath).catch(() => undefined);
   return true;
 }
