@@ -98,6 +98,8 @@ jobs:
         run: npm ci
 
       - if: steps.release-eligibility.outputs.release_should_publish == 'true'
+        env:
+          CODEALONGAI_BUILD_COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: npm run package
 
       - name: Create release when its tag is new

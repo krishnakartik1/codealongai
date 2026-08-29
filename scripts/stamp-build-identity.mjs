@@ -1,6 +1,10 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
-const commit = process.env.GITHUB_SHA;
+const commit = process.env.CODEALONGAI_BUILD_COMMIT;
 if (!/^[0-9a-f]{40}$/i.test(commit ?? '')) throw new Error('Packaging requires the exact GITHUB_SHA build identity.');
+const { stdout } = await promisify(execFile)('git', ['rev-parse', 'HEAD']);
+if (stdout.trim() !== commit) throw new Error('Packaging build identity must equal checked-out HEAD.');
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 packageJson.codealongai = { ...(packageJson.codealongai ?? {}), buildCommit: commit };
 await writeFile(new URL('../package.json', import.meta.url), `${JSON.stringify(packageJson, null, 2)}\n`);

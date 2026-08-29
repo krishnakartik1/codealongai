@@ -43,7 +43,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       const session = await this.createSession({ agent: { spec: producerAgentSpec(input) } });
       sessionId = responseId(session);
       if (!sessionId) return { phase: 'model', outcome: 'failed' };
-      await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
+      const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
+      const turnId = responseId(turn);
+      if (!turnId || !await successfulTerminal(this, sessionId, turnId)) return { phase: 'network', outcome: 'failed' };
     } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
     finally { if (sessionId) await this.deleteSession(sessionId).catch(() => undefined); }
     return { phase: 'ready', outcome: 'ready' };
@@ -153,6 +155,7 @@ async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessio
   return 'absent';
 }
 function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
+async function successfulTerminal(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); return state?.status === 'completed' || state?.status === 'success'; } return false; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {

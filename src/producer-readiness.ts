@@ -24,7 +24,8 @@ export class ProducerReadiness {
 
 function actionFor(phase: ProducerReadinessResult['phase'], outcome: ProducerReadinessResult['outcome']): ProducerReadinessAction {
   if (outcome === 'ready') return 'none';
-  if (phase === 'node' || phase === 'architecture') return 'configure-node';
+  if (phase === 'node') return 'configure-node';
+  if (phase === 'architecture') return 'show-output';
   if (phase === 'sidecar' || phase === 'network') return 'retry-trueforge';
   if (phase === 'authentication' || phase === 'model' || phase === 'alias' || phase === 'reasoning' || phase === 'skill' || phase === 'connector') return 'open-setup';
   return 'show-output';

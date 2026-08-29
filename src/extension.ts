@@ -5,7 +5,7 @@ import { commitDeterministicOrigin, commitDeterministicQuestion, commitDetermini
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
-import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
+import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
 import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
@@ -56,6 +56,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     context.globalStorageUri.fsPath
   );
   let producerReadiness: ProducerReadiness | undefined;
+  let readinessProducer: TrueForgeProducerRuntime | undefined;
   const lifecycle = new McpLifecycle(async () => {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
     return {
@@ -170,10 +171,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
     try {
-      if (!await isUbuntuX64()) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'configure-node' }, retry); return false; }
+      if (!await isUbuntuX64()) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'show-output' }, retry); return false; }
       try { await resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined); }
       catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }, retry); return false; }
-      await trueForge.configure();
+      try { await trueForge.configure(); }
+      catch { reportProducerReadiness({ phase: 'sidecar', outcome: 'failed', action: 'retry-trueforge' }, retry); return false; }
       const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
       if (readiness.action === 'none') {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
@@ -182,7 +184,9 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const skillCommit = extensionBuildCommit();
         if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
         if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
-        const producer = await (producerReadiness ??= new ProducerReadiness(trueForge.producer)).check({
+        const activeProducer = trueForge.producer;
+        if (readinessProducer !== activeProducer) { readinessProducer = activeProducer; producerReadiness = new ProducerReadiness(activeProducer); }
+        const producer = await producerReadiness!.check({
           model,
           reasoningEffort,
           mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
@@ -268,6 +272,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   });
   const configureTrueForgeCommand = vscode.commands.registerCommand('codealongai.trueforge.configure', async () => {
     try {
+      await trueForge.configure();
       await updateEndpoint();
       if (!mcpReady()) { reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' }); return; }
       await daytonaReadyForWalkthrough();
