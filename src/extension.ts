@@ -8,6 +8,10 @@ import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
+let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
+
+/** Test harness registration only; production never calls this. */
+export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -37,7 +41,7 @@ export function activate(context: vscode.ExtensionContext, createRuntime: ((repo
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
   const trueForge = new TrueForgeSidecar(
-    createRuntime?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
+    (createRuntime ?? testRuntimeFactory)?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
       (message) => output.error(message)

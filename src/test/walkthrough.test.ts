@@ -10,7 +10,8 @@ import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadComments, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
+import { TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 
@@ -19,6 +20,9 @@ interface WalkthroughTestApi {
   readonly session: WalkthroughSession | undefined;
   replyTargetAt(stopId: string): object | undefined;
 }
+
+const commandRuntime = new TrueForgeRuntimeDouble();
+setTrueForgeRuntimeForTests(() => commandRuntime);
 
 async function activeWalkthrough(): Promise<WalkthroughTestApi> {
   const extension = vscode.extensions.getExtension<WalkthroughTestApi>('krishnakartik1.codealongai');
@@ -214,6 +218,22 @@ suite('TrueForge setup sidecar', () => {
       await writeFile(lock, JSON.stringify({ ownerPid: process.pid, ownerStartTime, launchId: 'live-owner', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), false);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('runs the public Configure TrueForge command through the contract runtime double without changing walkthrough state', async () => {
+    const api = await activeWalkthrough();
+    const before = api.session;
+    commandRuntime.failStart = false;
+    await vscode.commands.executeCommand('codealongai.trueforge.configure');
+    assert.deepEqual(api.session, before);
+    assert.ok(commandRuntime.calls.some((call) => call.startsWith('start:')));
+  });
+  test('keeps walkthrough state unchanged when public Configure TrueForge setup fails', async () => {
+    const api = await activeWalkthrough();
+    const before = api.session;
+    commandRuntime.failStart = true;
+    await vscode.commands.executeCommand('codealongai.trueforge.configure');
+    commandRuntime.failStart = false;
+    assert.deepEqual(api.session, before);
   });
   test('starts one owned healthy runtime and exposes its loopback setup UI without creating a walkthrough request', async () => {
     const calls: string[] = [];
