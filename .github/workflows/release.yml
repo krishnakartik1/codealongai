@@ -7,6 +7,10 @@ on:
     types:
       - completed
 
+concurrency:
+  group: vsix-release-publication
+  cancel-in-progress: false
+
 jobs:
   publish:
     if: >-
@@ -21,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 2
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -29,40 +33,80 @@ jobs:
           cache: npm
 
       - id: version
-        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: echo "extension_version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
 
       - id: tag
-        run: echo "value=v${{ steps.version.outputs.value }}" >> "$GITHUB_OUTPUT"
+        run: echo "release_tag=v${{ steps.version.outputs.extension_version }}" >> "$GITHUB_OUTPUT"
 
       - id: version-changed
         run: |
-          previous_version="$(git show HEAD^:package.json | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
-          if [ "$previous_version" = "${{ steps.version.outputs.value }}" ]; then
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          fi
+          has_version_bump=false
+          for commit in $(git rev-list HEAD -- package.json); do
+            if ! git cat-file -e "$commit^:package.json" 2> /dev/null; then
+              continue
+            fi
+            commit_version="$(git show "$commit:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
+            parent_version="$(git show "$commit^:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
+            if [ "$commit_version" = "${{ steps.version.outputs.extension_version }}" ] && [ "$parent_version" != "$commit_version" ]; then
+              has_version_bump=true
+              break
+            fi
+          done
+          echo "has_version_bump=$has_version_bump" >> "$GITHUB_OUTPUT"
 
       - id: existing-release
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.value }}" > /dev/null; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.release_tag }}" > /dev/null; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - if: steps.version-changed.outputs.value == 'true' && steps.existing-release.outputs.value == 'false'
-        run: npm ci
-
-      - if: steps.version-changed.outputs.value == 'true' && steps.existing-release.outputs.value == 'false'
-        run: npm run package
-
-      - if: steps.version-changed.outputs.value == 'true' && steps.existing-release.outputs.value == 'false'
+      - id: release-position
+        if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${{ steps.tag.outputs.value }}"
-          --target "${{ github.event.workflow_run.head_sha }}"
-          --generate-notes
-          --latest
-          codealongai.vsix
+          EXTENSION_VERSION: ${{ steps.version.outputs.extension_version }}
+        run: |
+          make_latest="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | node -e '
+            let source = "";
+            process.stdin.on("data", chunk => source += chunk);
+            process.stdin.on("end", () => {
+              const releases = JSON.parse(source).flat();
+              const current = process.env.EXTENSION_VERSION.split(".").map(Number);
+              const hasNewerRelease = releases.some(release => {
+                if (release.draft || release.prerelease) return false;
+                const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(release.tag_name);
+                if (!match) return false;
+                const candidate = match.slice(1).map(Number);
+                for (let index = 0; index < candidate.length; index += 1) {
+                  if (candidate[index] !== current[index]) {
+                    return candidate[index] > current[index];
+                  }
+                }
+                return false;
+              });
+              console.log(hasNewerRelease ? "false" : "true");
+            });
+          ')"
+          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
+
+      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+        run: npm ci
+
+      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+        run: npm run package
+
+      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_id="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="${{ steps.tag.outputs.release_tag }}" \
+            -f target_commitish="${{ github.event.workflow_run.head_sha }}" \
+            -F generate_release_notes=true \
+            -f make_latest="${{ steps.release-position.outputs.make_latest }}" \
+            --jq '.id')"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=codealongai.vsix" \
+            --header 'Content-Type: application/octet-stream' \
+            --input codealongai.vsix
