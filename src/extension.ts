@@ -7,6 +7,7 @@ import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
 import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
+import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -168,13 +169,35 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     try {
       await trueForge.configure();
       const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
-      if (readiness.action === 'none') return true;
+      if (readiness.action === 'none') {
+        const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+        const model = configuration.get<string>('model')?.trim() ?? '';
+        const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
+        if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }); return false; }
+        const producer = await new ProducerReadiness(trueForge.producer).check({
+          model,
+          reasoningEffort,
+          mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`
+        });
+        if (producer.action === 'none') return true;
+        reportProducerReadiness(producer);
+        return false;
+      }
       reportDaytonaReadiness(readiness);
     } catch (error) {
       output.error(`TrueForge readiness failed: ${String(error)}`);
       void vscode.window.showErrorMessage('CodeAlongAI could not verify TrueForge setup before creating a walkthrough request.');
     }
     return false;
+  };
+  const reportProducerReadiness = (readiness: ProducerReadinessResult): void => {
+    output.warn(`Producer readiness needs ${readiness.phase}.`);
+    const actions = readiness.action === 'open-setup' ? ['Open TrueForge Setup', 'Retry Setup'] : readiness.action === 'retry-trueforge' ? ['Retry TrueForge', 'Show CodeAlongAI Output'] : ['Show CodeAlongAI Output'];
+    void vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions).then((action) => {
+      if (action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
+      if (action === 'Retry Setup' || action === 'Retry TrueForge') void vscode.commands.executeCommand('codealongai.walkthrough.ask');
+      if (action === 'Show CodeAlongAI Output') output.show(true);
+    });
   };
   const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
     await updateEndpoint();

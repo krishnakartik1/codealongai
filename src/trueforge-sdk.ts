@@ -1,5 +1,5 @@
 import { TrueForge } from '@truefoundry/trueforge-sdk';
-import type { TrueForgeProducerRuntime, TrueForgeTurnRequest } from './trueforge-contract';
+import type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeTurnRequest } from './trueforge-contract';
 import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
@@ -16,6 +16,30 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public async cancelTurn(sessionId: string): Promise<void> { await this.cancelSdkSession(sessionId); }
   public async deleteSession(sessionId: string): Promise<void> { await this.deleteSdkSession(sessionId); }
   public probeDaytona(): Promise<DaytonaProbeResult> { const operation = this.probeState.queue.catch(() => undefined).then(async () => { await this.probeState.hydrate(); return this.probeDaytonaOwned(); }); this.probeState.queue = operation.then(() => undefined, () => undefined); return operation; }
+  public async prepareProducer(input: TrueForgeProducerReadinessInput): Promise<TrueForgeProducerReadinessResult> {
+    if (!isFullyQualifiedModel(input.model)) return { phase: 'alias', outcome: 'failed' };
+    try {
+      const models = await this.readConfiguredModels();
+      const selected = configuredModel(models, input.model);
+      if (!selected) return { phase: 'alias', outcome: 'failed' };
+      if (!supportsReasoning(selected, input.reasoningEffort)) return { phase: 'reasoning', outcome: 'failed' };
+    } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
+    try {
+      if (!this.client.settings.skills.createOrUpdate) return { phase: 'skill', outcome: 'failed' };
+      await this.client.settings.skills.createOrUpdate({ manifest: codeAlongAiSkillManifest() });
+      const skills = await this.readConfiguredSkills();
+      if (!hasCodeAlongAiSkill(skills)) return { phase: 'skill', outcome: 'failed' };
+    } catch { return { phase: 'skill', outcome: 'failed' }; }
+    try {
+      if (!this.client.settings.mcpServers?.createOrUpdate || !this.client.mcpServers?.listTools) return { phase: 'connector', outcome: 'failed' };
+      await this.client.settings.mcpServers.createOrUpdate({ manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: input.mcpUrl } });
+    } catch { return { phase: 'connector', outcome: 'failed' }; }
+    try {
+      const tools = await this.client.mcpServers.listTools('codealongai-mcp');
+      if (!hasExactCatalog(tools)) return { phase: 'mcp-discovery', outcome: 'failed' };
+    } catch { return { phase: 'mcp-discovery', outcome: 'failed' }; }
+    return { phase: 'ready', outcome: 'ready' };
+  }
   private async probeDaytonaOwned(): Promise<DaytonaProbeResult> {
     if (this.probeState.residualSessionId) {
       try {
@@ -95,6 +119,15 @@ function isDaytona(value: unknown): boolean { const record = asRecord(value); co
 function providerManifest(value: unknown): Record<string, unknown> | undefined { const record = asRecord(value); const data = asRecord(record?.data); return asRecord(data?.manifest ?? record?.manifest); }
 function sandboxStatus(value: unknown): string | undefined { const record = asRecord(value); const data = asRecord(record?.data); return typeof (data?.status ?? record?.status) === 'string' ? data?.status as string ?? record?.status as string : undefined; }
 function firstModelName(value: unknown): string | undefined { const record = asRecord(value); const values = Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; for (const candidate of values) { const name = asRecord(candidate)?.name; if (typeof name === 'string' && name.length > 0) return name; } return undefined; }
+function values(value: unknown): readonly unknown[] { const record = asRecord(value); return Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; }
+function isFullyQualifiedModel(value: string): boolean { return /^[^/\s]+\/[^/\s]+$/.test(value); }
+function configuredModel(value: unknown, name: string): Record<string, unknown> | undefined { return values(value).map(asRecord).find((candidate) => candidate?.name === name); }
+function supportsReasoning(model: Record<string, unknown>, effort: string): boolean { const properties = asRecord(model.properties); const efforts = properties?.reasoningEfforts; return Array.isArray(efforts) && efforts.includes(effort); }
+function hasCodeAlongAiSkill(value: unknown): boolean { return values(value).some((candidate) => { const record = asRecord(candidate); const manifest = asRecord(record?.manifest ?? record?.data); return (manifest?.name ?? record?.name) === 'codealongai' && (manifest?.ref ?? record?.ref) === CODEALONGAI_SKILL_COMMIT && (manifest?.path ?? record?.path) === 'skills/codealongai'; }); }
+const CODEALONGAI_SKILL_COMMIT = '0c9ff56d0466e9a8eb65682e2ff2da5255803695';
+function codeAlongAiSkillManifest(): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: CODEALONGAI_SKILL_COMMIT }; }
+const CODEALONGAI_CATALOG = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
+function hasExactCatalog(value: unknown): boolean { const tools = values(value).map((tool) => asRecord(tool)?.name).filter((name): name is string => typeof name === 'string').sort(); return JSON.stringify(tools) === JSON.stringify([...CODEALONGAI_CATALOG].sort()); }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
 function configurationPhase(error: unknown): DaytonaReadinessPhase { return errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'provider'; }
 function snapshotPhase(_error: unknown): DaytonaReadinessPhase { return 'snapshots'; }
@@ -114,8 +147,9 @@ function hasSandboxPermissionStatus(value: unknown): boolean { return typeof val
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {
-  settings: { modelProviders: { list(): Promise<unknown> }; skills: { list(): Promise<unknown> }; sandboxProviders: { get(): Promise<unknown>; createOrUpdate(request: unknown): Promise<unknown> } };
+  settings: { modelProviders: { list(): Promise<unknown> }; skills: { list(): Promise<unknown>; createOrUpdate?(request: unknown): Promise<unknown> }; sandboxProviders: { get(): Promise<unknown>; createOrUpdate(request: unknown): Promise<unknown> }; mcpServers?: { createOrUpdate(request: unknown): Promise<unknown> } };
   catalogs: { modelProviders: { list(): Promise<unknown> } }; models: { list(): Promise<unknown> }; skills: { list(): Promise<unknown> };
+  mcpServers?: { listTools(name: string): Promise<unknown> };
   sessions: { create(sessionRequest: unknown): Promise<unknown>; createTurn(sessionId: string, turnRequest: unknown): Promise<unknown>; subscribeToTurn(sessionId: string, turnId: string): Promise<AsyncIterable<unknown>>; cancel(sessionId: string): Promise<unknown>; delete(sessionId: string): Promise<unknown>; };
 }
 export type TrueForgeSdkClientFactory = (baseUrl: string) => TrueForgeSdkClient;

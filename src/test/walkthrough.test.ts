@@ -20,6 +20,7 @@ import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness } from '../daytona';
 import { DaytonaProbeState } from '../trueforge-sdk';
+import { ProducerReadiness } from '../producer-readiness';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -68,6 +69,16 @@ async function withMcpEnabled<T>(api: WalkthroughTestApi, run: () => Promise<T>)
   }
 }
 
+async function withProducerConfigured<T>(run: () => Promise<T>): Promise<T> {
+  const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+  const priorModel = configuration.inspect<string>('model')?.globalValue;
+  const priorReasoning = configuration.inspect<string>('reasoningEffort')?.globalValue;
+  await configuration.update('model', 'openai/gpt-5.2', vscode.ConfigurationTarget.Global);
+  await configuration.update('reasoningEffort', 'medium', vscode.ConfigurationTarget.Global);
+  try { return await run(); }
+  finally { await configuration.update('model', priorModel, vscode.ConfigurationTarget.Global); await configuration.update('reasoningEffort', priorReasoning, vscode.ConfigurationTarget.Global); }
+}
+
 async function writeOwnershipLock(lock: string, record: object | string): Promise<void> {
   await mkdir(lock);
   await writeFile(path.join(lock, 'ownership.json'), typeof record === 'string' ? record : JSON.stringify(record));
@@ -87,7 +98,7 @@ function waitForChildExit(child: import('node:child_process').ChildProcess): Pro
 suite('Extension Development Host walkthrough', () => {
   test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
     const api = await activeWalkthrough();
-    await withMcpEnabled(api, async () => {
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0];
       assert.ok(workspace, 'the approved two-file workspace should be open');
       const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
@@ -135,7 +146,7 @@ suite('Extension Development Host walkthrough', () => {
       assert.deepEqual(complete.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart', 'initial-value']);
       assert.equal(complete.attentionStopId, 'pricing-function');
       assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
-    });
+    }));
   });
 });
 
@@ -630,6 +641,41 @@ suite('Daytona producer readiness', () => {
   });
 });
 
+suite('producer readiness', () => {
+  test('maps each safe external readiness phase to a bounded operator action', async () => {
+    for (const [phase, action] of [
+      ['model', 'open-setup'], ['network', 'retry-trueforge'], ['authentication', 'open-setup'], ['alias', 'open-setup'], ['reasoning', 'open-setup'], ['skill', 'open-setup'], ['connector', 'open-setup'], ['mcp-discovery', 'show-output']
+    ] as const) {
+      const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => ({ phase, outcome: 'failed' }) });
+      assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase, outcome: 'failed', action });
+    }
+  });
+
+  test('requires a ready external runtime result before it permits request capture', async () => {
+    const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => ({ phase: 'ready', outcome: 'ready' }) });
+    assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase: 'ready', outcome: 'ready', action: 'none' });
+  });
+
+  test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
+    const calls: unknown[] = [];
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: {
+        modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
+        skills: { createOrUpdate: async (request) => { calls.push(request); return {}; }, list: async () => ({ data: [{ manifest: { name: 'codealongai', ref: '0c9ff56d0466e9a8eb65682e2ff2da5255803695', path: 'skills/codealongai' } }] }) },
+        mcpServers: { createOrUpdate: async (request) => { calls.push(request); return {}; } }
+      },
+      catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
+      mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
+      sessions: { create: async () => ({}), createTurn: async () => ({}), subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
+    }));
+    assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(calls, [
+      { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '0c9ff56d0466e9a8eb65682e2ff2da5255803695' } },
+      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } }
+    ]);
+  });
+});
+
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
 suite('walkthrough start authority', () => {
@@ -653,7 +699,9 @@ suite('walkthrough start authority', () => {
     ]);
     assert.deepEqual(manifest.contributes.configuration.properties, {
       'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
-      'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' }
+      'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' },
+      'codealongai.trueforge.model': { type: 'string', scope: 'machine', description: 'Fully qualified TrueForge provider/model selected for CodeAlongAI.' },
+      'codealongai.trueforge.reasoningEffort': { type: 'string', scope: 'machine', description: 'Reasoning effort supported by the selected TrueForge model.' }
     });
     assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
     assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/'));

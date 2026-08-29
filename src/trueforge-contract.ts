@@ -21,6 +21,16 @@ export interface TrueForgeRuntime {
 
 export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; }
 
+/** Safe, credentials-free producer configuration supplied by the extension. */
+export interface TrueForgeProducerReadinessInput {
+  readonly model: string;
+  readonly reasoningEffort: string;
+  readonly mcpUrl: string;
+}
+
+export type TrueForgeProducerReadinessPhase = 'model' | 'network' | 'authentication' | 'alias' | 'reasoning' | 'skill' | 'connector' | 'mcp-discovery' | 'ready';
+export interface TrueForgeProducerReadinessResult { readonly phase: TrueForgeProducerReadinessPhase; readonly outcome: 'ready' | 'failed'; }
+
 export interface TrueForgeProducerRuntime {
   discoverConfiguration(): Promise<unknown>;
   discoverProviders(): Promise<unknown>;
@@ -33,4 +43,6 @@ export interface TrueForgeProducerRuntime {
   deleteSession(sessionId: string): Promise<void>;
   /** Creates and disposes a credential-free, provider-backed readiness probe. */
   probeDaytona(): Promise<DaytonaProbeResult>;
+  /** Reconciles only CodeAlongAI-owned producer configuration and proves its MCP catalog. */
+  prepareProducer(input: TrueForgeProducerReadinessInput): Promise<TrueForgeProducerReadinessResult>;
 }

@@ -116,6 +116,16 @@
           "type": "string",
           "scope": "machine",
           "description": "Optional absolute Node.js executable for the local TrueForge sidecar."
+        },
+        "codealongai.trueforge.model": {
+          "type": "string",
+          "scope": "machine",
+          "description": "Fully qualified TrueForge provider/model selected for CodeAlongAI."
+        },
+        "codealongai.trueforge.reasoningEffort": {
+          "type": "string",
+          "scope": "machine",
+          "description": "Reasoning effort supported by the selected TrueForge model."
         }
       }
     }
