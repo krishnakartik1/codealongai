@@ -1,4 +1,4 @@
-import { link, mkdir, open, unlink, type FileHandle } from 'node:fs/promises';
+import { link, mkdir, open, rename, unlink, type FileHandle } from 'node:fs/promises';
 import * as http from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
@@ -39,7 +39,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } }
   private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const temporaryPath = `${lockPath}.${randomUUID()}`; const temporaryHandle = await open(temporaryPath, 'wx'); try { await temporaryHandle.writeFile(JSON.stringify(ownershipRecord)); await temporaryHandle.sync(); await temporaryHandle.close(); await link(temporaryPath, lockPath); this.ownership = await open(lockPath, 'r+'); this.ownershipPath = lockPath; } finally { await temporaryHandle.close().catch(() => undefined); await unlink(temporaryPath).catch(() => undefined); } }
-  private async writeOwnership(record: OwnershipRecord): Promise<void> { const serializedRecord = JSON.stringify(record); await this.ownership?.write(serializedRecord, 0, 'utf8'); await this.ownership?.truncate(Buffer.byteLength(serializedRecord)); await this.ownership?.sync(); }
+  private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); const temporaryPath = `${ownershipPath}.${randomUUID()}`; const temporaryHandle = await open(temporaryPath, 'wx'); try { await temporaryHandle.writeFile(JSON.stringify(record)); await temporaryHandle.sync(); await temporaryHandle.close(); await rename(temporaryPath, ownershipPath); await this.ownership?.close(); this.ownership = await open(ownershipPath, 'r+'); } finally { await temporaryHandle.close().catch(() => undefined); await unlink(temporaryPath).catch(() => undefined); } }
   private async releaseOwnership(): Promise<void> { const ownershipPath = this.ownershipPath; await this.ownership?.close(); this.ownership = undefined; this.ownershipPath = undefined; if (ownershipPath) await unlink(ownershipPath).catch(() => undefined); }
   private reportExit(message: string): void { this.childExited = true; this.child = undefined; this.port = undefined; if (!this.stopping) this.reportUnexpectedExit(message); void this.releaseOwnership(); }
 }

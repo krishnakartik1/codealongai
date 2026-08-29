@@ -15,7 +15,7 @@ export interface OwnershipRecord {
 
 export async function recoverStaleOwnership(lockPath: string): Promise<boolean> {
   const ownershipRecord = await readOwnership(lockPath);
-  if (!ownershipRecord) { await unlink(lockPath).catch(() => undefined); return true; }
+  if (!ownershipRecord) return false;
   if (await ownerIsAlive(ownershipRecord)) return false;
   const recordedChild = await findRecordedChild(ownershipRecord);
   if (recordedChild === 'unsafe') return false;
