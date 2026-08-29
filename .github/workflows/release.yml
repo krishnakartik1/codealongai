@@ -76,33 +76,20 @@ jobs:
           echo "has_version_bump=$has_version_bump" >> "$GITHUB_OUTPUT"
 
       - id: existing-release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.release_tag }}" > /dev/null; then
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-            if release_assets="$(gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name')"; then
-              if printf '%s\n' "$release_assets" | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
-                echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
-              else
-                echo "release_needs_asset=true" >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
-            fi
           else
             echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-            echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
           fi
 
       - id: release-eligibility
         env:
           HAS_VERSION_BUMP: ${{ steps.version-changed.outputs.has_version_bump }}
           TAG_EXISTS: ${{ steps.existing-release.outputs.tag_exists }}
-          RELEASE_NEEDS_ASSET: ${{ steps.existing-release.outputs.release_needs_asset }}
         run: |
           release_should_publish=false
-          if [ "$HAS_VERSION_BUMP" = true ] && { [ "$TAG_EXISTS" = false ] || [ "$RELEASE_NEEDS_ASSET" = true ]; }; then
+          if [ "$HAS_VERSION_BUMP" = true ] && [ "$TAG_EXISTS" = false ]; then
             release_should_publish=true
           fi
           echo "release_should_publish=$release_should_publish" >> "$GITHUB_OUTPUT"
