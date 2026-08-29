@@ -107,6 +107,4 @@ jobs:
             -F generate_release_notes=true \
             -f make_latest="${{ steps.release-position.outputs.make_latest }}" \
             --jq '.id')"
-          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=codealongai.vsix" \
-            --header 'Content-Type: application/octet-stream' \
-            --input codealongai.vsix
+          gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix
