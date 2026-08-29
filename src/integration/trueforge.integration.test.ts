@@ -5,11 +5,12 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
-import { NativeTrueForgeRuntime } from '../trueforge';
+import { isUbuntuX64, NativeTrueForgeRuntime } from '../trueforge';
 
 const within = async <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => await Promise.race([promise, new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(message)), ms))]);
 
-test('the bundled pinned TrueForge adapter serves a credential-free discovery route and cleans up', { timeout: 35_000 }, async () => {
+test('the bundled pinned TrueForge adapter serves a credential-free discovery route and cleans up', { timeout: 35_000 }, async (context) => {
+  if (!await isUbuntuX64()) { context.skip('Native TrueForge is supported only on Ubuntu x86-64.'); return; }
   const dataPath = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-integration-'));
   const port = await new Promise<number>((resolve, reject) => {
     const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') return reject(new Error('no loopback port')); server.close((error) => error ? reject(error) : resolve(address.port)); });

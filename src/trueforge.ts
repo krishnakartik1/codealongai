@@ -34,16 +34,19 @@ export interface TrueForgeProducerRuntime {
   discoverModels(): Promise<unknown>;
   discoverSkills(): Promise<unknown>;
   createSession(input: unknown): Promise<unknown>;
-  runTurn(input: unknown): Promise<unknown>;
+  runTurn(input: TrueForgeTurnRequest): Promise<unknown>;
   events(sessionId: string, turnId: string): AsyncIterable<unknown>;
   cancelTurn(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
 }
+export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; }
 
 /** Starts only a runtime owned by this extension instance; it never discovers or adopts another process. */
 export class TrueForgeSidecar {
   private port: number | undefined;
   private started = false;
+  private disposed = false;
+  private queue: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly runtime: TrueForgeRuntime,
@@ -58,6 +61,13 @@ export class TrueForgeSidecar {
   public get producer(): TrueForgeProducerRuntime { return this.runtime.producer; }
 
   public async configure(): Promise<void> {
+    if (this.disposed) throw new Error('The TrueForge sidecar is disposed.');
+    const operation = this.queue.catch(() => undefined).then(() => this.configureOwned());
+    this.queue = operation;
+    return operation;
+  }
+
+  private async configureOwned(): Promise<void> {
     if (this.started && this.port !== undefined && await this.runtime.health(this.port)) {
       await this.runtime.open(loopbackUrl(this.port));
       return;
@@ -78,10 +88,15 @@ export class TrueForgeSidecar {
   }
 
   public async dispose(): Promise<void> {
-    if (!this.started) return;
-    this.started = false;
-    this.port = undefined;
-    await this.runtime.stop();
+    this.disposed = true;
+    const operation = this.queue.catch(() => undefined).then(async () => {
+      if (!this.started) return;
+      this.started = false;
+      this.port = undefined;
+      await this.runtime.stop();
+    });
+    this.queue = operation;
+    await operation;
   }
 }
 
@@ -235,9 +250,8 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public discoverModels(): Promise<unknown> { return this.client.models.list(); }
   public discoverSkills(): Promise<unknown> { return this.client.skills.list(); }
   public createSession(input: unknown): Promise<unknown> { return this.client.sessions.create(input as never); }
-  public runTurn(input: unknown): Promise<unknown> {
-    const value = input as { sessionId: string; request: unknown };
-    return this.client.sessions.createTurn(value.sessionId, value.request as never);
+  public runTurn(input: TrueForgeTurnRequest): Promise<unknown> {
+    return this.client.sessions.createTurn(input.sessionId, input.request as never);
   }
   public async *events(sessionId: string, turnId: string): AsyncIterable<unknown> {
     for await (const event of await this.client.sessions.subscribeToTurn(sessionId, turnId)) yield event;
@@ -311,9 +325,10 @@ function nodeVersion(executable: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Timed out reading the configured Node version.')); }, 5_000);
     child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-    child.once('error', reject);
-    child.once('exit', (code) => code === 0 ? resolve(output.trim()) : reject(new Error('Could not read the configured Node version.')));
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => { clearTimeout(timer); code === 0 ? resolve(output.trim()) : reject(new Error('Could not read the configured Node version.')); });
   });
 }
 

@@ -227,6 +227,24 @@ suite('TrueForge setup sidecar', () => {
     assert.deepEqual(calls, ['start:48123:/storage/trueforge', 'open:http://127.0.0.1:48123/', 'open:http://127.0.0.1:48123/', 'stop']);
   });
 
+  test('serializes concurrent setup requests and waits for owned cleanup on disposal', async () => {
+    const calls: string[] = [];
+    let releaseStart: (() => void) | undefined;
+    const runtime: TrueForgeRuntime = {
+      producer,
+      start: async () => { calls.push('start'); await new Promise<void>((resolve) => { releaseStart = resolve; }); },
+      health: async () => true, open: async () => { calls.push('open'); }, stop: async () => { calls.push('stop'); }
+    };
+    const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => 48123);
+    const first = sidecar.configure();
+    const second = sidecar.configure();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseStart!();
+    await Promise.all([first, second]);
+    await sidecar.dispose();
+    assert.deepEqual(calls, ['start', 'open', 'open', 'stop']);
+  });
+
   test('does not open the UI when the owned sidecar fails its health check', async () => {
     const calls: string[] = [];
     const runtime: TrueForgeRuntime = {
