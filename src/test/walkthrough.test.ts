@@ -14,7 +14,7 @@ import { LoopbackMcpEndpoint } from '../mcp';
 import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
-import { isUbuntuX64, recoverStaleOwnership, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
+import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -232,6 +232,12 @@ suite('TrueForge setup sidecar', () => {
       assert.equal(await recoverStaleOwnership(lock), true);
       await new Promise<void>((resolve) => child.once('exit', () => resolve()));
     } finally { child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }); }
+  });
+  test('cleanup preserves a valid ownership record atomically replaced by another launch', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-replacement-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    const replacement = JSON.stringify({ launchId: 'launch-b', ownerPid: process.pid });
+    try { await writeFile(lock, replacement); await releaseOwnershipIfCurrent(lock, 'launch-a'); assert.equal(readFileSync(lock, 'utf8'), replacement); } finally { await rm(directory, { recursive: true, force: true }); }
   });
   test('runs the public Configure TrueForge command through the contract runtime double without changing walkthrough state', async () => {
     const api = await activeWalkthrough();
