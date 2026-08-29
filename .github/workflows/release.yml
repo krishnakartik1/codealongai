@@ -49,10 +49,17 @@ jobs:
             echo "The accepted push range does not match the tested commit." >&2
             exit 1
           fi
-          if git cat-file -e "$push_before^{commit}" 2> /dev/null; then
-            push_range="$push_before..$push_after"
-          else
+          if [ "$push_before" = "0000000000000000000000000000000000000000" ]; then
             push_range="$push_after"
+          else
+            if ! git cat-file -e "$push_before^{commit}" 2> /dev/null; then
+              git fetch --no-tags origin "$push_before"
+            fi
+            if ! git cat-file -e "$push_before^{commit}" 2> /dev/null; then
+              echo "The accepted push range start is unavailable." >&2
+              exit 1
+            fi
+            push_range="$push_before..$push_after"
           fi
           has_version_bump=false
           for commit in $(git rev-list "$push_range" -- package.json); do
