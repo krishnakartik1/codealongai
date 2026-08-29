@@ -22,6 +22,10 @@ export async function recoverStaleOwnership(lockPath: string): Promise<boolean> 
   return true;
 }
 
+export async function ownsRecordedChild(record: OwnershipRecord): Promise<boolean> {
+  return record.childPid !== undefined && await verifyChild(record.childPid, record) === true;
+}
+
 async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefined> {
   try {
     const record = JSON.parse(await readFile(lockPath, 'utf8')) as OwnershipRecord;

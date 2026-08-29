@@ -11,6 +11,8 @@ export interface TrueForgeRuntime {
   verifyCapability(port: number): Promise<boolean>;
   /** Lets startup reject an owned bind failure instead of trusting the released port. */
   hasExited(): boolean;
+  /** Validates the retained child identity before reusing its loopback endpoint. */
+  ownsRunningChild(): Promise<boolean>;
   open(url: string): Promise<void>;
   stop(): Promise<void>;
   readonly producer: TrueForgeProducerRuntime;

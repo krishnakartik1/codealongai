@@ -220,6 +220,7 @@ suite('TrueForge setup sidecar', () => {
       health: async () => alive,
       verifyCapability: async () => alive,
       hasExited: () => false,
+      ownsRunningChild: async () => alive,
       open: async (url) => { calls.push(`open:${url}`); },
       stop: async () => { calls.push('stop'); alive = false; }
     };
@@ -238,7 +239,7 @@ suite('TrueForge setup sidecar', () => {
     const runtime: TrueForgeRuntime = {
       producer,
       start: async () => { calls.push('start'); await new Promise<void>((resolve) => { releaseStart = resolve; }); },
-      health: async () => true, verifyCapability: async () => true, hasExited: () => false, open: async () => { calls.push('open'); }, stop: async () => { calls.push('stop'); }
+      health: async () => true, verifyCapability: async () => true, hasExited: () => false, ownsRunningChild: async () => true, open: async () => { calls.push('open'); }, stop: async () => { calls.push('stop'); }
     };
     const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => 48123);
     const first = sidecar.configure();
@@ -258,6 +259,7 @@ suite('TrueForge setup sidecar', () => {
       health: async () => true,
       verifyCapability: async () => true,
       hasExited: () => true,
+      ownsRunningChild: async () => false,
       open: async () => { calls.push('open'); },
       stop: async () => { calls.push('stop'); }
     };
@@ -275,6 +277,7 @@ suite('TrueForge setup sidecar', () => {
       health: async () => startCount === 2,
       verifyCapability: async () => startCount === 2,
       hasExited: () => startCount === 1,
+      ownsRunningChild: async () => startCount === 2,
       open: async (url) => { calls.push(`open:${url}`); },
       stop: async () => { calls.push('stop'); }
     };
@@ -282,6 +285,22 @@ suite('TrueForge setup sidecar', () => {
     const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => ports.shift()!);
     await sidecar.configure();
     assert.deepEqual(calls, ['start:48123', 'stop', 'start:48124', 'open:http://127.0.0.1:48124/']);
+  });
+
+  test('replaces a healthy-looking endpoint when its retained child identity no longer matches', async () => {
+    const calls: string[] = [];
+    let ownsChild = true;
+    const ports = [48123, 48124];
+    const runtime: TrueForgeRuntime = {
+      producer,
+      start: async ({ port }) => { calls.push(`start:${port}`); }, health: async () => true, verifyCapability: async () => true,
+      hasExited: () => false, ownsRunningChild: async () => ownsChild, open: async (url) => { calls.push(`open:${url}`); }, stop: async () => { calls.push('stop'); }
+    };
+    const sidecar = new TrueForgeSidecar(runtime, '/storage', async () => ports.shift()!);
+    await sidecar.configure();
+    ownsChild = false;
+    await sidecar.configure();
+    assert.deepEqual(calls, ['start:48123', 'open:http://127.0.0.1:48123/', 'stop', 'start:48124', 'open:http://127.0.0.1:48124/']);
   });
 
   test('maps the complete producer contract through the pinned SDK client seam', async () => {

@@ -23,7 +23,7 @@ export class TrueForgeSidecar {
   public get producer() { return this.runtime.producer; }
   public async configure(): Promise<void> { if (this.disposed) throw new Error('The TrueForge sidecar is disposed.'); const operation = this.queue.catch(() => undefined).then(() => this.configureOwned()); this.queue = operation; return operation; }
   private async configureOwned(): Promise<void> {
-    if (this.started && this.port !== undefined && await this.runtime.health(this.port) && await this.runtime.verifyCapability(this.port)) { await this.runtime.open(loopbackUrl(this.port)); return; }
+    if (this.started && this.port !== undefined && !this.runtime.hasExited() && await this.runtime.ownsRunningChild() && await this.runtime.health(this.port) && await this.runtime.verifyCapability(this.port)) { await this.runtime.open(loopbackUrl(this.port)); return; }
     if (this.started) await this.runtime.stop();
     this.started = false;
     let lastError: unknown;
