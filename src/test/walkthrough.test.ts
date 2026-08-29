@@ -96,6 +96,12 @@ suite('Extension Development Host walkthrough', () => {
       editor.selection = selection;
       const sourceBefore = document.getText();
 
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+      await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+      assert.equal(api.session, undefined);
+      assert.equal(api.hasPendingWalkthroughRequest, false);
+
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
       await vscode.commands.executeCommand('codealongai.walkthrough.ask');
       const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
       assert.deepEqual(origin.origin, {
@@ -108,6 +114,13 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
+      const beforeRejectedReply = api.session;
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
+      assert.deepEqual(api.session, beforeRejectedReply);
+      assert.equal(api.hasPendingWalkthroughRequest, false);
+
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
       const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);

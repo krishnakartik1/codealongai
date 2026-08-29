@@ -6,7 +6,7 @@ import { deriveOrigin, projectDestinations, type NavigationDirection, type Origi
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
-import type { DaytonaProbeResult } from './daytona';
+import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -143,6 +143,14 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (action === 'Keep walkthrough') authority.discardReset(requestId);
     });
   };
+  const retryDaytonaSetup = async (): Promise<DaytonaReadinessResult> => {
+    try {
+      await trueForge.configure();
+      return await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
+    } catch {
+      return { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' };
+    }
+  };
   const reportDaytonaReadiness = (readiness: Awaited<ReturnType<DaytonaReadiness['check']>>, retrying = false): void => {
     if (readiness.action === 'none') {
       output.info(retrying ? 'Daytona readiness is ready after setup.' : 'Daytona readiness is ready.');
@@ -153,7 +161,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     output.warn(`${prefix} ${readiness.phase} (${readiness.outcome}).`);
     void vscode.window.showWarningMessage(`${prefix} ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup').then(async (action) => {
       if (action !== 'Open TrueForge Setup' && action !== 'Retry Setup') return;
-      reportDaytonaReadiness(await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).configureOrRetry(), true);
+      reportDaytonaReadiness(await retryDaytonaSetup(), true);
     });
   };
   const daytonaReadyForWalkthrough = async (): Promise<boolean> => {
@@ -260,6 +268,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       });
       return;
     }
+    if (!pending && !await daytonaReadyForWalkthrough()) return;
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     retryQuestionRequest = request;
     retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
