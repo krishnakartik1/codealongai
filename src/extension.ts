@@ -6,6 +6,7 @@ import { deriveOrigin, projectDestinations, type NavigationDirection, type Origi
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeRuntime } from './trueforge';
+import type { DaytonaProbeResult } from './daytona';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -46,7 +47,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     testRuntimeFactory?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
-      (message) => output.error(message)
+      (message) => output.error(message),
+      { read: async () => context.globalState.get<{ sessionId: string; result: DaytonaProbeResult }>('codealongai.daytonaProbeResidual'), write: async (value) => { await context.globalState.update('codealongai.daytonaProbeResidual', value); } }
     ),
     context.globalStorageUri.fsPath
   );

@@ -5,14 +5,14 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
 import { createOwnershipLock, ownsRecordedChild, processStartTime, recoverStaleOwnership, releaseOwnershipIfCurrent as releaseCurrentOwnership, writeOwnership, type OwnershipRecord } from './trueforge-ownership';
-import { DaytonaProbeState, SdkTrueForgeProducerRuntime } from './trueforge-sdk';
+import { DaytonaProbeState, SdkTrueForgeProducerRuntime, type DaytonaProbeStateStore } from './trueforge-sdk';
 import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from './trueforge-contract';
 import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
-  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false; private producerRuntime: SdkTrueForgeProducerRuntime | undefined; private readonly probeState = new DaytonaProbeState();
-  public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
+  private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false; private producerRuntime: SdkTrueForgeProducerRuntime | undefined; private readonly probeState: DaytonaProbeState;
+  public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined, probeStateStore?: DaytonaProbeStateStore) { this.probeState = new DaytonaProbeState(probeStateStore); }
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return this.producerRuntime ??= new SdkTrueForgeProducerRuntime(loopbackUrl(this.port), undefined, this.probeState); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
     if (this.child && !childHasExited(this.child)) throw new Error('The owned TrueForge sidecar is already running.');
