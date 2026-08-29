@@ -18,3 +18,16 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:headless
+      - if: github.event_name == 'push'
+        name: Record accepted push range
+        run: |
+          mkdir accepted-push-range
+          printf 'push_before=%s\n' '${{ github.event.before }}' > accepted-push-range/push-range.env
+          printf 'push_after=%s\n' '${{ github.event.after }}' >> accepted-push-range/push-range.env
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: accepted-push-range
+          path: accepted-push-range/push-range.env
+          overwrite: true
+          retention-days: 7
