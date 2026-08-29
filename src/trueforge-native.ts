@@ -15,8 +15,9 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
-    await this.waitForOwnershipRelease();
     if (this.child && !childHasExited(this.child)) throw new Error('The owned TrueForge sidecar is already running.');
+    if (this.ownershipPath && this.ownershipLaunchId) await this.releaseOwnership();
+    else await this.ownershipRelease;
     if (!await isUbuntuX64()) throw new Error('TrueForge setup requires Ubuntu x86-64.');
     const node = await resolveNodeExecutable(this.configuredNodePath()); const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
     await mkdir(options.dataPath, { recursive: true }); const dataPath = await import('node:fs/promises').then(({ realpath }) => realpath(options.dataPath));
@@ -35,18 +36,44 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public health(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}healthz`, (status, body) => status === 200 && body === 'OK!'); }
   public verifyCapability(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}api/v1/capabilities`, (status, body) => status === 200 && body.trimStart().startsWith('{')); }
   public async open(url: string): Promise<void> { if (!await this.openExternal(url)) throw new Error('VS Code could not open the TrueForge setup UI.'); }
-  public async stop(): Promise<void> { const child = this.child; const record = this.record; this.stopping = true; this.child = undefined; this.port = undefined; this.record = undefined; if (child && !childHasExited(child) && record && await ownsRecordedChild(record)) { child.kill('SIGTERM'); if (!await waitForExit(child, terminationGraceMs) && !childHasExited(child) && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); } } await this.releaseOwnership(); this.stopping = false; }
+  public async stop(): Promise<void> {
+    const child = this.child; const record = this.record; this.stopping = true;
+    try {
+      if (child && !childHasExited(child)) {
+        if (!record) {
+          if (child.pid) throw new Error('TrueForge ownership cannot safely stop the running sidecar.');
+          this.child = undefined; this.port = undefined;
+          await this.releaseOwnership();
+          return;
+        }
+        if (!await ownsRecordedChild(record)) throw new Error('TrueForge ownership cannot safely stop the running sidecar.');
+        child.kill('SIGTERM');
+        if (!await waitForExit(child, terminationGraceMs) && !childHasExited(child) && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); }
+        if (!childHasExited(child)) throw new Error('TrueForge sidecar did not stop; ownership remains retained.');
+      }
+      this.child = undefined; this.port = undefined; this.record = undefined;
+      await this.releaseOwnership();
+    } finally { this.stopping = false; }
+  }
   public hasExited(): boolean { return this.childExited || this.child === undefined || childHasExited(this.child); }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } this.ownershipLaunchId = ownershipRecord.launchId; }
   private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { await createOwnershipLock(lockPath, ownershipRecord); this.ownershipPath = lockPath; }
   private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); await writeOwnership(ownershipPath, record); }
-  private async waitForOwnershipRelease(): Promise<void> { await this.ownershipRelease; }
   private releaseOwnership(): Promise<void> {
     if (this.ownershipRelease) return this.ownershipRelease;
     const ownershipPath = this.ownershipPath; const launchId = this.ownershipLaunchId;
-    this.ownershipPath = undefined; this.ownershipLaunchId = undefined;
-    const release = (async () => { if (ownershipPath && launchId) await releaseCurrentOwnership(ownershipPath, launchId); })().catch(() => undefined);
+    const release = (async () => {
+      if (!ownershipPath || !launchId) return;
+      const deadline = Date.now() + terminationGraceMs;
+      do {
+        if (await releaseCurrentOwnership(ownershipPath, launchId)) {
+          if (this.ownershipPath === ownershipPath && this.ownershipLaunchId === launchId) { this.ownershipPath = undefined; this.ownershipLaunchId = undefined; }
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      } while (Date.now() < deadline);
+    })().catch(() => undefined);
     this.ownershipRelease = release;
     void release.finally(() => { if (this.ownershipRelease === release) this.ownershipRelease = undefined; });
     return release;

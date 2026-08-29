@@ -13,7 +13,7 @@ import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { LoopbackMcpEndpoint } from '../mcp';
 import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
-import { TrueForgeRuntimeDouble } from './trueforge-runtime-double';
+import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 import { resolveNodeExecutable } from '../trueforge-environment';
@@ -213,10 +213,7 @@ suite('MCP lifecycle', () => {
 });
 
 suite('TrueForge setup sidecar', () => {
-  const producer: TrueForgeProducerRuntime = {
-    discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
-    createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
-  };
+  const producer: TrueForgeProducerRuntime = emptyTrueForgeProducer;
   test('accepts only Ubuntu x86-64 for the native sidecar', async () => {
     assert.equal(await isUbuntuX64(async () => 'NAME="Ubuntu"\nID=ubuntu\n', 'linux', 'x64'), true);
     assert.equal(await isUbuntuX64(async () => 'ID=ubuntu\n', 'darwin', 'arm64'), false);
@@ -228,6 +225,7 @@ suite('TrueForge setup sidecar', () => {
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     try {
       await writeOwnershipLock(lock, { ownerPid: -1, ownerStartTime: '0', launchId: 'crashed-before-pid', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory });
+      await writeFile(path.join(lock, 'recovery.claim'), JSON.stringify({ pid: -1, startTime: '0' }));
       assert.equal(await recoverStaleOwnership(lock), true);
       await writeOwnershipLock(lock, '{partial');
       assert.equal(await recoverStaleOwnership(lock), false);

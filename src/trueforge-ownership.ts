@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, realpath, rename, rmdir, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readdir, readFile, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -16,6 +16,8 @@ export interface OwnershipRecord {
   readonly childPid?: number;
   readonly childStartTime?: string;
 }
+
+interface ClaimRecord { readonly pid: number; readonly startTime: string; }
 
 /** Atomically creates the directory which represents one sidecar owner. */
 export async function createOwnershipLock(lockPath: string, record: OwnershipRecord): Promise<void> {
@@ -40,15 +42,16 @@ export async function writeOwnership(lockPath: string, record: OwnershipRecord):
 }
 
 /** Releases only a lock directory whose durable metadata still names this launch. */
-export async function releaseOwnershipIfCurrent(lockPath: string, launchId: string): Promise<void> {
+export async function releaseOwnershipIfCurrent(lockPath: string, launchId: string): Promise<boolean> {
   const claimPath = await acquireClaim(lockPath);
-  if (!claimPath) return;
+  if (!claimPath) return false;
   let retiredPath: string | undefined;
   try {
     const record = await readOwnership(lockPath);
-    if (record?.launchId !== launchId) return;
+    if (record?.launchId !== launchId) return false;
     retiredPath = await retireLock(lockPath);
     await unlink(ownershipPath(retiredPath));
+    return true;
   } finally {
     const claimedPath = retiredPath ?? lockPath;
     await unlink(path.join(claimedPath, claimFilename)).catch(() => undefined);
@@ -93,12 +96,23 @@ async function retireLock(lockPath: string): Promise<string> {
 
 async function acquireClaim(lockPath: string): Promise<string | undefined> {
   const claimPath = path.join(lockPath, claimFilename);
+  const temporaryPath = path.join(lockPath, `.${claimFilename}-${randomUUID()}.tmp`);
+  const claim: ClaimRecord = { pid: process.pid, startTime: await processStartTime(process.pid) };
   try {
-    const handle = await open(claimPath, 'wx');
-    try { await handle.writeFile(process.pid.toString()); await handle.sync(); } finally { await handle.close().catch(() => undefined); }
-    return claimPath;
-  } catch { return undefined; }
+    const handle = await open(temporaryPath, 'wx');
+    try { await handle.writeFile(JSON.stringify(claim)); await handle.sync(); } finally { await handle.close().catch(() => undefined); }
+    try { await link(temporaryPath, claimPath); return claimPath; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return undefined;
+      const existingClaim = await readClaim(claimPath);
+      if (!existingClaim || await claimantIsAlive(existingClaim)) return undefined;
+      const retiredClaim = `${claimPath}.${randomUUID()}.stale`;
+      try { await rename(claimPath, retiredClaim); await unlink(retiredClaim); return acquireClaim(lockPath); } catch { return undefined; }
+    }
+  } finally { await unlink(temporaryPath).catch(() => undefined); }
 }
+
+async function readClaim(claimPath: string): Promise<ClaimRecord | undefined> { try { const claim = JSON.parse(await readFile(claimPath, 'utf8')) as ClaimRecord; return Number.isInteger(claim.pid) && typeof claim.startTime === 'string' ? claim : undefined; } catch { return undefined; } }
+async function claimantIsAlive(claim: ClaimRecord): Promise<boolean> { return processIsAlive(claim.pid) && await processStartTime(claim.pid).then((startTime) => startTime === claim.startTime).catch(() => false); }
 
 async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefined> {
   try {

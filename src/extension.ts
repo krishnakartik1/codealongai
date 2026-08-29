@@ -32,8 +32,8 @@ export interface WalkthroughTestApi {
   replyTargetAt(stopId: string): object | undefined;
 }
 
-/** Test-only seam: production activation omits it and always constructs NativeTrueForgeRuntime. */
-export function activate(context: vscode.ExtensionContext, createRuntime: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined = undefined): WalkthroughTestApi {
+/** Production activation uses the registered contract-faithful test runtime only in Extension Host tests. */
+export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const authority = new WalkthroughAuthority();
   const controller = vscode.comments.createCommentController('codealongai.walkthrough', 'CodeAlongAI walkthrough');
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
@@ -41,7 +41,7 @@ export function activate(context: vscode.ExtensionContext, createRuntime: ((repo
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
   const trueForge = new TrueForgeSidecar(
-    (createRuntime ?? testRuntimeFactory)?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
+    testRuntimeFactory?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
       (message) => output.error(message)
