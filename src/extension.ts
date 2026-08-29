@@ -171,11 +171,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
     const prefix = retrying ? 'Daytona setup still needs' : 'Daytona setup needs';
     output.warn(`${prefix} ${readiness.phase} (${readiness.outcome}).`);
-    testReadinessSelectorGeneration += 1;
+    const selectionGeneration = ++testReadinessSelectorGeneration;
     void dispatchReadinessSelection(() => testReadinessActionSelector ? testReadinessActionSelector(['Open TrueForge Setup', 'Retry Setup']) : vscode.window.showWarningMessage(`${prefix} ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup'), async () => {
       const checked = await retryDaytonaSetup();
       if (checked.action === 'none') await originRetry?.();
       else reportDaytonaReadiness(checked, true, originRetry);
+    }).then((action) => {
+      if (selectionGeneration === testReadinessSelectorGeneration && action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
     });
   };
   const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {

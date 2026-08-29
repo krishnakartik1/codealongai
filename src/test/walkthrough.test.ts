@@ -132,6 +132,42 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
+      const setupOpens = commandRuntime.calls.filter((call) => call.startsWith('open:')).length;
+      const setupPrepares = commandRuntime.prepareCalls;
+      const beforeSetup = api.session;
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+      setReadinessActionSelectorForTests(async (actions) => {
+        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        return 'Open TrueForge Setup';
+      });
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Setup must not capture this reply.' });
+      await eventually(() => commandRuntime.calls.filter((call) => call.startsWith('open:')).length >= setupOpens + 1 ? true : undefined, 'the selected public setup action should invoke the registered Configure command');
+      await eventually(() => commandRuntime.prepareCalls === setupPrepares + 1 ? true : undefined, 'the registered Configure command should complete its public readiness check');
+      setReadinessActionSelectorForTests(undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(api.session, beforeSetup);
+      assert.equal(api.hasPendingWalkthroughRequest, false);
+
+      let resolveOldSelection: ((action: string | undefined) => void) | undefined;
+      let selections = 0;
+      const stalePrepares = commandRuntime.prepareCalls;
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
+      setReadinessActionSelectorForTests(async () => {
+        selections += 1;
+        return selections === 1 ? new Promise((resolve) => { resolveOldSelection = resolve; }) : undefined;
+      });
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
+      await eventually(() => resolveOldSelection, 'the older Daytona notification should await its selection');
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
+      await eventually(() => selections === 2 ? true : undefined, 'the newer Daytona notification should supersede the older one');
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      resolveOldSelection!('Open TrueForge Setup');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      setReadinessActionSelectorForTests(undefined);
+      assert.equal(commandRuntime.prepareCalls, stalePrepares);
+      assert.deepEqual(api.session, beforeSetup);
+
       const replyProbes = commandRuntime.probeCalls;
       const replyPrepares = commandRuntime.prepareCalls;
       commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
@@ -149,25 +185,6 @@ suite('Extension Development Host walkthrough', () => {
       assert.equal(document.getText(), sourceBefore);
       assert.deepEqual(editor.selection, selection);
       await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the completed public reply should clear its request before another reply begins');
-
-      let resolveOldSelection: ((action: string | undefined) => void) | undefined;
-      let selections = 0;
-      const stalePrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async () => {
-        selections += 1;
-        return selections === 1 ? new Promise((resolve) => { resolveOldSelection = resolve; }) : undefined;
-      });
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => resolveOldSelection, 'the older Daytona notification should await its selection');
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => selections === 2 ? true : undefined, 'the newer Daytona notification should supersede the older one');
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      resolveOldSelection!('Retry Setup');
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.prepareCalls, stalePrepares);
-      assert.equal(api.session?.stops.length, 5);
 
       await vscode.commands.executeCommand('codealongai.walkthrough.next');
       const definitionSession = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
