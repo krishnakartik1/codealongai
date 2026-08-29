@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
@@ -15,6 +16,7 @@ import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionO
 import { TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
+import { resolveNodeExecutable } from '../trueforge-environment';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -225,9 +227,10 @@ suite('TrueForge setup sidecar', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-recovery-'));
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
-    const launchId = 'crash-before-pid-regression';
-    const executable = realpathSync(process.execPath);
-    const child = spawn(executable, [cli, '--port', '0'], { cwd: directory, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
+    const launchId = randomUUID();
+    const executable = await resolveNodeExecutable(undefined);
+    const port = 48123;
+    const child = spawn(executable, [cli, '--port', String(port)], { cwd: directory, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
     try {
       await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       let tokenPublished = false;
@@ -236,11 +239,12 @@ suite('TrueForge setup sidecar', () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
       assert.equal(tokenPublished, true);
-      assert.equal(readFileSync(`/proc/${String(child.pid)}/cmdline`, 'utf8').split('\0').filter(Boolean).join('|'), [executable, cli, '--port', '0'].join('|'));
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId, executable, cli, port: 0, dataPath: directory }));
+      assert.equal(readFileSync(`/proc/${String(child.pid)}/cmdline`, 'utf8').split('\0').filter(Boolean).join('|'), [executable, cli, '--port', String(port)].join('|'));
+      const record = { ownerPid: -1, ownerStartTime: '0', launchId, executable, cli, port, dataPath: directory, childPid: child.pid! };
+      await writeFile(lock, JSON.stringify({ ...record, childPid: undefined }));
       assert.equal(await recoverStaleOwnership(lock), true);
       await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    } finally { child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }); }
+    } finally { if (child.exitCode === null) child.kill('SIGKILL'); if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve())); await rm(directory, { recursive: true, force: true }); }
   });
   test('cleanup preserves a valid ownership record atomically replaced by another launch', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-replacement-'));
