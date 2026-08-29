@@ -201,6 +201,12 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
     await updateEndpoint();
+    if (!mcpReady()) {
+      void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint before it can prepare a walkthrough.', 'Enable MCP').then((action) => {
+        if (action === 'Enable MCP') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.mcp.enabled');
+      });
+      return undefined;
+    }
     const current = authority.getSession();
     if (current) {
       const confirmation = await vscode.window.showWarningMessage('Starting a new walkthrough clears all conversations.', { modal: true }, 'Start new walkthrough', 'Cancel');
@@ -213,7 +219,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const replacement = authority.getPendingReplacement();
     const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
-    if (!current && !mcpReady()) { showStartUnavailable(request.id); return undefined; }
     try {
       if (current) {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
