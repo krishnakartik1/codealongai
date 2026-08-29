@@ -230,10 +230,14 @@ suite('TrueForge setup sidecar', () => {
   test('keeps walkthrough state unchanged when public Configure TrueForge setup fails', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
+    const callsBeforeFailure = commandRuntime.calls.length;
+    commandRuntime.healthy = false;
     commandRuntime.failStart = true;
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
     commandRuntime.failStart = false;
+    commandRuntime.healthy = true;
     assert.deepEqual(api.session, before);
+    assert.ok(commandRuntime.calls.slice(callsBeforeFailure).some((call) => call.startsWith('start:')));
   });
   test('starts one owned healthy runtime and exposes its loopback setup UI without creating a walkthrough request', async () => {
     const calls: string[] = [];

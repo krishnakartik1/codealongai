@@ -28,8 +28,8 @@ export class TrueForgeSidecar {
     this.started = false;
     let lastError: unknown;
     for (let attempt = 0; attempt < startupAttempts; attempt += 1) {
-      this.port = await this.allocatePort();
       try {
+        this.port = await this.allocatePort();
         await this.runtime.start({ port: this.port, dataPath: this.dataPath });
         await waitForOwnedCapability(this.runtime, this.port);
         if (!await this.runtime.ownsRunningChild()) throw new Error('The owned TrueForge sidecar exited before its setup UI could open.');
