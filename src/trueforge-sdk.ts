@@ -45,7 +45,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       if (!sessionId) return { phase: 'model', outcome: 'failed' };
       const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
       const turnId = responseId(turn);
-      if (!turnId || !await successfulTerminal(this, sessionId, turnId)) return { phase: 'network', outcome: 'failed' };
+      if (!turnId) return { phase: 'network', outcome: 'failed' };
+      const terminal = await terminalReadiness(this, sessionId, turnId);
+      if (terminal !== 'ready') return { phase: terminal, outcome: 'failed' };
     } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
     finally { if (sessionId) await this.deleteSession(sessionId).catch(() => undefined); }
     return { phase: 'ready', outcome: 'ready' };
@@ -155,7 +157,9 @@ async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessio
   return 'absent';
 }
 function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
-async function successfulTerminal(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); return state?.status === 'completed' || state?.status === 'success'; } return false; }
+async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'ready' | 'authentication' | 'network'> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); if (state?.status === 'done') return 'ready'; if (state?.status === 'error') return terminalFailurePhase(state.message); return 'network'; } return 'network'; }
+/** Inspect a terminal message transiently; its contents never cross the runtime boundary. */
+function terminalFailurePhase(value: unknown): 'authentication' | 'network' { if (typeof value !== 'string') return 'network'; const text = value.toLowerCase(); return /(^|\D)(401|403)(\D|$)|\bauthentication\b|\bunauthorized\b/.test(text) ? 'authentication' : 'network'; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {
