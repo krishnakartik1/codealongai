@@ -30,6 +30,14 @@ interface WalkthroughTestApi {
 const commandRuntime = new TrueForgeRuntimeDouble();
 setTrueForgeRuntimeForTests(() => commandRuntime);
 
+function sdkWithProbeEvents(events: readonly unknown[]): SdkTrueForgeProducerRuntime {
+  return new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+    settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }), createOrUpdate: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+    catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+    sessions: { create: async () => ({ data: { id: 'probe-session' } }), createTurn: async () => ({ data: { id: 'probe-turn' } }), subscribeToTurn: async () => (async function* () { yield* events; })(), cancel: async () => undefined, delete: async () => undefined }
+  }));
+}
+
 async function activeWalkthrough(): Promise<WalkthroughTestApi> {
   const extension = vscode.extensions.getExtension<WalkthroughTestApi>('krishnakartik1.codealongai');
   assert.ok(extension, 'the CodeAlongAI extension should be installed in the Extension Development Host');
@@ -472,6 +480,7 @@ suite('Daytona producer readiness', () => {
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
     assert.deepEqual(api.session, before);
+    assert.equal(api.hasPendingWalkthroughRequest, false);
     assert.equal(commandRuntime.probeCalls, probesBefore + 2);
   });
 
@@ -512,6 +521,16 @@ suite('Daytona producer readiness', () => {
       sessions: { create: async () => ({}), createTurn: async () => ({}), subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
     }));
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'authentication-or-snapshots', outcome: 'failed' });
+  });
+
+  test('classifies only standalone public sandbox permission statuses without retaining tool content', async () => {
+    const result = await sdkWithProbeEvents([{ type: 'tool.response', content: 'sandbox request failed with 403; sentinel-secret' }]).probeDaytona();
+    assert.deepEqual(result, { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' });
+    assert.doesNotMatch(JSON.stringify(result), /sentinel-secret/);
+  });
+
+  test('keeps a non-permission sandbox tool failure in the creation phase', async () => {
+    assert.deepEqual(await sdkWithProbeEvents([{ type: 'tool.response', content: 'sandbox request failed with 500; sentinel-secret' }]).probeDaytona(), { provider: 'daytona', phase: 'sandbox-create', outcome: 'failed' });
   });
 
   test('retries a residual public cleanup without creating another probe or retaining its opaque identity', async () => {

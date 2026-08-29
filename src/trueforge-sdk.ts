@@ -53,7 +53,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       try {
         const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } });
         const turnId = responseId(turn);
-        if (!turnId || !await observedSandboxCreation(this, sessionId, turnId)) result = failed('sandbox-create');
+        const sandbox = turnId ? await observedSandboxCreation(this, sessionId, turnId) : 'absent';
+        if (sandbox === 'permission-denied') result = failed('sandboxes');
+        else if (sandbox !== 'created') result = failed('sandbox-create');
       } catch (error) { result = failed(sandboxPhase(error)); }
     }
     if (!sessionId) return result ?? failed('sandbox-create');
@@ -78,7 +80,20 @@ function errorStatus(error: unknown): number | undefined { const status = asReco
 function configurationPhase(error: unknown): DaytonaReadinessPhase { return errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'provider'; }
 function snapshotPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); if (status === 401 || status === 403) return 'authentication'; if (status === 422) return 'authentication-or-snapshots'; return 'snapshots'; }
 function sandboxPhase(error: unknown): DaytonaReadinessPhase { const status = errorStatus(error); return status === 401 || status === 403 ? 'sandboxes' : 'sandbox-create'; }
-async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) if (asRecord(event)?.type === 'sandbox.created') return true; return false; }
+/** Pinned 0.1.4 has no structured sandbox-error event. Its only public status
+ * signal is an HTTP token in sandbox-probe tool/terminal event text; inspect
+ * that token transiently and never retain or surface the text. */
+async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'created' | 'permission-denied' | 'absent'> {
+  for await (const event of runtime.events(sessionId, turnId)) {
+    const record = asRecord(event);
+    if (record?.type === 'sandbox.created') return 'created';
+    if (record?.type === 'tool.response' && hasSandboxPermissionStatus(record.content)) return 'permission-denied';
+    const state = asRecord(record?.state);
+    if (record?.type === 'turn.done' && state?.status === 'error' && hasSandboxPermissionStatus(state.message)) return 'permission-denied';
+  }
+  return 'absent';
+}
+function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {
