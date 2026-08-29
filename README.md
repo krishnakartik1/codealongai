@@ -38,3 +38,16 @@ npm run test:headless
 
 The test runner downloads and caches an isolated stable VS Code build on its
 first run. The extension itself remains model-free and network-free.
+
+## Install the latest release
+
+Download [codealongai.vsix](https://github.com/krishnakartik1/codealongai/releases/latest/download/codealongai.vsix)
+from the latest release. In desktop VS Code, run **Extensions: Install from
+VSIX...** and select the downloaded file, or run:
+
+```bash
+code --install-extension codealongai.vsix
+```
+
+Then enable the `codealongai.mcp.enabled` setting and run **CodeAlongAI: Ask
+about this code** from the Command Palette.

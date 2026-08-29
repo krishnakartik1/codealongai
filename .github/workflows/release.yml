@@ -1,0 +1,58 @@
+name: Publish VSIX release
+
+on:
+  workflow_run:
+    workflows:
+      - Extension Development Host acceptance
+    types:
+      - completed
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - id: version
+        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - id: tag
+        run: echo "value=v${{ steps.version.outputs.value }}" >> "$GITHUB_OUTPUT"
+
+      - id: existing-release
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.value }}" > /dev/null; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.existing-release.outputs.value == 'false'
+        run: npm ci
+
+      - if: steps.existing-release.outputs.value == 'false'
+        run: npm run package
+
+      - if: steps.existing-release.outputs.value == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ steps.tag.outputs.value }}"
+          --target "${{ github.event.workflow_run.head_sha }}"
+          --generate-notes
+          --latest
+          codealongai.vsix
