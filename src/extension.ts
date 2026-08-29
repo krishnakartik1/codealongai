@@ -211,6 +211,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     return false;
   };
   const reportProducerReadiness = (readiness: ProducerReadinessResult, retry?: () => Thenable<unknown>): void => {
+    testReadinessSelectorGeneration += 1;
     output.warn(`Producer readiness needs ${readiness.phase}.`);
     const actions = readiness.action === 'configure-node' ? ['Configure Node', 'Show CodeAlongAI Output'] : readiness.action === 'open-setup' ? ['Open TrueForge Setup', 'Retry Setup'] : readiness.action === 'retry-trueforge' ? ['Retry TrueForge', 'Show CodeAlongAI Output'] : ['Show CodeAlongAI Output'];
     void dispatchReadinessSelection(() => testReadinessActionSelector ? testReadinessActionSelector(actions) : vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions), retry).then((action) => {

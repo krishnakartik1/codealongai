@@ -157,9 +157,9 @@ async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessio
   return 'absent';
 }
 function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
-async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'ready' | 'authentication' | 'network'> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); if (state?.status === 'done') return 'ready'; if (state?.status === 'error') return terminalFailurePhase(state.message); return 'network'; } return 'network'; }
+async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'ready' | 'authentication' | 'network'> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); if (state?.status === 'done') return state.output !== null && (!Array.isArray(state.requiredActions) || state.requiredActions.length === 0) ? 'ready' : 'network'; if (state?.status === 'error') return terminalFailurePhase(state.message); return 'network'; } return 'network'; }
 /** Inspect a terminal message transiently; its contents never cross the runtime boundary. */
-function terminalFailurePhase(value: unknown): 'authentication' | 'network' { if (typeof value !== 'string') return 'network'; const text = value.toLowerCase(); return /(^|\D)(401|403)(\D|$)|\bauthentication\b|\bunauthorized\b/.test(text) ? 'authentication' : 'network'; }
+function terminalFailurePhase(value: unknown): 'authentication' | 'network' { if (typeof value !== 'string') return 'network'; const text = value.toLowerCase(); if (/\bbrowser\b|\bfetch\b|\bnetwork\b|\bdns\b|\btimeout\b/.test(text)) return 'network'; return /(^|\D)(401|403)(\D|$)|\bunauthorized\b|\binvalid (api )?key\b|\bcredential\b/.test(text) ? 'authentication' : 'network'; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {
