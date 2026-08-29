@@ -5,6 +5,7 @@ import { commitDeterministicOrigin, commitDeterministicQuestion, commitDetermini
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
+import { NativeTrueForgeRuntime, TrueForgeSidecar } from './trueforge';
 
 const noOriginMessage = 'Select code or place the cursor on a nonblank line to start a walkthrough.';
 const invitation = 'What would you like to understand about this code?';
@@ -32,6 +33,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
+  const trueForge = new TrueForgeSidecar(
+    new NativeTrueForgeRuntime(
+      async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
+      () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined
+    ),
+    context.globalStorageUri.fsPath
+  );
   const lifecycle = new McpLifecycle(async () => {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
     return {
@@ -174,6 +182,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return undefined;
     }
   });
+  const configureTrueForgeCommand = vscode.commands.registerCommand('codealongai.trueforge.configure', async () => {
+    try {
+      await trueForge.configure();
+      void vscode.window.showInformationMessage('TrueForge setup is ready. Configure Daytona v1 as the required producer sandbox; its API key needs sandboxes and snapshots permissions.');
+    } catch (error) {
+      output.error(`TrueForge setup failed: ${String(error)}`);
+      void vscode.window.showErrorMessage('CodeAlongAI could not start TrueForge setup.');
+    }
+  });
   const resetWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.reset', async () => {
     const current = authority.getSession();
     if (!current) return;
@@ -269,7 +286,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
-  context.subscriptions.push(askWalkthroughCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
+  context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();
     if (replacement) showReplacementFailure(replacement.id);
@@ -277,7 +294,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (start) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry walkthrough').then((action) => { if (action === 'Retry walkthrough') void retryStart?.(); });
     const question = authority.getPendingQuestion();
     if (question) void vscode.window.showInformationMessage('CodeAlongAI MCP is ready.', 'Retry question').then((action) => { if (action === 'Retry question') void retryQuestion?.(); });
-  }); }), { dispose: () => { disposeThreads(); void lifecycle.dispose(); } });
+  }); }), { dispose: () => { disposeThreads(); void lifecycle.dispose(); void trueForge.dispose(); } });
   return {
     get endpointState() { return lifecycle.state; },
     get session() { return authority.getSession(); },

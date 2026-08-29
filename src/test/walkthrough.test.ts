@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import * as http from 'node:http';
 import * as vscode from 'vscode';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
@@ -9,6 +12,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { LoopbackMcpEndpoint } from '../mcp';
 import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, threadComments, threadLabel } from '../extension';
 import { McpLifecycle } from '../lifecycle';
+import { isUbuntuX64, recoverStaleOwnership, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -184,6 +188,81 @@ suite('MCP lifecycle', () => {
   });
 });
 
+suite('TrueForge setup sidecar', () => {
+  const producer: TrueForgeProducerRuntime = {
+    discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
+    createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
+  };
+  test('accepts only Ubuntu x86-64 for the native sidecar', async () => {
+    assert.equal(await isUbuntuX64(async () => 'NAME="Ubuntu"\nID=ubuntu\n'), process.platform === 'linux' && process.arch === 'x64');
+    assert.equal(await isUbuntuX64(async () => 'ID=debian\n'), false);
+  });
+
+  test('recovers only a stale owner record and refuses a live second window', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-test-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    try {
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, childPid: 987654321, executable: '/missing/node', cli: '/missing/cli' }));
+      assert.equal(await recoverStaleOwnership(lock), true);
+      await writeFile(lock, JSON.stringify({ ownerPid: process.pid }));
+      assert.equal(await recoverStaleOwnership(lock), false);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('starts one owned healthy runtime and exposes its loopback setup UI without creating a walkthrough request', async () => {
+    const calls: string[] = [];
+    let alive = true;
+    const runtime: TrueForgeRuntime = {
+      producer,
+      start: async (options) => { calls.push(`start:${options.port}:${options.dataPath}`); },
+      health: async () => alive,
+      open: async (url) => { calls.push(`open:${url}`); },
+      stop: async () => { calls.push('stop'); alive = false; }
+    };
+    const sidecar = new TrueForgeSidecar(runtime, '/storage/trueforge', async () => 48123);
+    await sidecar.configure();
+    await sidecar.configure();
+    assert.deepEqual(calls, ['start:48123:/storage/trueforge', 'open:http://127.0.0.1:48123/', 'open:http://127.0.0.1:48123/']);
+    assert.equal(sidecar.url, 'http://127.0.0.1:48123/');
+    await sidecar.dispose();
+    assert.deepEqual(calls, ['start:48123:/storage/trueforge', 'open:http://127.0.0.1:48123/', 'open:http://127.0.0.1:48123/', 'stop']);
+  });
+
+  test('does not open the UI when the owned sidecar fails its health check', async () => {
+    const calls: string[] = [];
+    const runtime: TrueForgeRuntime = {
+      producer,
+      start: async () => { calls.push('start'); throw new Error('crashed'); },
+      health: async () => true,
+      open: async () => { calls.push('open'); },
+      stop: async () => { calls.push('stop'); }
+    };
+    const sidecar = new TrueForgeSidecar(runtime, '/storage/trueforge');
+    await assert.rejects(() => sidecar.configure(), /crashed/);
+    assert.deepEqual(calls, ['start', 'stop']);
+  });
+
+  test('maps the complete producer contract through the pinned SDK client seam', async () => {
+    const calls: unknown[] = [];
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', (baseUrl) => ({
+      settings: { modelProviders: { list: async () => { calls.push([baseUrl, 'configured-providers']); return 'providers'; } }, skills: { list: async () => { calls.push('configured-skills'); return 'skills'; } }, sandboxProviders: { get: async () => { calls.push('configured-sandbox'); return 'sandbox'; } } },
+      catalogs: { modelProviders: { list: async () => { calls.push('catalog-providers'); return 'catalog'; } } },
+      models: { list: async () => { calls.push('models'); return 'models'; } }, skills: { list: async () => { calls.push('skills'); return 'skills'; } },
+      sessions: {
+        create: async (input) => { calls.push(['create', input]); return 'session'; }, createTurn: async (id, input) => { calls.push(['turn', id, input]); return 'turn'; },
+        subscribeToTurn: async (id, turn) => { calls.push(['events', id, turn]); return (async function* () { yield 'event'; })(); }, cancel: async (id) => { calls.push(['cancel', id]); return undefined; }, delete: async (id) => { calls.push(['delete', id]); return undefined; }
+      }
+    }));
+    assert.deepEqual(await sdk.discoverConfiguration(), ['providers', 'skills', 'sandbox']);
+    assert.equal(await sdk.discoverProviders(), 'catalog'); assert.equal(await sdk.discoverModels(), 'models'); assert.equal(await sdk.discoverSkills(), 'skills');
+    assert.equal(await sdk.createSession({ agentId: 'a' }), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' } }), 'turn');
+    const events: unknown[] = []; for await (const event of sdk.events('s', 't')) events.push(event);
+    await sdk.cancelTurn('s'); await sdk.deleteSession('s');
+    assert.deepEqual(events, ['event']);
+    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's'], ['delete', 's']]);
+  });
+
+});
+
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });
 
 suite('walkthrough start authority', () => {
@@ -191,6 +270,7 @@ suite('walkthrough start authority', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { contributes: { commands: { command: string; title: string; icon?: string }[]; menus: { commandPalette: { command: string; when: string }[]; 'comments/commentThread/context': { command: string; when: string; group?: string }[]; 'comments/commentThread/title': { command: string; when: string; group?: string }[] }; configuration: { properties: Record<string, { type: string; default: unknown; scope: string; description: string }> } }; keybindings?: unknown };
     assert.deepEqual(manifest.contributes.commands.filter((item) => item.command !== 'codealongai.walkthrough.submitComment').map(({ command, title }) => ({ command, title })), [
       { command: 'codealongai.walkthrough.ask', title: 'CodeAlongAI: Ask about this code' },
+      { command: 'codealongai.trueforge.configure', title: 'CodeAlongAI: Configure TrueForge' },
       { command: 'codealongai.walkthrough.reset', title: 'CodeAlongAI: Reset walkthrough' },
       { command: 'codealongai.walkthrough.back', title: 'CodeAlongAI: Back' },
       { command: 'codealongai.walkthrough.next', title: 'CodeAlongAI: Next' },
@@ -205,7 +285,8 @@ suite('walkthrough start authority', () => {
       { command: 'codealongai.walkthrough.destinations', when: 'false' }
     ]);
     assert.deepEqual(manifest.contributes.configuration.properties, {
-      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' }
+      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
+      'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' }
     });
     assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
     assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/'));
