@@ -49,7 +49,7 @@ async function findRecordedChild(record: OwnershipRecord): Promise<number | 'uns
     return verified === 'missing' ? undefined : verified ? record.childPid : 'unsafe';
   }
   const pids = (await readdir('/proc')).filter((entry) => /^\d+$/.test(entry)).map(Number);
-  const matches = (await Promise.all(pids.map(async (pid) => await verifyChild(pid, record) ? pid : undefined))).filter((pid): pid is number => pid !== undefined);
+  const matches = (await Promise.all(pids.map(async (pid) => await verifyChild(pid, record) === true ? pid : undefined))).filter((pid): pid is number => pid !== undefined);
   return matches.length === 0 ? undefined : matches.length === 1 ? matches[0] : 'unsafe';
 }
 

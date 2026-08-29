@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -226,7 +226,8 @@ suite('TrueForge setup sidecar', () => {
     const lock = path.join(directory, 'codealongai-trueforge.lock');
     const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
     const launchId = 'crash-before-pid-regression';
-    const child = spawn(process.execPath, [cli, '--port', '0'], { cwd: directory, stdio: 'ignore', env: { ...process.env, XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
+    const executable = realpathSync(process.execPath);
+    const child = spawn(executable, [cli, '--port', '0'], { cwd: directory, stdio: 'ignore', env: { ...process.env, HOST: '127.0.0.1', XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
     try {
       await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       let tokenPublished = false;
@@ -235,7 +236,8 @@ suite('TrueForge setup sidecar', () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
       assert.equal(tokenPublished, true);
-      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId, executable: process.execPath, cli, port: 0, dataPath: directory }));
+      assert.equal(readFileSync(`/proc/${String(child.pid)}/cmdline`, 'utf8').split('\0').filter(Boolean).join('|'), [executable, cli, '--port', '0'].join('|'));
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId, executable, cli, port: 0, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), true);
       await new Promise<void>((resolve) => child.once('exit', () => resolve()));
     } finally { child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }); }
