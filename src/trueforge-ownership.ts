@@ -14,12 +14,12 @@ export interface OwnershipRecord {
 }
 
 export async function recoverStaleOwnership(lockPath: string): Promise<boolean> {
-  const record = await readOwnership(lockPath);
-  if (!record) { await unlink(lockPath).catch(() => undefined); return true; }
-  if (await ownerIsAlive(record)) return false;
-  const recordedChild = await findRecordedChild(record);
+  const ownershipRecord = await readOwnership(lockPath);
+  if (!ownershipRecord) { await unlink(lockPath).catch(() => undefined); return true; }
+  if (await ownerIsAlive(ownershipRecord)) return false;
+  const recordedChild = await findRecordedChild(ownershipRecord);
   if (recordedChild === 'unsafe') return false;
-  if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, record)) return false;
+  if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, ownershipRecord)) return false;
   await unlink(lockPath).catch(() => undefined);
   return true;
 }
@@ -30,8 +30,8 @@ export async function ownsRecordedChild(record: OwnershipRecord): Promise<boolea
 
 async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefined> {
   try {
-    const record = JSON.parse(await readFile(lockPath, 'utf8')) as OwnershipRecord;
-    return Number.isInteger(record.ownerPid) && typeof record.ownerStartTime === 'string' && typeof record.launchId === 'string' && typeof record.executable === 'string' && typeof record.cli === 'string' && Number.isInteger(record.port) && typeof record.dataPath === 'string' ? record : undefined;
+    const ownershipRecord = JSON.parse(await readFile(lockPath, 'utf8')) as OwnershipRecord;
+    return Number.isInteger(ownershipRecord.ownerPid) && typeof ownershipRecord.ownerStartTime === 'string' && typeof ownershipRecord.launchId === 'string' && typeof ownershipRecord.executable === 'string' && typeof ownershipRecord.cli === 'string' && Number.isInteger(ownershipRecord.port) && typeof ownershipRecord.dataPath === 'string' ? ownershipRecord : undefined;
   } catch { return undefined; }
 }
 
