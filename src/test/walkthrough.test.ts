@@ -717,6 +717,47 @@ suite('producer readiness', () => {
     assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
+  test('requires the exact successful terminal turn contract from the SDK', async () => {
+    const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
+    const producerWithTerminal = (state: Record<string, unknown>) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: {
+        modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
+        skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: input.skillCommit, path: 'skills/codealongai' } }] }) },
+        mcpServers: { createOrUpdate: async () => ({}) }
+      },
+      catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: input.model, properties: { reasoningEfforts: [input.reasoningEffort] } }] }) },
+      mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
+      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state }; })(), cancel: async () => undefined, delete: async () => undefined }
+    }));
+
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {} }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(await producerWithTerminal({ status: 'completed', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: null, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+  });
+
+  test('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
+    const sentinel = 'terminal-error-sentinel-3c65d8';
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (...values: unknown[]) => { logs.push(values.map(String).join(' ')); };
+    try {
+      const result = await new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+        settings: {
+          modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
+          skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: '1111111111111111111111111111111111111111', path: 'skills/codealongai' } }] }) },
+          mcpServers: { createOrUpdate: async () => ({}) }
+        },
+        catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
+        mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
+        sessions: { create: async () => ({ data: { id: 'safe-terminal-session' } }), createTurn: async () => ({ data: { id: 'safe-terminal-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'error', message: `authentication endpoint browser fetch failed; ${sentinel}` } }; })(), cancel: async () => undefined, delete: async () => undefined }
+      })).prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' });
+      assert.deepEqual(result, { phase: 'network', outcome: 'failed' });
+      assert.doesNotMatch(JSON.stringify({ result, logs }), new RegExp(sentinel));
+    } finally { console.error = originalError; }
+  });
+
   test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
     const calls: unknown[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
