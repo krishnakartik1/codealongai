@@ -21,6 +21,7 @@ import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness } from '../daytona';
 import { DaytonaProbeState } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
+import { setBuildCommitForTests } from '../build-identity';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -31,6 +32,7 @@ interface WalkthroughTestApi {
 
 const commandRuntime = new TrueForgeRuntimeDouble();
 setTrueForgeRuntimeForTests(() => commandRuntime);
+setBuildCommitForTests('1111111111111111111111111111111111111111');
 
 function sdkWithProbeEvents(events: readonly unknown[]): SdkTrueForgeProducerRuntime {
   return new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
@@ -647,13 +649,13 @@ suite('producer readiness', () => {
       ['model', 'open-setup'], ['network', 'retry-trueforge'], ['authentication', 'open-setup'], ['alias', 'open-setup'], ['reasoning', 'open-setup'], ['skill', 'open-setup'], ['connector', 'open-setup'], ['mcp-discovery', 'show-output']
     ] as const) {
       const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => ({ phase, outcome: 'failed' }) });
-      assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase, outcome: 'failed', action });
+      assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase, outcome: 'failed', action });
     }
   });
 
   test('requires a ready external runtime result before it permits request capture', async () => {
     const readiness = new ProducerReadiness({ ...emptyTrueForgeProducer, prepareProducer: async () => ({ phase: 'ready', outcome: 'ready' }) });
-    assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase: 'ready', outcome: 'ready', action: 'none' });
+    assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
   test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
@@ -661,17 +663,19 @@ suite('producer readiness', () => {
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
-        skills: { createOrUpdate: async (request) => { calls.push(request); return {}; }, list: async () => ({ data: [{ manifest: { name: 'codealongai', ref: '0c9ff56d0466e9a8eb65682e2ff2da5255803695', path: 'skills/codealongai' } }] }) },
+        skills: { createOrUpdate: async (request) => { calls.push(request); return {}; }, list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: '1111111111111111111111111111111111111111', path: 'skills/codealongai' } }] }) },
         mcpServers: { createOrUpdate: async (request) => { calls.push(request); return {}; } }
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
       mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-      sessions: { create: async () => ({}), createTurn: async () => ({}), subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
+      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return {}; }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
     }));
-    assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp' }), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls, [
-      { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '0c9ff56d0466e9a8eb65682e2ff2da5255803695' } },
-      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } }
+      { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '1111111111111111111111111111111111111111' } },
+      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } },
+      { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium' } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, file_downloads: false }, parallel_tool_calls: false }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
+      ['safe-readiness-session', { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] }], 'delete:safe-readiness-session'
     ]);
   });
 });

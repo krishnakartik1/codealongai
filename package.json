@@ -133,7 +133,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "npm run build && vsce package --out codealongai.vsix",
+    "package": "node scripts/stamp-build-identity.mjs && npm run build && vsce package --out codealongai.vsix",
     "test:integration": "npm run build && node --test out/integration/trueforge.integration.test.js",
     "test": "npm run test:integration && vscode-test",
     "test:headless": "npm run test:integration && xvfb-run -a vscode-test"

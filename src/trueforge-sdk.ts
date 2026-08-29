@@ -26,9 +26,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
     try {
       if (!this.client.settings.skills.createOrUpdate) return { phase: 'skill', outcome: 'failed' };
-      await this.client.settings.skills.createOrUpdate({ manifest: codeAlongAiSkillManifest() });
+      await this.client.settings.skills.createOrUpdate({ manifest: codeAlongAiSkillManifest(input.skillCommit) });
       const skills = await this.readConfiguredSkills();
-      if (!hasCodeAlongAiSkill(skills)) return { phase: 'skill', outcome: 'failed' };
+      if (!hasCodeAlongAiSkill(skills, input.skillCommit)) return { phase: 'skill', outcome: 'failed' };
     } catch { return { phase: 'skill', outcome: 'failed' }; }
     try {
       if (!this.client.settings.mcpServers?.createOrUpdate || !this.client.mcpServers?.listTools) return { phase: 'connector', outcome: 'failed' };
@@ -38,6 +38,14 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       const tools = await this.client.mcpServers.listTools('codealongai-mcp');
       if (!hasExactCatalog(tools)) return { phase: 'mcp-discovery', outcome: 'failed' };
     } catch { return { phase: 'mcp-discovery', outcome: 'failed' }; }
+    let sessionId: string | undefined;
+    try {
+      const session = await this.createSession({ agent: { spec: producerAgentSpec(input) } });
+      sessionId = responseId(session);
+      if (!sessionId) return { phase: 'model', outcome: 'failed' };
+      await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
+    } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
+    finally { if (sessionId) await this.deleteSession(sessionId).catch(() => undefined); }
     return { phase: 'ready', outcome: 'ready' };
   }
   private async probeDaytonaOwned(): Promise<DaytonaProbeResult> {
@@ -123,9 +131,10 @@ function values(value: unknown): readonly unknown[] { const record = asRecord(va
 function isFullyQualifiedModel(value: string): boolean { return /^[^/\s]+\/[^/\s]+$/.test(value); }
 function configuredModel(value: unknown, name: string): Record<string, unknown> | undefined { return values(value).map(asRecord).find((candidate) => candidate?.name === name); }
 function supportsReasoning(model: Record<string, unknown>, effort: string): boolean { const properties = asRecord(model.properties); const efforts = properties?.reasoningEfforts; return Array.isArray(efforts) && efforts.includes(effort); }
-function hasCodeAlongAiSkill(value: unknown): boolean { return values(value).some((candidate) => { const record = asRecord(candidate); const manifest = asRecord(record?.manifest ?? record?.data); return (manifest?.name ?? record?.name) === 'codealongai' && (manifest?.ref ?? record?.ref) === CODEALONGAI_SKILL_COMMIT && (manifest?.path ?? record?.path) === 'skills/codealongai'; }); }
-const CODEALONGAI_SKILL_COMMIT = '0c9ff56d0466e9a8eb65682e2ff2da5255803695';
-function codeAlongAiSkillManifest(): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: CODEALONGAI_SKILL_COMMIT }; }
+function hasCodeAlongAiSkill(value: unknown, commit: string): boolean { return values(value).some((candidate) => { const record = asRecord(candidate); const manifest = asRecord(record?.manifest ?? record?.data); return (manifest?.name ?? record?.name) === 'codealongai' && (manifest?.type ?? record?.type) === 'git' && (manifest?.url ?? record?.url) === 'https://github.com/krishnakartik1/codealongai.git' && (manifest?.ref ?? record?.ref) === commit && (manifest?.path ?? record?.path) === 'skills/codealongai'; }); }
+function codeAlongAiSkillManifest(commit: string): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: commit }; }
+/** A credential-free, request-free public operation that verifies the configured provider can run the selected AgentSpec. */
+export function producerAgentSpec(input: TrueForgeProducerReadinessInput): Record<string, unknown> { return { model: { name: input.model, params: { reasoningEffort: input.reasoningEffort } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, file_downloads: false }, parallel_tool_calls: false }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
 const CODEALONGAI_CATALOG = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
 function hasExactCatalog(value: unknown): boolean { const tools = values(value).map((tool) => asRecord(tool)?.name).filter((name): name is string => typeof name === 'string').sort(); return JSON.stringify(tools) === JSON.stringify([...CODEALONGAI_CATALOG].sort()); }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }

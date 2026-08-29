@@ -26,9 +26,10 @@ export interface TrueForgeProducerReadinessInput {
   readonly model: string;
   readonly reasoningEffort: string;
   readonly mcpUrl: string;
+  readonly skillCommit: string;
 }
 
-export type TrueForgeProducerReadinessPhase = 'model' | 'network' | 'authentication' | 'alias' | 'reasoning' | 'skill' | 'connector' | 'mcp-discovery' | 'ready';
+export type TrueForgeProducerReadinessPhase = 'node' | 'architecture' | 'sidecar' | 'model' | 'network' | 'authentication' | 'alias' | 'reasoning' | 'skill' | 'connector' | 'mcp-discovery' | 'ready';
 export interface TrueForgeProducerReadinessResult { readonly phase: TrueForgeProducerReadinessPhase; readonly outcome: 'ready' | 'failed'; }
 
 export interface TrueForgeProducerRuntime {
