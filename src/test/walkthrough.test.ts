@@ -440,7 +440,7 @@ suite('TrueForge setup sidecar', () => {
 });
 
 suite('Daytona producer readiness', () => {
-  test('keeps a walkthrough request uncaptured until the public Daytona lifecycle proves both capabilities', async () => {
+  test('maps a safe public probe outcome to the setup action', async () => {
     const lifecycle: string[] = [];
     const readiness = new DaytonaReadiness({
       probeDaytona: async () => ({ provider: 'daytona', phase: 'snapshots', outcome: 'failed' })
@@ -457,6 +457,15 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(await ready.check(), { provider: 'daytona', phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
+  test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
+    const api = await activeWalkthrough();
+    const before = api.session;
+    commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+    await vscode.commands.executeCommand('codealongai.trueforge.configure');
+    assert.deepEqual(api.session, before);
+    commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+  });
+
   test('proves the disposable public lifecycle and retains only its safe result', async () => {
     const calls: string[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
@@ -464,7 +473,7 @@ suite('Daytona producer readiness', () => {
       catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
       sessions: {
         create: async (request) => { calls.push(JSON.stringify(request)); return { data: { id: 'probe-session' } }; },
-        createTurn: async (id) => { calls.push(`turn:${id}`); return {}; }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined,
+        createTurn: async (id) => { calls.push(`turn:${id}`); return { data: { id: 'probe-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'sandbox.created' }; })(), cancel: async () => undefined,
         delete: async (id) => { calls.push(`delete:${id}`); return undefined; }
       }
     }));

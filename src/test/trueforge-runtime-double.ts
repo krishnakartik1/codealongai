@@ -1,4 +1,5 @@
 import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from '../trueforge';
+import type { DaytonaProbeResult } from '../daytona';
 
 export const emptyTrueForgeProducer: TrueForgeProducerRuntime = {
   discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
@@ -12,7 +13,8 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public healthy = true;
   public owned = true;
   public failStart = false;
-  public readonly producer = emptyTrueForgeProducer;
+  public daytonaProbe: DaytonaProbeResult = { provider: 'daytona', phase: 'provider', outcome: 'failed' };
+  public get producer(): TrueForgeProducerRuntime { return { ...emptyTrueForgeProducer, probeDaytona: async () => this.daytonaProbe }; }
   public async start(options: TrueForgeStartOptions): Promise<void> { this.calls.push(`start:${options.port}`); if (this.failStart) throw new Error('configured test sidecar failure'); }
   public async health(): Promise<boolean> { return this.healthy; }
   public async verifyCapability(): Promise<boolean> { return this.healthy; }

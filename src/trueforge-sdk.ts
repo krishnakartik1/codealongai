@@ -26,7 +26,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       const session = await this.createSession({ agent: { spec: { model: { name: model }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Do not use tools or a sandbox command. Reply READY.', messages: [{ type: 'user.message', content: 'Reply READY.' }] } } });
       sessionId = responseId(session);
       if (!sessionId) return failed('sandbox-create');
-      await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Reply READY.' }] } });
+      const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Reply READY.' }] } });
+      const turnId = responseId(turn);
+      if (!turnId || !await observedSandboxCreation(this, sessionId, turnId)) return failed('sandbox-create');
     } catch (error) { return failed(phaseFor(error)); }
     try { await this.deleteSession(sessionId!); }
     catch { return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
@@ -45,6 +47,7 @@ function isDaytona(value: unknown): boolean { const record = asRecord(value); co
 function sandboxStatus(value: unknown): string | undefined { const record = asRecord(value); const data = asRecord(record?.data); return typeof (data?.status ?? record?.status) === 'string' ? data?.status as string ?? record?.status as string : undefined; }
 function firstModelName(value: unknown): string | undefined { const record = asRecord(value); const values = Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; for (const candidate of values) { const name = asRecord(candidate)?.name; if (typeof name === 'string' && name.length > 0) return name; } return undefined; }
 function phaseFor(error: unknown): DaytonaReadinessPhase { const message = error instanceof Error ? error.message.toLowerCase() : ''; if (message.includes('snapshot')) return 'snapshots'; if (message.includes('sandbox')) return 'sandboxes'; if (message.includes('auth') || message.includes('credential') || message.includes('unauthor')) return 'authentication'; return 'sandbox-create'; }
+async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) if (asRecord(event)?.type === 'sandbox.created') return true; return false; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */
 export interface TrueForgeSdkClient {
