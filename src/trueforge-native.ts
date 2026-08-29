@@ -15,7 +15,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined) {}
   public get producer(): TrueForgeProducerRuntime { if (this.port === undefined) throw new Error('The owned TrueForge sidecar is not running.'); return new SdkTrueForgeProducerRuntime(loopbackUrl(this.port)); }
   public async start(options: TrueForgeStartOptions): Promise<void> {
-    if (this.child && this.child.exitCode === null) throw new Error('The owned TrueForge sidecar is already running.');
+    if (this.child && !childHasExited(this.child)) throw new Error('The owned TrueForge sidecar is already running.');
     if (!await isUbuntuX64()) throw new Error('TrueForge setup requires Ubuntu x86-64.');
     const node = await resolveNodeExecutable(this.configuredNodePath()); const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
     await mkdir(options.dataPath, { recursive: true }); const dataPath = await import('node:fs/promises').then(({ realpath }) => realpath(options.dataPath));
@@ -34,8 +34,8 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   public health(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}healthz`, (status, body) => status === 200 && body === 'OK!'); }
   public verifyCapability(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}api/v1/capabilities`, (status, body) => status === 200 && body.trimStart().startsWith('{')); }
   public async open(url: string): Promise<void> { if (!await this.openExternal(url)) throw new Error('VS Code could not open the TrueForge setup UI.'); }
-  public async stop(): Promise<void> { const child = this.child; const record = this.record; this.stopping = true; this.child = undefined; this.port = undefined; this.record = undefined; if (child && child.exitCode === null && record && await ownsRecordedChild(record)) { child.kill('SIGTERM'); if (!await waitForExit(child, terminationGraceMs) && child.exitCode === null && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); } } await this.releaseOwnership(); this.stopping = false; }
-  public hasExited(): boolean { return this.childExited || this.child === undefined || this.child.exitCode !== null; }
+  public async stop(): Promise<void> { const child = this.child; const record = this.record; this.stopping = true; this.child = undefined; this.port = undefined; this.record = undefined; if (child && !childHasExited(child) && record && await ownsRecordedChild(record)) { child.kill('SIGTERM'); if (!await waitForExit(child, terminationGraceMs) && !childHasExited(child) && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); } } await this.releaseOwnership(); this.stopping = false; }
+  public hasExited(): boolean { return this.childExited || this.child === undefined || childHasExited(this.child); }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } this.ownershipLaunchId = ownershipRecord.launchId; }
   private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { await createOwnershipLock(lockPath, ownershipRecord); this.ownershipPath = lockPath; }
@@ -48,4 +48,14 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
 export { releaseOwnershipIfCurrent } from './trueforge-ownership';
 
 function requestStatus(url: string, accepts: (status: number | undefined, body: string) => boolean): Promise<boolean> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve(accepts(response.statusCode, body))); }); request.once('error', () => resolve(false)); request.setTimeout(1_000, () => { request.destroy(); resolve(false); }); }); }
-function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> { if (child.exitCode !== null) return Promise.resolve(true); return new Promise((resolve) => { const timer = setTimeout(() => resolve(false), timeoutMs); child.once('exit', () => { clearTimeout(timer); resolve(true); }); }); }
+function childHasExited(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>): boolean { return child.exitCode !== null || child.signalCode !== null; }
+function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (): void => { if (timer) clearTimeout(timer); resolve(true); };
+    child.once('exit', finish);
+    if (childHasExited(child)) { child.removeListener('exit', finish); finish(); }
+    else timer = setTimeout(() => { child.removeListener('exit', finish); resolve(false); }, timeoutMs);
+  });
+}

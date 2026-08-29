@@ -62,6 +62,17 @@ async function writeOwnershipLock(lock: string, record: object | string): Promis
   await writeFile(path.join(lock, 'ownership.json'), typeof record === 'string' ? record : JSON.stringify(record));
 }
 
+function childHasExited(child: { readonly exitCode: number | null; readonly signalCode: NodeJS.Signals | null }): boolean { return child.exitCode !== null || child.signalCode !== null; }
+
+function waitForChildExit(child: import('node:child_process').ChildProcess): Promise<void> {
+  if (childHasExited(child)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => resolve();
+    child.once('exit', finish);
+    if (childHasExited(child)) { child.removeListener('exit', finish); finish(); }
+  });
+}
+
 suite('Extension Development Host walkthrough', () => {
   test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
     const api = await activeWalkthrough();
@@ -251,8 +262,8 @@ suite('TrueForge setup sidecar', () => {
       const record = { ownerPid: -1, ownerStartTime: '0', launchId, executable, cli, port, dataPath: directory, childPid: child.pid! };
       await writeOwnershipLock(lock, { ...record, childPid: undefined });
       assert.equal(await recoverStaleOwnership(lock), true);
-      if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    } finally { if (child.exitCode === null) child.kill('SIGKILL'); if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve())); await rm(directory, { recursive: true, force: true }); }
+      await waitForChildExit(child);
+    } finally { if (!childHasExited(child)) child.kill('SIGKILL'); await waitForChildExit(child); await rm(directory, { recursive: true, force: true }); }
   });
   test('cleanup preserves a valid ownership record atomically replaced by another launch', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-replacement-'));
