@@ -11,6 +11,7 @@ import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionO
 import { WorkspaceReader } from '../workspace';
 import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { TrueForge } from '@truefoundry/trueforge-sdk';
 import { LoopbackMcpEndpoint } from '../mcp';
 import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
@@ -19,7 +20,7 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
-import { DaytonaProbeState } from '../trueforge-sdk';
+import { DaytonaProbeState, producerAgentSpec } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 
@@ -697,7 +698,7 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls.map((call) => call.startsWith('{') ? JSON.parse(call) : call), [
       'refresh',
-      { agent: { spec: { model: { name: 'configured-model' }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } } },
+      { agent: { spec: { model: { name: 'configured-model' }, config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } } },
       'turn:probe-session', 'delete:probe-session'
     ]);
   });
@@ -884,6 +885,31 @@ suite('producer readiness', () => {
     assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model network timeout' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
   });
 
+  test('serializes the producer AgentSpec with parallel tool calls disabled in model params', async () => {
+    let wireRequest: Record<string, unknown> | undefined;
+    const client = new TrueForge({
+      baseUrl: 'http://trueforge.test/', auth: false,
+      fetch: async (_input, init) => {
+        wireRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ data: { id: 'serialization-session' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    });
+
+    await client.sessions.create({ agent: { spec: producerAgentSpec({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }) } });
+
+    assert.deepEqual(wireRequest, {
+      agent: {
+        spec: {
+          model: { name: 'openai/gpt-5.2', params: { reasoning_effort: 'medium', parallel_tool_calls: false } },
+          skills: [{ name: 'codealongai' }],
+          mcp_servers: [{ name: 'codealongai-mcp' }],
+          config: { sandbox: { enabled: true, file_downloads: false } },
+          instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.'
+        }
+      }
+    });
+  });
+
   test('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
     const sentinel = 'terminal-error-sentinel-3c65d8';
     const logs: string[] = [];
@@ -923,7 +949,7 @@ suite('producer readiness', () => {
     assert.deepEqual(calls, [
       { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '1111111111111111111111111111111111111111' } },
       { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } },
-      { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium' } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, file_downloads: false }, parallel_tool_calls: false }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
+      { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium', parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
       ['safe-readiness-session', { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] }], 'delete:safe-readiness-session'
     ]);
     for (const malformed of [

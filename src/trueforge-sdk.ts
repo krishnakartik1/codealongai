@@ -1,4 +1,4 @@
-import { TrueForge } from '@truefoundry/trueforge-sdk';
+import { TrueForge, type TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeTurnRequest } from './trueforge-contract';
 import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 
@@ -81,7 +81,8 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     let sessionId: string | undefined;
     let result: DaytonaProbeResult | undefined;
     try {
-      const session = await this.createSession({ agent: { spec: { model: { name: model }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] } } });
+      const spec: TrueForgeApi.AgentSpec = { model: { name: model }, config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Use the supplied sandbox to run the command true exactly once. Do not access files, use MCP, or include workspace, editor, request, or credential data.', messages: [{ type: 'user.message', content: 'Run true in the supplied sandbox once, then reply READY.' }] };
+      const session = await this.createSession({ agent: { spec } });
       sessionId = responseId(session);
       if (!sessionId) result = failed('sandbox-create');
     } catch (error) { result = failed(sandboxPhase(error)); }
@@ -138,7 +139,7 @@ function supportsReasoning(model: Record<string, unknown>, effort: string): bool
 function hasCodeAlongAiSkill(value: unknown, commit: string): boolean { return values(value).some((candidate) => { const record = asRecord(candidate); const manifest = asRecord(record?.manifest ?? record?.data); return (manifest?.name ?? record?.name) === 'codealongai' && (manifest?.type ?? record?.type) === 'git' && (manifest?.url ?? record?.url) === 'https://github.com/krishnakartik1/codealongai.git' && (manifest?.ref ?? record?.ref) === commit && (manifest?.path ?? record?.path) === 'skills/codealongai'; }); }
 function codeAlongAiSkillManifest(commit: string): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: commit }; }
 /** A credential-free, request-free public operation that verifies the configured provider can run the selected AgentSpec. */
-export function producerAgentSpec(input: TrueForgeProducerReadinessInput): Record<string, unknown> { return { model: { name: input.model, params: { reasoningEffort: input.reasoningEffort } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, file_downloads: false }, parallel_tool_calls: false }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
+export function producerAgentSpec(input: TrueForgeProducerReadinessInput): TrueForgeApi.AgentSpec { return { model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
 const CODEALONGAI_CATALOG = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
 function hasExactCatalog(value: unknown): boolean { const tools = values(value); if (tools.length !== CODEALONGAI_CATALOG.length) return false; const names: string[] = []; for (const tool of tools) { const name = asRecord(tool)?.name; if (typeof name !== 'string') return false; names.push(name); } return new Set(names).size === CODEALONGAI_CATALOG.length && JSON.stringify(names.sort()) === JSON.stringify([...CODEALONGAI_CATALOG].sort()); }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
