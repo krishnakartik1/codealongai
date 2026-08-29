@@ -13,7 +13,7 @@ import { McpLifecycle } from '../lifecycle';
 interface WalkthroughTestApi {
   readonly endpointState: string;
   readonly session: WalkthroughSession | undefined;
-  threadAt(stopId: string): vscode.CommentThread | undefined;
+  replyTargetAt(stopId: string): object | undefined;
 }
 
 async function activeWalkthrough(): Promise<WalkthroughTestApi> {
@@ -31,46 +31,59 @@ async function eventually<T>(read: () => T | undefined, message: string): Promis
   throw new Error(message);
 }
 
+async function withMcpEnabled<T>(api: WalkthroughTestApi, run: () => Promise<T>): Promise<T> {
+  const configuration = vscode.workspace.getConfiguration('codealongai.mcp');
+  const previous = configuration.inspect<boolean>('enabled')?.globalValue;
+  const wasEnabled = configuration.get<boolean>('enabled', false);
+  await configuration.update('enabled', true, vscode.ConfigurationTarget.Global);
+  await eventually(() => api.endpointState === 'ready' ? true : undefined, 'the loopback MCP endpoint should become ready');
+  try {
+    return await run();
+  } finally {
+    await configuration.update('enabled', previous, vscode.ConfigurationTarget.Global);
+    await eventually(() => api.endpointState === (wasEnabled ? 'ready' : 'off') ? true : undefined, 'the loopback MCP endpoint should return to its previous state after the test');
+  }
+}
+
 suite('Extension Development Host walkthrough', () => {
   test('starts at the learner selection and commits the first deterministic branch through a native reply', async () => {
     const api = await activeWalkthrough();
-    const configuration = vscode.workspace.getConfiguration('codealongai.mcp');
-    await configuration.update('enabled', true, vscode.ConfigurationTarget.Global);
-    await eventually(() => api.endpointState === 'ready' ? true : undefined, 'the loopback MCP endpoint should become ready');
+    await withMcpEnabled(api, async () => {
+      const workspace = vscode.workspace.workspaceFolders?.[0];
+      assert.ok(workspace, 'the approved two-file workspace should be open');
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document);
+      const selection = new vscode.Selection(2, 0, 2, 22);
+      editor.selection = selection;
+      const sourceBefore = document.getText();
 
-    const workspace = vscode.workspace.workspaceFolders?.[0];
-    assert.ok(workspace, 'the approved two-file workspace should be open');
-    const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
-    const editor = await vscode.window.showTextDocument(document);
-    const selection = new vscode.Selection(2, 0, 2, 22);
-    editor.selection = selection;
-    const sourceBefore = document.getText();
-
-    await vscode.commands.executeCommand('codealongai.walkthrough.ask');
-    const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
-    assert.deepEqual(origin.origin, {
+      await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+      const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
+      assert.deepEqual(origin.origin, {
       stopId: 'checkout-origin',
       displayName: 'Origin',
       explanation: 'What would you like to understand about this code?',
       document: 'checkout.ts',
       range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } }
+      });
+
+      const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
+      assert.equal(Object.isFrozen(replyTarget), true);
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
+      const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
+      assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
+      assert.equal(document.getText(), sourceBefore);
+      assert.deepEqual(editor.selection, selection);
+
+      await vscode.commands.executeCommand('codealongai.walkthrough.next');
+      const definitionSession = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
+      const definitionReplyTarget = await eventually(() => api.replyTargetAt(definitionSession.attentionStopId), 'Definition should render a native CodeAlongAI comment thread');
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: definitionReplyTarget, text: 'Where does the reducer start?' });
+      const complete = await eventually(() => api.session?.stops.length === 6 ? api.session : undefined, 'the second native reply should add Initial value');
+      assert.deepEqual(complete.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart', 'initial-value']);
+      assert.equal(complete.attentionStopId, 'pricing-function');
+      assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
     });
-
-    const thread = await eventually(() => api.threadAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
-    await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread, text: 'Follow this value.' });
-    const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
-    assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
-    assert.equal(document.getText(), sourceBefore);
-    assert.deepEqual(editor.selection, selection);
-
-    await vscode.commands.executeCommand('codealongai.walkthrough.next');
-    const definition = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
-    const definitionThread = await eventually(() => api.threadAt(definition.attentionStopId), 'Definition should render a native CodeAlongAI comment thread');
-    await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: definitionThread, text: 'Where does the reducer start?' });
-    const complete = await eventually(() => api.session?.stops.length === 6 ? api.session : undefined, 'the second native reply should add Initial value');
-    assert.deepEqual(complete.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart', 'initial-value']);
-    assert.equal(complete.attentionStopId, 'pricing-function');
-    assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
   });
 });
 

@@ -15,13 +15,14 @@ export const commentThreadOptions = {
 
 /**
  * The extension export is deliberately observation-only.  Extension Development
- * Host tests use a native thread as the command argument, but cannot alter
- * walkthrough state except through registered VS Code commands.
+ * Host tests can only observe state and obtain an opaque, frozen native-reply
+ * token. They cannot alter walkthrough state except through registered VS Code
+ * commands.
  */
 export interface WalkthroughTestApi {
   readonly endpointState: McpLifecycleState;
   readonly session: ReturnType<WalkthroughAuthority['getSession']>;
-  threadAt(stopId: string): vscode.CommentThread | undefined;
+  replyTargetAt(stopId: string): object | undefined;
 }
 
 export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
@@ -43,6 +44,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const mcpReady = (): boolean => lifecycle.state === 'ready';
   const threads = new Map<string, vscode.CommentThread>();
   const threadStopIds = new Map<vscode.CommentThread, string>();
+  const replyTargets = new Map<string, object>();
+  const replyTargetStopIds = new WeakMap<object, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
   let retryReplacement: (() => Promise<void>) | undefined;
@@ -99,7 +102,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
   };
   void updateEndpoint();
-  const disposeThreads = (): void => { for (const thread of threads.values()) thread.dispose(); threads.clear(); threadStopIds.clear(); };
+  const disposeThreads = (): void => { for (const thread of threads.values()) thread.dispose(); threads.clear(); threadStopIds.clear(); replyTargets.clear(); };
   const showReplacementFailure = (requestId: string): void => {
     const unavailable = !mcpReady();
     void vscode.window.showErrorMessage('CodeAlongAI could not replace the walkthrough. Your current walkthrough is unchanged.', unavailable ? 'Enable MCP' : 'Retry replacement', 'Keep current walkthrough').then((action) => {
@@ -183,7 +186,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     catch { retryReset = async () => { try { commit(); } catch { showResetFailure(request.id); } }; showResetFailure(request.id); }
   });
   const submitCommentCommand = vscode.commands.registerCommand('codealongai.walkthrough.submitComment', async (reply: vscode.CommentReply) => {
-    const sourceStopId = threadStopIds.get(reply.thread);
+    const sourceStopId = threadStopIds.get(reply.thread) ?? replyTargetStopIds.get(reply.thread);
     const text = reply.text.trim();
     if (!sourceStopId || !text) return;
     const session = authority.getSession();
@@ -215,7 +218,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
-      reply.thread.comments = threadComments(source).map(commentFor);
+      const sourceThread = threads.get(sourceStopId);
+      if (sourceThread) sourceThread.comments = threadComments(source).map(commentFor);
       refreshThreads(committed, committed.attentionStopId);
     } catch (error) {
       void vscode.window.showErrorMessage(`CodeAlongAI could not answer the question: ${String(error)}`, 'Retry question', 'Discard question').then((action) => {
@@ -278,7 +282,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   return {
     get endpointState() { return lifecycle.state; },
     get session() { return authority.getSession(); },
-    threadAt(stopId) { return threads.get(stopId); }
+    replyTargetAt(stopId) {
+      if (!threads.has(stopId)) return undefined;
+      const existing = replyTargets.get(stopId);
+      if (existing) return existing;
+      const target = Object.freeze({});
+      replyTargets.set(stopId, target);
+      replyTargetStopIds.set(target, stopId);
+      return target;
+    }
   };
 }
 
