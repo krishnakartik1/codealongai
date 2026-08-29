@@ -32,6 +32,7 @@ export class TrueForgeSidecar {
       try {
         await this.runtime.start({ port: this.port, dataPath: this.dataPath });
         await waitForOwnedCapability(this.runtime, this.port);
+        if (!await this.runtime.ownsRunningChild()) throw new Error('The owned TrueForge sidecar exited before its setup UI could open.');
         this.started = true;
         await this.runtime.open(loopbackUrl(this.port));
         return;
@@ -46,7 +47,7 @@ async function waitForOwnedCapability(runtime: TrueForgeRuntime, port: number): 
   const deadline = Date.now() + healthTimeoutMs;
   while (Date.now() < deadline) {
     if (runtime.hasExited()) throw new Error('The owned TrueForge sidecar exited before becoming healthy.');
-    if (await runtime.health(port) && await runtime.verifyCapability(port)) return;
+    if (await runtime.ownsRunningChild() && await runtime.health(port) && await runtime.verifyCapability(port) && await runtime.ownsRunningChild()) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
   }
   throw new Error('The owned TrueForge sidecar did not become healthy within 60 seconds.');
