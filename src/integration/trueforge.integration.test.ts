@@ -15,7 +15,7 @@ test('the bundled pinned TrueForge adapter serves a credential-free discovery ro
     const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') return reject(new Error('no loopback port')); server.close((error) => error ? reject(error) : resolve(address.port)); });
   });
   const workspaceBefore = readFileSync('demo-workspace/checkout.ts', 'utf8');
-  const runtime = new NativeTrueForgeRuntime(async () => true, () => '/usr/bin/node');
+  const runtime = new NativeTrueForgeRuntime(async () => true, () => undefined);
   try {
     await within(runtime.start({ port, dataPath }), 8_000, 'sidecar did not spawn');
     for (let attempt = 0; attempt < 100 && !await runtime.health(port); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 100));
