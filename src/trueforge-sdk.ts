@@ -5,9 +5,7 @@ import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
 export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readonly client: TrueForgeSdkClient;
-  private residualProbeSessionId: string | undefined;
-  private residualProbeResult: DaytonaProbeResult | undefined;
-  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge({ baseUrl: url }) as unknown as TrueForgeSdkClient) { this.client = createClient(baseUrl); }
+  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge({ baseUrl: url }) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState()) { this.client = createClient(baseUrl); }
   public discoverConfiguration(): Promise<unknown> { return this.readConfiguration(); }
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
@@ -17,13 +15,14 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public async *events(sessionId: string, turnId: string): AsyncIterable<unknown> { for await (const event of await this.client.sessions.subscribeToTurn(sessionId, turnId)) yield event; }
   public async cancelTurn(sessionId: string): Promise<void> { await this.client.sessions.cancel(sessionId); }
   public async deleteSession(sessionId: string): Promise<void> { await this.client.sessions.delete(sessionId); }
-  public async probeDaytona(): Promise<DaytonaProbeResult> {
-    if (this.residualProbeSessionId) {
+  public probeDaytona(): Promise<DaytonaProbeResult> { const operation = this.probeState.queue.catch(() => undefined).then(() => this.probeDaytonaOwned()); this.probeState.queue = operation.then(() => undefined, () => undefined); return operation; }
+  private async probeDaytonaOwned(): Promise<DaytonaProbeResult> {
+    if (this.probeState.residualSessionId) {
       try {
-        await this.deleteSession(this.residualProbeSessionId);
-        const completed = this.residualProbeResult ?? { provider: 'daytona' as const, phase: 'ready' as const, outcome: 'ready' as const };
-        this.residualProbeSessionId = undefined;
-        this.residualProbeResult = undefined;
+        await this.deleteSession(this.probeState.residualSessionId);
+        const completed = this.probeState.residualResult ?? { provider: 'daytona' as const, phase: 'ready' as const, outcome: 'ready' as const };
+        this.probeState.residualSessionId = undefined;
+        this.probeState.residualResult = undefined;
         return completed;
       }
       catch { return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
@@ -60,7 +59,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     }
     if (!sessionId) return result ?? failed('sandbox-create');
     try { await this.deleteSession(sessionId); }
-    catch { this.residualProbeSessionId = sessionId; this.residualProbeResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
+    catch { this.probeState.residualSessionId = sessionId; this.probeState.residualResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
     return result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   }
   private readConfiguration(): Promise<unknown> { return Promise.all([this.client.settings.modelProviders.list(), this.client.settings.skills.list(), this.client.settings.sandboxProviders.get()]); }
@@ -68,6 +67,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readModels(): Promise<unknown> { return this.client.models.list(); }
   private readSkills(): Promise<unknown> { return this.client.skills.list(); }
 }
+
+/** Opaque lifecycle-only state shared by replacement SDK adapters. */
+export class DaytonaProbeState { public queue: Promise<void> = Promise.resolve(); public residualSessionId: string | undefined; public residualResult: DaytonaProbeResult | undefined; }
 
 function failed(phase: DaytonaReadinessPhase): DaytonaProbeResult { return { provider: 'daytona', phase, outcome: 'failed' }; }
 function asRecord(value: unknown): Record<string, unknown> | undefined { return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined; }
