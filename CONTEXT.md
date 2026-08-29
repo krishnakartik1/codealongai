@@ -16,6 +16,14 @@ _Avoid_: MCP session, editor session
 The source of origin descriptors, walkthrough graph data, and question outcomes offered to a walkthrough session. It proposes content but does not own or mutate the session.
 _Avoid_: Model, MCP producer
 
+**Producer turn**:
+One isolated attempt by a walkthrough producer to fulfill one walkthrough request. It can affect the walkthrough session only through a validated walkthrough transition.
+_Avoid_: Model turn, agent run
+
+**Producer sandbox**:
+An isolated execution context made available to a walkthrough producer solely to materialize and read approved producer guidance. It contains no editor state or workspace content and grants no walkthrough or workspace authority.
+_Avoid_: Workspace sandbox, code runner
+
 **Walkthrough request**:
 A single-use, human-initiated intent to create or replace a walkthrough session, or to answer a question at one stop. It binds a producer result to the editor action that authorized it.
 _Avoid_: Model request, MCP request
