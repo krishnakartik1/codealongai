@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as http from 'node:http';
+import { spawn } from 'node:child_process';
 import * as vscode from 'vscode';
 import { deriveOrigin, projectDestinations, WalkthroughAuthority, type QuestionOutcome, type WalkthroughSession } from '../walkthrough';
 import { WorkspaceReader } from '../workspace';
@@ -219,6 +220,18 @@ suite('TrueForge setup sidecar', () => {
       await writeFile(lock, JSON.stringify({ ownerPid: process.pid, ownerStartTime, launchId: 'live-owner', executable: process.execPath, cli: require.resolve('@truefoundry/trueforge/dist/cli.js'), port: 48123, dataPath: directory }));
       assert.equal(await recoverStaleOwnership(lock), false);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test('recovers and terminates the exact token-identified child after a crash before PID persistence', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-recovery-'));
+    const lock = path.join(directory, 'codealongai-trueforge.lock');
+    const cli = require.resolve('@truefoundry/trueforge/dist/cli.js');
+    const launchId = 'crash-before-pid-regression';
+    const child = spawn(process.execPath, [cli, '--port', '0'], { cwd: directory, stdio: 'ignore', env: { ...process.env, XDG_DATA_HOME: directory, CODEALONGAI_TRUEFORGE_LAUNCH_ID: launchId } });
+    try {
+      await writeFile(lock, JSON.stringify({ ownerPid: -1, ownerStartTime: '0', launchId, executable: process.execPath, cli, port: 0, dataPath: directory }));
+      assert.equal(await recoverStaleOwnership(lock), true);
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    } finally { child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }); }
   });
   test('runs the public Configure TrueForge command through the contract runtime double without changing walkthrough state', async () => {
     const api = await activeWalkthrough();
