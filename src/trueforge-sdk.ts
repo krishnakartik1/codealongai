@@ -16,23 +16,29 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public async cancelTurn(sessionId: string): Promise<void> { await this.client.sessions.cancel(sessionId); }
   public async deleteSession(sessionId: string): Promise<void> { await this.client.sessions.delete(sessionId); }
   public async probeDaytona(): Promise<DaytonaProbeResult> {
-    const provider = await this.client.settings.sandboxProviders.get();
+    let provider: unknown;
+    try { provider = await this.client.settings.sandboxProviders.get(); }
+    catch (error) { return failed(configurationPhase(error)); }
     if (!isDaytona(provider)) return failed('provider');
-    if (sandboxStatus(provider) !== 'ready') return failed('authentication');
+    if (sandboxStatus(provider) !== 'ready') return failed(sandboxStatus(provider) === 'failed' ? 'authentication' : 'provider');
     const model = firstModelName(await this.client.models.list());
     if (!model) return failed('authentication');
     let sessionId: string | undefined;
+    let result: DaytonaProbeResult | undefined;
     try {
       const session = await this.createSession({ agent: { spec: { model: { name: model }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Do not use tools or a sandbox command. Reply READY.', messages: [{ type: 'user.message', content: 'Reply READY.' }] } } });
       sessionId = responseId(session);
-      if (!sessionId) return failed('sandbox-create');
-      const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Reply READY.' }] } });
-      const turnId = responseId(turn);
-      if (!turnId || !await observedSandboxCreation(this, sessionId, turnId)) return failed('sandbox-create');
-    } catch (error) { return failed(phaseFor(error)); }
+      if (!sessionId) result = failed('sandbox-create');
+      else {
+        const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Reply READY.' }] } });
+        const turnId = responseId(turn);
+        if (!turnId || !await observedSandboxCreation(this, sessionId, turnId)) result = failed('sandbox-create');
+      }
+    } catch (error) { result = failed(phaseFor(error)); }
+    if (!sessionId) return result ?? failed('sandbox-create');
     try { await this.deleteSession(sessionId!); }
     catch { return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
-    return { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+    return result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   }
   private readConfiguration(): Promise<unknown> { return Promise.all([this.client.settings.modelProviders.list(), this.client.settings.skills.list(), this.client.settings.sandboxProviders.get()]); }
   private readCatalogProviders(): Promise<unknown> { return this.client.catalogs.modelProviders.list(); }
@@ -47,6 +53,7 @@ function isDaytona(value: unknown): boolean { const record = asRecord(value); co
 function sandboxStatus(value: unknown): string | undefined { const record = asRecord(value); const data = asRecord(record?.data); return typeof (data?.status ?? record?.status) === 'string' ? data?.status as string ?? record?.status as string : undefined; }
 function firstModelName(value: unknown): string | undefined { const record = asRecord(value); const values = Array.isArray(record?.data) ? record.data : Array.isArray(value) ? value : []; for (const candidate of values) { const name = asRecord(candidate)?.name; if (typeof name === 'string' && name.length > 0) return name; } return undefined; }
 function phaseFor(error: unknown): DaytonaReadinessPhase { const message = error instanceof Error ? error.message.toLowerCase() : ''; if (message.includes('snapshot')) return 'snapshots'; if (message.includes('sandbox')) return 'sandboxes'; if (message.includes('auth') || message.includes('credential') || message.includes('unauthor')) return 'authentication'; return 'sandbox-create'; }
+function configurationPhase(error: unknown): DaytonaReadinessPhase { const phase = phaseFor(error); return phase === 'sandbox-create' ? 'provider' : phase; }
 async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<boolean> { for await (const event of runtime.events(sessionId, turnId)) if (asRecord(event)?.type === 'sandbox.created') return true; return false; }
 
 /** Narrow structural seam over the pinned SDK: tests replace only this external client. */

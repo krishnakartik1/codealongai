@@ -460,9 +460,11 @@ suite('Daytona producer readiness', () => {
   test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
+    const probesBefore = commandRuntime.probeCalls;
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
     await vscode.commands.executeCommand('codealongai.trueforge.configure');
     assert.deepEqual(api.session, before);
+    assert.equal(commandRuntime.probeCalls, probesBefore + 1);
     commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   });
 
@@ -485,12 +487,14 @@ suite('Daytona producer readiness', () => {
   });
 
   test('reports a snapshot permission failure without retaining the runtime error', async () => {
+    const calls: string[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
       catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
-      sessions: { create: async () => ({ data: { id: 'probe-session' } }), createTurn: async () => { throw new Error('snapshots permission denied: secret-never-recorded'); }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
+      sessions: { create: async () => ({ data: { id: 'probe-session' } }), createTurn: async () => { throw new Error('snapshots permission denied: secret-never-recorded'); }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async (id) => { calls.push(id); return undefined; } }
     }));
     assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed' });
+    assert.deepEqual(calls, ['probe-session']);
   });
 });
 
