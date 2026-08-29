@@ -70,7 +70,7 @@ export async function recoverStaleOwnership(lockPath: string): Promise<boolean> 
   let retiredPath: string | undefined;
   try {
     const ownershipRecord = await readOwnership(lockPath);
-    if (!ownershipRecord || await ownerIsAlive(ownershipRecord)) return false;
+    if (!ownershipRecord || await processMatchesStart(ownershipRecord.ownerPid, ownershipRecord.ownerStartTime)) return false;
     const recordedChild = await findRecordedChild(ownershipRecord);
     if (recordedChild === 'unsafe') return false;
     if (recordedChild !== undefined && !await terminateOwnedProcess(recordedChild, ownershipRecord.childPid === undefined ? { ...ownershipRecord, childPid: recordedChild } : ownershipRecord)) return false;
@@ -104,7 +104,7 @@ async function acquireClaim(lockPath: string): Promise<string | undefined> {
     try { await link(temporaryPath, claimPath); return claimPath; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return undefined;
       const existingClaim = await readClaim(claimPath);
-      if (!existingClaim || await claimantIsAlive(existingClaim)) return undefined;
+      if (!existingClaim || await processMatchesStart(existingClaim.pid, existingClaim.startTime)) return undefined;
       const retiredClaim = `${claimPath}.${randomUUID()}.stale`;
       try { await rename(claimPath, retiredClaim); await unlink(retiredClaim); return acquireClaim(lockPath); } catch { return undefined; }
     }
@@ -112,7 +112,6 @@ async function acquireClaim(lockPath: string): Promise<string | undefined> {
 }
 
 async function readClaim(claimPath: string): Promise<ClaimRecord | undefined> { try { const claim = JSON.parse(await readFile(claimPath, 'utf8')) as ClaimRecord; return Number.isInteger(claim.pid) && typeof claim.startTime === 'string' ? claim : undefined; } catch { return undefined; } }
-async function claimantIsAlive(claim: ClaimRecord): Promise<boolean> { return processIsAlive(claim.pid) && await processStartTime(claim.pid).then((startTime) => startTime === claim.startTime).catch(() => false); }
 
 async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefined> {
   try {
@@ -121,7 +120,7 @@ async function readOwnership(lockPath: string): Promise<OwnershipRecord | undefi
   } catch { return undefined; }
 }
 
-async function ownerIsAlive(record: OwnershipRecord): Promise<boolean> { if (!processIsAlive(record.ownerPid)) return false; try { return await processStartTime(record.ownerPid) === record.ownerStartTime; } catch { return false; } }
+async function processMatchesStart(pid: number, expectedStartTime: string): Promise<boolean> { return processIsAlive(pid) && await processStartTime(pid).then((startTime) => startTime === expectedStartTime).catch(() => false); }
 
 async function findRecordedChild(record: OwnershipRecord): Promise<number | 'unsafe' | undefined> {
   try { await Promise.all([realpath(record.executable), realpath(record.dataPath)]); } catch { return 'unsafe'; }
@@ -137,7 +136,7 @@ async function verifyChild(pid: number, record: OwnershipRecord): Promise<boolea
     const [executable, command, environment, cwd, startTime] = await Promise.all([realpath(path.join(proc, 'exe')), readFile(path.join(proc, 'cmdline'), 'utf8'), readFile(path.join(proc, 'environ'), 'utf8'), realpath(path.join(proc, 'cwd')), processStartTime(pid)]);
     const expectedExecutable = await realpath(record.executable); const expectedDataPath = await realpath(record.dataPath);
     const arguments_ = command.split('\0').filter(Boolean); const expectedArguments = [expectedExecutable, record.cli, '--port', String(record.port)];
-    return executable === expectedExecutable && cwd === expectedDataPath && arguments_.length === expectedArguments.length && arguments_.every((value, index) => value === expectedArguments[index]) && environment.split('\0').includes(`CODEALONGAI_TRUEFORGE_LAUNCH_ID=${record.launchId}`) && environment.split('\0').includes(`XDG_DATA_HOME=${expectedDataPath}`) && (record.childStartTime === undefined || startTime === record.childStartTime);
+    return executable === expectedExecutable && cwd === expectedDataPath && arguments_.length === expectedArguments.length && arguments_.every((argument, index) => argument === expectedArguments[index]) && environment.split('\0').includes(`CODEALONGAI_TRUEFORGE_LAUNCH_ID=${record.launchId}`) && environment.split('\0').includes(`XDG_DATA_HOME=${expectedDataPath}`) && (record.childStartTime === undefined || startTime === record.childStartTime);
   } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' && !processIsAlive(pid) ? 'missing' : false; }
 }
 
