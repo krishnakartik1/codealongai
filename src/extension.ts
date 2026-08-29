@@ -55,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     ),
     context.globalStorageUri.fsPath
   );
+  let producerReadiness: ProducerReadiness | undefined;
   const lifecycle = new McpLifecycle(async () => {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
     return {
@@ -181,7 +182,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const skillCommit = extensionBuildCommit();
         if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }); return false; }
         if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }); return false; }
-        const producer = await new ProducerReadiness(trueForge.producer).check({
+        const producer = await (producerReadiness ??= new ProducerReadiness(trueForge.producer)).check({
           model,
           reasoningEffort,
           mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
