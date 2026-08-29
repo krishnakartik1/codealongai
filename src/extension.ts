@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { commitDeterministicOrigin, commitDeterministicQuestion, commitDeterministicReplacement, LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
@@ -32,6 +32,9 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   let activePort: number | undefined;
+  const prototypeEvidencePath = process.env.CODEALONGAI_PROTOTYPE_WALKTHROUGH_EVIDENCE;
+  const prototypeMcpPort = Number(process.env.CODEALONGAI_PROTOTYPE_MCP_PORT ?? 61338);
+  const prototypeQuestionSignalPath = process.env.CODEALONGAI_PROTOTYPE_QUESTION_SIGNAL;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
   const lifecycle = new McpLifecycle(async (port) => {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
@@ -80,10 +83,21 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     questionOutcomes.delete(requestId);
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
+  const awaitPrototypeQuestionCommit = async (requestId: string): Promise<void> => {
+    if (!prototypeQuestionSignalPath) throw new Error('prototype question bridge is unavailable');
+    await writeFile(prototypeQuestionSignalPath, `${JSON.stringify({ schemaVersion: 1, requestId })}\n`, { encoding: 'utf8', mode: 0o600 });
+    for (let attempt = 0; attempt < 1800; attempt += 1) {
+      const status = authority.getQuestionRequest(requestId)?.status;
+      if (status === 'consumed') return;
+      if (status === 'cancelled' || status === undefined) throw new Error('the prototype question request is no longer pending');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('the TrueForge prototype did not commit the question within three minutes');
+  };
   const updateEndpoint = async (): Promise<void> => {
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
-    const enabled = config.get<boolean>('enabled', false);
-    const port = config.get<number>('port', 61337);
+    const enabled = prototypeEvidencePath !== undefined || config.get<boolean>('enabled', false);
+    const port = prototypeEvidencePath === undefined ? config.get<number>('port', 61337) : prototypeMcpPort;
     try {
       const configured = lifecycle.configure({ enabled, port });
       endpointState = lifecycle.state;
@@ -209,11 +223,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     retryQuestionRequest = request;
     retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
-    const outcome = questionOutcomes.get(request.id) ?? deterministicQuestionOutcome(session);
-    questionOutcomes.set(request.id, outcome);
+    const outcome = prototypeQuestionSignalPath ? undefined : (questionOutcomes.get(request.id) ?? deterministicQuestionOutcome(session));
+    if (outcome) questionOutcomes.set(request.id, outcome);
     try {
-      const requestStatus = authority.getQuestionRequest(request.id)?.status;
-      await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome);
+      if (prototypeQuestionSignalPath) {
+        await awaitPrototypeQuestionCommit(request.id);
+      } else {
+        const requestStatus = authority.getQuestionRequest(request.id)?.status;
+        await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome!);
+      }
       questionOutcomes.delete(request.id);
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
@@ -270,6 +288,75 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
+
+  // PROTOTYPE — throw away with the TrueForge producer-turn spike. This gated
+  // display bridge renders the exact committed graph evidence in the real
+  // Extension Development Host; it is not the production sidecar lifecycle.
+  if (prototypeEvidencePath) {
+    void (async () => {
+      const evidence = JSON.parse(await readFile(prototypeEvidencePath, 'utf8')) as {
+        walkthroughState?: {
+          stops?: Array<{
+            id: string;
+            displayName: string;
+            explanation: string;
+            document: string;
+            range: OriginDescriptor['range'];
+            destinationIds: string[];
+            recommendedNextId?: string;
+            backId?: string;
+            conversation: Array<{ author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }>;
+          }>;
+        };
+      };
+      const [originState, ...addedStates] = evidence.walkthroughState?.stops ?? [];
+      if (!originState || addedStates.length === 0) throw new Error('generation evidence has no walkthrough graph');
+      const descriptor: OriginDescriptor = {
+        stopId: originState.id,
+        displayName: originState.displayName,
+        explanation: originState.explanation,
+        document: originState.document,
+        range: originState.range
+      };
+      const start = authority.captureStart(descriptor);
+      authority.start(start.id, descriptor);
+      const questionText = originState.conversation.find(comment => comment.author === 'You')?.bodyMarkdown ?? 'Show the generated walkthrough.';
+      const answerMarkdown = [...originState.conversation].reverse().find(comment => comment.author === 'CodeAlongAI' && comment.bodyMarkdown !== originState.explanation)?.bodyMarkdown ?? 'Generated walkthrough.';
+      const question = authority.captureQuestion(originState.id, questionText);
+      const seeded = authority.getSession()!;
+      authority.commitQuestionOutcome(
+        { requestId: question.id, sessionId: seeded.id, revision: seeded.revision },
+        {
+          kind: 'generated-walkthrough',
+          answerMarkdown,
+          patch: {
+            addedStops: addedStates.map(stop => ({
+              id: stop.id,
+              displayName: stop.displayName,
+              explanationMarkdown: stop.explanation,
+              path: stop.document,
+              range: stop.range,
+              destinationIds: stop.destinationIds,
+              ...(stop.recommendedNextId ? { recommendedNextId: stop.recommendedNextId } : {}),
+              ...(stop.backId ? { backId: stop.backId } : {})
+            })),
+            appendedDestinations: [{ sourceStopId: originState.id, destinationIds: originState.destinationIds }],
+            recommendedNextUpdates: originState.recommendedNextId
+              ? [{ sourceStopId: originState.id, targetStopId: originState.recommendedNextId }]
+              : []
+          }
+        }
+      );
+      const generated = authority.getSession()!;
+      disposeThreads();
+      for (const stop of generated.stops) threadFor(stop, await openStopDocument(stop));
+      await showStopDocument(await openStopDocument(generated.origin), generated.stops[0], generated.origin);
+      refreshThreads(generated, generated.attentionStopId);
+      void vscode.window.showInformationMessage(`TrueForge generated ${generated.stops.length} CodeAlongAI walkthrough stops. Use Next or Destinations to inspect them.`);
+    })().catch((error) => {
+      void vscode.window.showErrorMessage(`Could not display the TrueForge walkthrough prototype: ${String(error)}`);
+    });
+  }
   context.subscriptions.push(askWalkthroughCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();
@@ -379,6 +466,7 @@ async function captureQuestionSnapshot(session: NonNullable<ReturnType<Walkthrou
 
 export function deterministicQuestionOutcome(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): QuestionOutcome {
   if (session.stops.some((stop) => stop.id === 'initial-value')) return { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' };
+  if (session.stops.some((stop) => stop.id === 'checkout-subtotal-function')) return { kind: 'explanation-only', answerMarkdown: 'The cart values flow into `subtotal`, through its reduction, and back to the checkout log output. This follow-up stays attached to the stop where you asked it.' };
   if (session.stops.some((stop) => stop.id === 'pricing-function')) return { kind: 'generated-walkthrough', answerMarkdown: 'The reducer begins with its initial value.', patch: { addedStops: [
     { id: 'initial-value', displayName: 'Initial value', explanationMarkdown: 'The reduction starts from its initial value.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 42 } }, destinationIds: [], backId: 'pricing-reducer-revisit' }
   ], appendedDestinations: [{ sourceStopId: 'pricing-reducer-revisit', destinationIds: ['initial-value'] }], recommendedNextUpdates: [] } };
