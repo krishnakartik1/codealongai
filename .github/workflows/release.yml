@@ -76,21 +76,45 @@ jobs:
           echo "has_version_bump=$has_version_bump" >> "$GITHUB_OUTPUT"
 
       - id: existing-release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.release_tag }}" > /dev/null; then
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            if release_assets="$(gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name')"; then
+              if printf '%s\n' "$release_assets" | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
+                echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
+              else
+                echo "release_needs_asset=true" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            echo "release_needs_asset=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+      - id: release-eligibility
+        env:
+          HAS_VERSION_BUMP: ${{ steps.version-changed.outputs.has_version_bump }}
+          TAG_EXISTS: ${{ steps.existing-release.outputs.tag_exists }}
+          RELEASE_NEEDS_ASSET: ${{ steps.existing-release.outputs.release_needs_asset }}
+        run: |
+          release_should_publish=false
+          if [ "$HAS_VERSION_BUMP" = true ] && { [ "$TAG_EXISTS" = false ] || [ "$RELEASE_NEEDS_ASSET" = true ]; }; then
+            release_should_publish=true
+          fi
+          echo "release_should_publish=$release_should_publish" >> "$GITHUB_OUTPUT"
+
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
         run: npm ci
 
-      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
         run: npm run package
 
-      - id: create-release
-        if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+      - name: Create release when its tag is new
+        if: steps.release-eligibility.outputs.release_should_publish == 'true' && steps.existing-release.outputs.tag_exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -98,20 +122,27 @@ jobs:
             -f tag_name="${{ steps.tag.outputs.release_tag }}" \
             -f target_commitish="${{ github.event.workflow_run.head_sha }}" \
             -F generate_release_notes=true \
-          --jq '.id')"; then
-            echo "release_created=true" >> "$GITHUB_OUTPUT"
+            --jq '.id')"; then
+            :
           elif gh release view "${{ steps.tag.outputs.release_tag }}" > /dev/null; then
-            echo "release_created=false" >> "$GITHUB_OUTPUT"
+            :
           else
             exit 1
           fi
 
-      - if: steps.create-release.outputs.release_created == 'true'
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix
+        run: |
+          if gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix; then
+            exit 0
+          fi
+          if gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name' | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
+            exit 0
+          fi
+          exit 1
 
-      - if: steps.version-changed.outputs.has_version_bump == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
