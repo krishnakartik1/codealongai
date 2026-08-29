@@ -3,6 +3,7 @@ import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions 
 export const emptyTrueForgeProducer: TrueForgeProducerRuntime = {
   discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
   createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
+  , probeDaytona: async () => ({ provider: 'daytona', phase: 'provider', outcome: 'failed' })
 };
 
 /** Contract-faithful external-runtime double for public Configure command tests. */

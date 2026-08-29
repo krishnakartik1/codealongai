@@ -7,6 +7,7 @@ export { recoverStaleOwnership } from './trueforge-ownership';
 export { SdkTrueForgeProducerRuntime, type TrueForgeSdkClient, type TrueForgeSdkClientFactory } from './trueforge-sdk';
 export { isUbuntuX64 } from './trueforge-environment';
 export { loopbackUrl } from './trueforge-url';
+export { DaytonaReadiness, type DaytonaProbeResult, type DaytonaReadinessPhase, type DaytonaReadinessResult } from './daytona';
 import { loopbackUrl } from './trueforge-url';
 
 const healthTimeoutMs = 60_000;

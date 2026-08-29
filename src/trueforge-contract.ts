@@ -1,4 +1,5 @@
 /** The only boundary between CodeAlongAI and the external TrueForge runtime. */
+import type { DaytonaProbeResult } from './daytona';
 export interface TrueForgeStartOptions {
   readonly port: number;
   readonly dataPath: string;
@@ -30,4 +31,6 @@ export interface TrueForgeProducerRuntime {
   events(sessionId: string, turnId: string): AsyncIterable<unknown>;
   cancelTurn(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  /** Creates and disposes a credential-free, provider-backed readiness probe. */
+  probeDaytona(): Promise<DaytonaProbeResult>;
 }

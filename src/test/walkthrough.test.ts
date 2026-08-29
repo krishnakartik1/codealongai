@@ -18,6 +18,7 @@ import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
+import { DaytonaReadiness } from '../daytona';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -436,6 +437,52 @@ suite('TrueForge setup sidecar', () => {
     assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's'], ['delete', 's']]);
   });
 
+});
+
+suite('Daytona producer readiness', () => {
+  test('keeps a walkthrough request uncaptured until the public Daytona lifecycle proves both capabilities', async () => {
+    const lifecycle: string[] = [];
+    const readiness = new DaytonaReadiness({
+      probeDaytona: async () => ({ provider: 'daytona', phase: 'snapshots', outcome: 'failed' })
+    }, {
+      open: async () => { lifecycle.push('open'); }
+    });
+
+    const failed = await readiness.check();
+    assert.deepEqual(failed, { provider: 'daytona', phase: 'snapshots', outcome: 'failed', action: 'open-setup' });
+    await readiness.configureOrRetry();
+    assert.deepEqual(lifecycle, ['open']);
+
+    const ready = new DaytonaReadiness({ probeDaytona: async () => ({ provider: 'daytona', phase: 'ready', outcome: 'ready' }) }, { open: async () => undefined });
+    assert.deepEqual(await ready.check(), { provider: 'daytona', phase: 'ready', outcome: 'ready', action: 'none' });
+  });
+
+  test('proves the disposable public lifecycle and retains only its safe result', async () => {
+    const calls: string[] = [];
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+      sessions: {
+        create: async (request) => { calls.push(JSON.stringify(request)); return { data: { id: 'probe-session' } }; },
+        createTurn: async (id) => { calls.push(`turn:${id}`); return {}; }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined,
+        delete: async (id) => { calls.push(`delete:${id}`); return undefined; }
+      }
+    }));
+    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(calls.map((call) => call.startsWith('{') ? JSON.parse(call) : call), [
+      { agent: { spec: { model: { name: 'configured-model' }, config: { sandbox: { enabled: true, file_downloads: false } }, instructions: 'This is a disposable CodeAlongAI readiness probe. Do not use tools or a sandbox command. Reply READY.', messages: [{ type: 'user.message', content: 'Reply READY.' }] } } },
+      'turn:probe-session', 'delete:probe-session'
+    ]);
+  });
+
+  test('reports a snapshot permission failure without retaining the runtime error', async () => {
+    const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+      settings: { modelProviders: { list: async () => [] }, skills: { list: async () => [] }, sandboxProviders: { get: async () => ({ data: { manifest: { type: 'daytona' }, status: 'ready' } }) } },
+      catalogs: { modelProviders: { list: async () => [] } }, models: { list: async () => ({ data: [{ name: 'configured-model' }] }) }, skills: { list: async () => [] },
+      sessions: { create: async () => ({ data: { id: 'probe-session' } }), createTurn: async () => { throw new Error('snapshots permission denied: secret-never-recorded'); }, subscribeToTurn: async () => (async function* () {})(), cancel: async () => undefined, delete: async () => undefined }
+    }));
+    assert.deepEqual(await sdk.probeDaytona(), { provider: 'daytona', phase: 'snapshots', outcome: 'failed' });
+  });
 });
 
 const memorySource = (files: readonly WorkspaceFile[], count = 1): WorkspaceSource => ({ workspaceFolderCount: () => count, listFiles: async () => files.map((file) => file.path), readFile: async (requested) => files.find((file) => file.path.replace(/\\/g, '/') === requested) ?? { path: requested, dirty: false, failure: 'file_unsupported' } });

@@ -8,13 +8,14 @@ import test from 'node:test';
 import { isUbuntuX64, NativeTrueForgeRuntime } from '../trueforge';
 
 const within = async <T>(promise: Promise<T>, ms: number, message: string): Promise<T> => await Promise.race([promise, new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+const reserveLoopbackPort = async (): Promise<number> => await new Promise<number>((resolve, reject) => {
+  const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') return reject(new Error('no loopback port')); server.close((error) => error ? reject(error) : resolve(address.port)); });
+});
 
 test('the bundled pinned TrueForge adapter serves a credential-free discovery route and cleans up', { timeout: 35_000 }, async (context) => {
   if (!await isUbuntuX64()) { context.skip('Native TrueForge is supported only on Ubuntu x86-64.'); return; }
   const dataPath = await mkdtemp(path.join(os.tmpdir(), 'codealongai-trueforge-integration-'));
-  const port = await new Promise<number>((resolve, reject) => {
-    const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') return reject(new Error('no loopback port')); server.close((error) => error ? reject(error) : resolve(address.port)); });
-  });
+  const port = await reserveLoopbackPort();
   const workspaceBefore = readFileSync('demo-workspace/checkout.ts', 'utf8');
   const runtime = new NativeTrueForgeRuntime(async () => true, () => undefined);
   try {
@@ -29,5 +30,21 @@ test('the bundled pinned TrueForge adapter serves a credential-free discovery ro
     assert.equal(await runtime.health(port), false);
     assert.equal(existsSync(path.join(dataPath, 'codealongai-trueforge.lock')), false);
     await rm(dataPath, { recursive: true });
+  }
+});
+
+test('the bundled pinned TrueForge adapter completes a disposable Daytona lifecycle when an operator enables it', { timeout: 90_000 }, async (context) => {
+  if (process.env.CODEALONGAI_DAYTONA_PROBE !== '1') { context.skip('Set CODEALONGAI_DAYTONA_PROBE=1 after configuring Daytona and a model in TrueForge.'); return; }
+  if (!await isUbuntuX64()) { context.skip('Native TrueForge is supported only on Ubuntu x86-64.'); return; }
+  const dataPath = await mkdtemp(path.join(os.tmpdir(), 'codealongai-daytona-integration-'));
+  const port = await reserveLoopbackPort();
+  const runtime = new NativeTrueForgeRuntime(async () => true, () => undefined);
+  try {
+    await within(runtime.start({ port, dataPath }), 8_000, 'sidecar did not spawn');
+    for (let attempt = 0; attempt < 100 && !await runtime.health(port); attempt += 1) await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(await runtime.producer.probeDaytona(), { provider: 'daytona', phase: 'ready', outcome: 'ready' });
+  } finally {
+    await within(runtime.stop(), 8_000, 'sidecar did not stop');
+    await rm(dataPath, { recursive: true, force: true });
   }
 });
