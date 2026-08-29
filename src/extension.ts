@@ -168,11 +168,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       reportDaytonaReadiness(await retryDaytonaSetup(), true);
     });
   };
-  const daytonaReadyForWalkthrough = async (): Promise<boolean> => {
+  const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
     try {
-      if (!await isUbuntuX64()) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'configure-node' }); return false; }
+      if (!await isUbuntuX64()) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'configure-node' }, retry); return false; }
       try { await resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined); }
-      catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }); return false; }
+      catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }, retry); return false; }
       await trueForge.configure();
       const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
       if (readiness.action === 'none') {
@@ -180,8 +180,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const model = configuration.get<string>('model')?.trim() ?? '';
         const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
         const skillCommit = extensionBuildCommit();
-        if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }); return false; }
-        if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }); return false; }
+        if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
+        if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
         const producer = await (producerReadiness ??= new ProducerReadiness(trueForge.producer)).check({
           model,
           reasoningEffort,
@@ -189,7 +189,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
           skillCommit
         });
         if (producer.action === 'none') return true;
-        reportProducerReadiness(producer);
+        reportProducerReadiness(producer, retry);
         return false;
       }
       reportDaytonaReadiness(readiness);
@@ -199,13 +199,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
     return false;
   };
-  const reportProducerReadiness = (readiness: ProducerReadinessResult): void => {
+  const reportProducerReadiness = (readiness: ProducerReadinessResult, retry?: () => Thenable<unknown>): void => {
     output.warn(`Producer readiness needs ${readiness.phase}.`);
     const actions = readiness.action === 'configure-node' ? ['Configure Node', 'Show CodeAlongAI Output'] : readiness.action === 'open-setup' ? ['Open TrueForge Setup', 'Retry Setup'] : readiness.action === 'retry-trueforge' ? ['Retry TrueForge', 'Show CodeAlongAI Output'] : ['Show CodeAlongAI Output'];
     void vscode.window.showWarningMessage(`CodeAlongAI producer setup needs ${readiness.phase}.`, ...actions).then((action) => {
       if (action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
       if (action === 'Configure Node') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.trueforge.nodePath');
-      if (action === 'Retry Setup' || action === 'Retry TrueForge') void vscode.commands.executeCommand('codealongai.walkthrough.ask');
+      if (action === 'Retry Setup' || action === 'Retry TrueForge') void retry?.();
       if (action === 'Show CodeAlongAI Output') output.show(true);
     });
   };
@@ -225,7 +225,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
-    if (!await daytonaReadyForWalkthrough()) return undefined;
+    if (!await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.ask'))) return undefined;
     const replacement = authority.getPendingReplacement();
     const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
     const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
@@ -307,7 +307,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       });
       return;
     }
-    if (!pending && !await daytonaReadyForWalkthrough()) return;
+    if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     retryQuestionRequest = request;
     retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
