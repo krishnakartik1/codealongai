@@ -148,6 +148,7 @@ suite('Extension Development Host walkthrough', () => {
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
       assert.equal(document.getText(), sourceBefore);
       assert.deepEqual(editor.selection, selection);
+      await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the completed public reply should clear its request before another reply begins');
 
       let resolveOldSelection: ((action: string | undefined) => void) | undefined;
       let selections = 0;
@@ -176,6 +177,23 @@ suite('Extension Development Host walkthrough', () => {
       assert.deepEqual(complete.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart', 'initial-value']);
       assert.equal(complete.attentionStopId, 'pricing-function');
       assert.equal(complete.stops.find((stop) => stop.id === 'initial-value')?.explanation, 'The reduction starts from its initial value.');
+
+      const beforeReplacement = api.session!;
+      const preparesBeforeReplacement = commandRuntime.prepareCalls;
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const originalWarning = notificationWindow.showWarningMessage;
+      try {
+        notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Cancel' : undefined) as typeof vscode.window.showWarningMessage;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        assert.deepEqual(api.session, beforeReplacement);
+        assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement);
+
+        notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const replacement = await eventually(() => api.session?.id !== beforeReplacement.id ? api.session : undefined, 'the confirmed public Ask command should replace the walkthrough');
+        assert.equal(replacement.stops.length, 1);
+        assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement + 1);
+      } finally { notificationWindow.showWarningMessage = originalWarning; }
     }));
   });
 
@@ -193,6 +211,32 @@ suite('Extension Development Host walkthrough', () => {
     });
     assert.deepEqual(api.session, before);
     assert.equal(api.hasPendingWalkthroughRequest, false);
+  });
+
+  test('refreshes the retained readiness coordinator when the external producer is replaced', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
+      commandRuntime.maximumConcurrentPrepares = 0;
+      const prepares = commandRuntime.prepareCalls;
+      let release: (() => void) | undefined;
+      commandRuntime.prepareWait = new Promise<void>((resolve) => { release = resolve; });
+      try {
+        const first = vscode.commands.executeCommand('codealongai.trueforge.configure');
+        await eventually(() => commandRuntime.prepareCalls === prepares + 1 ? true : undefined, 'the first retained producer readiness check should begin');
+        const queued = vscode.commands.executeCommand('codealongai.trueforge.configure');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(commandRuntime.prepareCalls, prepares + 1);
+        commandRuntime.replaceProducerForTests();
+        const refreshed = vscode.commands.executeCommand('codealongai.trueforge.configure');
+        await eventually(() => commandRuntime.prepareCalls === prepares + 2 ? true : undefined, 'the replacement producer should receive a fresh coordinator');
+        assert.equal(commandRuntime.maximumConcurrentPrepares, 2);
+        release!();
+        await Promise.all([first, queued, refreshed]);
+        assert.equal(commandRuntime.prepareCalls, prepares + 3);
+      } finally { commandRuntime.prepareWait = undefined; }
+    }));
   });
 
 });
@@ -760,9 +804,15 @@ suite('producer readiness', () => {
 
     assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(await producerWithTerminal({ status: 'done', output: {} }).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, model: 'gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, model: 'other/gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [] }).prepareProducer({ ...input, reasoningEffort: 'high' }), { phase: 'reasoning', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'completed', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'paused', output: {}, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'done', output: null, requiredActions: [] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'done', output: {}, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model authorization 401 failed' }).prepareProducer(input), { phase: 'authentication', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model network timeout' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
   });
 
   test('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
@@ -1000,7 +1050,9 @@ suite('workspace context over loopback MCP', () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      assert.equal(tools.tools.length, 10);
+      assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
+        'codealongai_commit_question_outcome', 'codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_navigate_walkthrough', 'codealongai_read_workspace_file', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_search_workspace', 'codealongai_start_walkthrough'
+      ]);
       const listed = await client.callTool({ name: 'codealongai_list_workspace_files', arguments: { schemaVersion: 1 } });
       assert.deepEqual(listed.structuredContent, { schemaVersion: 1, paths: ['src/draft.ts'] });
       const read = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts' } });
