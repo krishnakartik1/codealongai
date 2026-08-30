@@ -70,8 +70,8 @@ export class StartTurnReducer {
     if (!this.pending) { this.deferredResults.set(id, content); return; }
     if (this.pending.id !== id) { this.failure = 'result_correlation'; return; }
     const pending = this.pending; this.pending = undefined;
-    const result = object(content); if (!result || result.isError === true) { this.failure = 'tool_result_invalid'; return; }
-    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    const result = object(content); if (!result || result.isError === true) { this.failure = safeToolError(result); return; }
+    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
     if (pending.name !== startTool) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
@@ -238,9 +238,15 @@ function toolResult(value: Record<string, unknown>): { id: string; content: unkn
   return value.type === 'tool.response' && id && content !== undefined ? { id, content: jsonValue(content) } : undefined;
 }
 function receiptFrom(value: unknown): StartReceipt | undefined { const item = object(value); const candidate = object(item?.structuredContent) ?? item; return candidate?.schemaVersion === 1 && typeof candidate.requestId === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.revision === 'number' && typeof candidate.attentionStopId === 'string' ? candidate as unknown as StartReceipt : undefined; }
-function authorizedOrigin(value: unknown): { path: string; startLine: number; endLine: number } | undefined {
+function authorizedOrigin(value: unknown, requestId: string): { path: string; startLine: number; endLine: number } | undefined {
   const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = finite(start?.line); const endLine = finite(end?.line);
-  return path !== undefined && startLine !== undefined && endLine !== undefined ? { path, startLine, endLine: endLine + 1 } : undefined;
+  const startCharacter = finite(start?.character); const endCharacter = finite(end?.character);
+  return request?.schemaVersion === 1 && request?.requestId === requestId && request?.kind === 'start' && request?.authorizedAction === 'start' && request?.status === 'pending' && path !== undefined && startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined ? { path, startLine, endLine: endCharacter === 0 ? endLine : endLine + 1 } : undefined;
+}
+function safeToolError(value: Record<string, unknown> | undefined): string {
+  const structured = object(value?.structuredContent) ?? value;
+  const code = string(structured?.code);
+  return code === 'path_invalid' || code === 'range_invalid' ? code : 'tool_result_invalid';
 }
 function finite(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
 function eventEnvelope(value: unknown): { sequence: number | undefined; event: unknown } { const record = object(value); const sequence = finite(record?.sequenceNumber ?? record?.sequence_number ?? record?.sequence); return { sequence, event: object(record?.event) ?? value }; }

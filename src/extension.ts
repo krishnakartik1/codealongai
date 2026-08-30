@@ -100,6 +100,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const replyTargetStopIds = new WeakMap<object, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
+  let startPreparation: Promise<{ endpointState: string; session: WalkthroughSession } | undefined> | undefined;
   let retryReplacement: (() => Promise<void>) | undefined;
   let retryReset: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
@@ -279,14 +280,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
-    // Capture once before asynchronous readiness. A second public Ask is a
-    // reference to this pending learner request, never a queued producer turn.
-    if (!current && authority.getPendingStart()) return undefined;
-    const startRequest = current ? undefined : authority.captureStart(origin);
+    // Readiness has no walkthrough authority. Hold only this immutable origin
+    // while it runs; duplicate learner asks share that one preparation.
+    if (!current && startPreparation) return startPreparation;
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
       if (!await daytonaReadyForWalkthrough(commitAuthorizedOrigin)) return undefined;
       const replacement = authority.getPendingReplacement();
-      const request = current ? (replacement ?? authority.captureReplacement(origin)) : startRequest!;
+      const request = current ? (replacement ?? authority.captureReplacement(origin)) : authority.captureStart(origin);
       const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
       try {
       if (current) {
@@ -341,7 +341,12 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         return undefined;
       }
     };
-    return commitAuthorizedOrigin();
+    const operation = commitAuthorizedOrigin();
+    if (!current) {
+      startPreparation = operation;
+      void operation.finally(() => { if (startPreparation === operation) startPreparation = undefined; });
+    }
+    return operation;
   });
   const configureTrueForgeCommand = vscode.commands.registerCommand('codealongai.trueforge.configure', async () => {
     try {

@@ -50,7 +50,10 @@ export class WorkspaceReader {
     if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('range_invalid');
     const requested = normalizeWorkspacePath(candidate);
     this.requireWorkspace();
-    const file = this.classify(await this.source.readFile(requested));
+    let sourceFile: WorkspaceFile;
+    try { sourceFile = await this.source.readFile(requested); }
+    catch { throw new WorkspaceError('path_invalid'); }
+    const file = this.classify(sourceFile);
     if (file.failure) throw new WorkspaceError(file.failure);
     const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
@@ -85,6 +88,7 @@ export class WorkspaceReader {
   }
 
   private classify(file: WorkspaceFile): WorkspaceFile {
+    if (!file || typeof file.path !== 'string' || typeof file.dirty !== 'boolean' || (file.failure === undefined && typeof file.text !== 'string')) throw new WorkspaceError('path_invalid');
     const normalized = { ...file, path: normalizeWorkspacePath(file.path) };
     return (() => {
       if (normalized.failure) return normalized;
