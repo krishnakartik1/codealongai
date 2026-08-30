@@ -20,7 +20,7 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
-import { DaytonaProbeState, producerAgentSpec } from '../trueforge-sdk';
+import { DaytonaProbeState, producerAgentSpec, trueForgeClientOptions } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 import { ReceiptBackedStartCoordinator, StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
@@ -1236,19 +1236,21 @@ suite('bounded workspace context', () => {
 });
 
 suite('receipt-backed start producer turn', () => {
+  test('disables pinned SDK request retries and stream reconnects at client construction', () => {
+    assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
+  });
   test('accepts only a correlated start receipt after matching request authority', () => {
     const reducer = new StartTurnReducer('request-1');
-    reducer.accept({ type: 'model.message', id: 'call-1', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
-    reducer.accept({ type: 'model.message', id: 'call-2', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
-    reducer.accept({ type: 'tool.response', id: 'response-other', threadId: 'main', createdAt: 'now', toolCallId: 'other', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
-    assert.equal(reducer.result, undefined);
+    reducer.accept({ type: 'model.message', id: 'call-1', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    reducer.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }) });
+    reducer.accept({ type: 'model.message', id: 'call-2', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'response-start', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.deepEqual(reducer.result, { status: 'committed', receipt: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } });
   });
 
   test('fails an out-of-order tool call and refuses sandbox command events', () => {
     const reducer = new StartTurnReducer('request-1');
-    reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
+    reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'request_authority_required' });
     const command = new StartTurnReducer('request-1');
     command.accept({ type: 'sandbox.command' });
@@ -1257,9 +1259,10 @@ suite('receipt-backed start producer turn', () => {
 
   test('deduplicates a replayed pinned event by its stable string id', () => {
     const reducer = new StartTurnReducer('request-1');
-    const authority = { type: 'model.message', id: 'replayed-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) } }] };
+    const authority = { type: 'model.message', id: 'replayed-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] };
     reducer.accept(authority); reducer.accept(authority);
-    reducer.accept({ type: 'model.message', id: 'start-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
+    reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }) });
+    reducer.accept({ type: 'model.message', id: 'start-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'start-response', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.equal(reducer.result?.status, 'committed');
   });
@@ -1267,12 +1270,25 @@ suite('receipt-backed start producer turn', () => {
   test('normalizes the pinned deferred MCP call_tool wrapper only for CodeAlongAI', () => {
     const reducer = new StartTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'wrapped-authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_get_walkthrough_request', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
+    reducer.accept({ type: 'tool.response', id: 'wrapped-authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }) });
     reducer.accept({ type: 'model.message', id: 'wrapped-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_start_walkthrough', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
     reducer.accept({ type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.equal(reducer.result?.status, 'committed');
     const foreign = new StartTurnReducer('request-1');
     foreign.accept({ type: 'model.message', id: 'foreign', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'other', tool_name: 'codealongai_get_walkthrough_request', input: '{}' }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
-    assert.equal(foreign.result, undefined);
+    assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool_provenance' });
+  });
+
+  test('requires a successful authority result before bounded origin context', () => {
+    const reducer = new StartTurnReducer('request-1');
+    const call = (id: string, name: string, arguments_: object) => reducer.accept({ type: 'model.message', id, threadId: 'main', createdAt: 'now', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(arguments_) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' });
+    call('too-early', 'codealongai_list_workspace_files', {});
+    assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'result_required' });
+    const malformed = new StartTurnReducer('request-1');
+    malformed.accept({ type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    malformed.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ isError: true }) });
+    assert.deepEqual(malformed.result, { status: 'failed', diagnostic: 'tool_result_invalid' });
   });
 
   test('applies one absolute deadline to stalled create, turn, and stream operations', async () => {

@@ -30,8 +30,7 @@ export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.Agen
 /** Normalizes native and system tool events without trusting their prose. */
 export class StartTurnReducer {
   private readonly seenEvents = new Set<string>();
-  private readonly calls = new Map<string, string>();
-  private readonly earlyResults = new Map<string, unknown>();
+  private pending: { id: string; name: string } | undefined;
   private callsUsed = 0;
   private origin: { path: string; startLine: number; endLine: number } | undefined;
   private receipt: StartReceipt | undefined;
@@ -44,30 +43,38 @@ export class StartTurnReducer {
     if (eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     const type = string(record.type);
     if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
-    if (type === 'model.message') { for (const call of modelToolCalls(record)) { this.acceptCall(call.id, call.name, call.arguments); if (this.failure) return; } return; }
+    if (type === 'model.message') { const calls = modelToolCalls(record); if (calls.length !== 1) { if (Array.isArray(record.toolCalls) && record.toolCalls.length > 0) this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
   }
   public get result(): StartTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
   public fail(diagnostic: string): void { if (!this.receipt) this.failure = diagnostic; }
-  private acceptCall(id: string, name: string, args: Record<string, unknown>): void {
-    if (!id || !name || ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
+  private acceptCall(call: ProducerCall): void {
+    if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
+    const { id, name, arguments: args } = call;
+    if (++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
     if (this.callsUsed === 1 && (name !== 'codealongai_get_walkthrough_request' || args.requestId !== this.requestId)) { this.failure = 'request_authority_required'; return; }
-    if (name === 'codealongai_list_workspace_files' && [...this.calls.values()].includes(name)) { this.failure = 'workspace_list_repeated'; return; }
-    if (name === 'codealongai_search_workspace' && typeof args.query !== 'string') { this.failure = 'search_invalid'; return; }
-    if (name === 'codealongai_read_workspace_file' && this.origin && (args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
+    if (this.callsUsed > 1 && name === 'codealongai_get_walkthrough_request') { this.failure = 'request_authority_required'; return; }
+    if (name === 'codealongai_list_workspace_files' && this.listed) { this.failure = 'workspace_list_repeated'; return; }
+    if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
+    if (name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
     if (name !== startTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
-    if (name === startTool && (args.requestId !== this.requestId || [...this.calls.values()].includes(startTool))) { this.failure = 'transition_invalid'; return; }
-    this.calls.set(id, name);
-    const early = this.earlyResults.get(id); if (early !== undefined) { this.earlyResults.delete(id); this.acceptResult(id, early); }
+    if (name === startTool && (args.requestId !== this.requestId || this.transitioned)) { this.failure = 'transition_invalid'; return; }
+    if (name === 'codealongai_list_workspace_files') this.listed = true;
+    if (name === startTool) this.transitioned = true;
+    this.pending = { id, name };
   }
   private acceptResult(id: string, content: unknown): void {
-    if (!this.calls.has(id)) { this.earlyResults.set(id, content); return; }
-    if (this.calls.get(id) === 'codealongai_get_walkthrough_request') this.origin = authorizedOrigin(content);
-    if (this.calls.get(id) !== startTool) return;
+    if (!this.pending || this.pending.id !== id) { this.failure = 'result_correlation'; return; }
+    const pending = this.pending; this.pending = undefined;
+    const result = object(content); if (!result || result.isError === true) { this.failure = 'tool_result_invalid'; return; }
+    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    if (pending.name !== startTool) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
     this.receipt = receipt;
   }
+  private listed = false;
+  private transitioned = false;
 }
 
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
@@ -130,7 +137,8 @@ export class ReceiptBackedStartCoordinator {
 function object(value: unknown): Record<string, unknown> | undefined { return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined; }
 function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
 function idOf(value: unknown): string | undefined { const item = object(value); return string(object(item?.data)?.id) ?? string(item?.id); }
-function modelToolCalls(value: Record<string, unknown>): readonly { id: string; name: string; arguments: Record<string, unknown> }[] {
+interface ProducerCall { readonly id: string; readonly name: string; readonly arguments: Record<string, unknown>; readonly provenance: boolean; }
+function modelToolCalls(value: Record<string, unknown>): readonly ProducerCall[] {
   const calls = Array.isArray(value.toolCalls) ? value.toolCalls : [];
   return calls.flatMap((call) => {
     const item = object(call); const functionCall = object(item?.function); const id = string(item?.id); const name = string(functionCall?.name); const args = jsonObject(functionCall?.arguments);
@@ -139,9 +147,10 @@ function modelToolCalls(value: Record<string, unknown>): readonly { id: string; 
     // payload names the underlying MCP tool and has no independent authority.
     if (name === 'call_tool' && object(item?.toolInfo)?.type === 'truefoundry-system') {
       const server = string(args.mcp_server); const nestedName = string(args.tool_name); const nestedArgs = jsonObject(args.input);
-      return server === 'codealongai-mcp' && nestedName && nestedArgs ? [{ id, name: nestedName, arguments: nestedArgs }] : [];
+      return nestedName && nestedArgs ? [{ id, name: nestedName, arguments: nestedArgs, provenance: server === 'codealongai-mcp' }] : [];
     }
-    return [{ id, name, arguments: args }];
+    const toolInfo = object(item?.toolInfo);
+    return [{ id, name, arguments: args, provenance: toolInfo?.type === 'mcp' && toolInfo.serverName === 'codealongai-mcp' }];
   });
 }
 function toolResult(value: Record<string, unknown>): { id: string; content: unknown } | undefined {

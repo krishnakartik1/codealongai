@@ -5,7 +5,7 @@ import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
 export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readonly client: TrueForgeSdkClient;
-  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge({ baseUrl: url }) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState(), private readonly terminalTimer: TerminalTimer = systemTerminalTimer) { this.client = createClient(baseUrl); }
+  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge(trueForgeClientOptions(url)) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState(), private readonly terminalTimer: TerminalTimer = systemTerminalTimer) { this.client = createClient(baseUrl); }
   public discoverConfiguration(): Promise<unknown> { return this.readConfiguration(); }
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
@@ -117,6 +117,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private async upsertCodeAlongAiConnector(manifest: Record<string, unknown>): Promise<void> { if (!this.client.settings.mcpServers?.createOrUpdate) throw new Error('CodeAlongAI connector upsert is unavailable'); await this.client.settings.mcpServers.createOrUpdate({ manifest }); }
   private async listCodeAlongAiMcpTools(): Promise<unknown> { if (!this.client.mcpServers?.listTools) throw new Error('CodeAlongAI MCP discovery is unavailable'); return this.client.mcpServers.listTools('codealongai-mcp'); }
 }
+
+/** Producer turns own their retry policy; the pinned client must never replay them. */
+export function trueForgeClientOptions(baseUrl: string): TrueForge.Options { return { baseUrl, maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } }; }
 
 /** Opaque lifecycle-only state shared by replacement SDK adapters. */
 export interface DaytonaProbeStateStore { read(): Promise<{ readonly sessionId: string; readonly result: DaytonaProbeResult } | undefined>; write(value: { readonly sessionId: string; readonly result: DaytonaProbeResult } | undefined): Promise<void>; }
