@@ -60,6 +60,10 @@ async function eventually<T>(read: () => T | undefined, message: string): Promis
   }
   throw new Error(message);
 }
+function waitForAbort(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }));
+}
 
 async function withMcpEnabled<T>(api: WalkthroughTestApi, run: () => Promise<T>): Promise<T> {
   const configuration = vscode.workspace.getConfiguration('codealongai.mcp');
@@ -1555,7 +1559,7 @@ suite('receipt-backed start producer turn', () => {
     let cancelCalls = 0;
     const pending = new Promise<never>(() => undefined);
     let started: (() => void) | undefined; const startedSession = new Promise<void>((resolve) => { started = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { started!(); return { id: 'session' }; }, runTurn: async () => ({ id: 'turn' }), events: async function* () { await pending; }, cancelTurn: async () => { cancelCalls += 1; } };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { started!(); return { id: 'session' }; }, runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { await Promise.race([pending, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { cancelCalls += 1; } };
     const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
     assert.equal(owner.start(runtime, input), owner.start(runtime, input));
     assert.deepEqual(await owner.start(runtime, { ...input, requestId: 'request-2' }), { status: 'failed', diagnostic: 'start_busy' });
@@ -1607,7 +1611,7 @@ suite('receipt-backed start producer turn', () => {
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
     let resolveCancel: (() => void) | undefined;
     const nativeCancel = new Promise<void>((resolve) => { resolveCancel = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await never; }, cancelTurn: async () => { calls.push('cancel'); await nativeCancel; }, deleteSession: async () => { calls.push('delete'); } };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await Promise.race([never, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { calls.push('cancel'); await nativeCancel; }, deleteSession: async () => { calls.push('delete'); } };
     const owner = new StartTurnOwner();
     owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => owner.activeRequestId === 'request-1' ? true : undefined, 'the owner should retain the active turn');
@@ -1628,7 +1632,7 @@ suite('receipt-backed start producer turn', () => {
     const calls: string[] = [];
     let releaseCancel: (() => void) | undefined; const cancelHeld = new Promise<void>((resolve) => { releaseCancel = resolve; });
     let enteredCancel: (() => void) | undefined; const cancelEntered = new Promise<void>((resolve) => { enteredCancel = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { await new Promise<never>(() => undefined); }, cancelTurn: async (_id, options) => { calls.push(`cancel:${String(options?.abortSignal?.aborted)}`); enteredCancel!(); await cancelHeld; }, deleteSession: async (_id, options) => { calls.push(`delete:${String(options?.abortSignal?.aborted)}`); } };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { await waitForAbort(options?.abortSignal); }, cancelTurn: async (_id, options) => { calls.push(`cancel:${String(options?.abortSignal?.aborted)}`); enteredCancel!(); await cancelHeld; }, deleteSession: async (_id, options) => { calls.push(`delete:${String(options?.abortSignal?.aborted)}`); } };
     const operation = new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 100).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await cancelEntered;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1638,7 +1642,7 @@ suite('receipt-backed start producer turn', () => {
   });
   test('passes the configured teardown timeout and one signal to cancel and delete', async () => {
     const options: { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number }[] = [];
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { await new Promise<never>(() => undefined); }, cancelTurn: async (_id, requestOptions) => { options.push(requestOptions ?? {}); }, deleteSession: async (_id, requestOptions) => { options.push(requestOptions ?? {}); } };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, requestOptions) { await waitForAbort(requestOptions?.abortSignal); }, cancelTurn: async (_id, requestOptions) => { options.push(requestOptions ?? {}); }, deleteSession: async (_id, requestOptions) => { options.push(requestOptions ?? {}); } };
     await new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 123).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     assert.equal(options.length, 2);
     assert.equal(options[0].timeoutInSeconds, 0.123);
@@ -1649,7 +1653,7 @@ suite('receipt-backed start producer turn', () => {
   test('aborts a stalled native cancellation before owner disposal releases runtime shutdown', async () => {
     const calls: string[] = [];
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await new Promise<never>(() => undefined); }, cancelTurn: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('cancel'); options?.abortSignal?.addEventListener('abort', () => { calls.push('cancel-aborted'); reject(new Error('aborted')); }, { once: true }); }), deleteSession: async () => { calls.push('delete'); } };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await waitForAbort(options?.abortSignal); }, cancelTurn: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('cancel'); options?.abortSignal?.addEventListener('abort', () => { calls.push('cancel-aborted'); reject(new Error('aborted')); }, { once: true }); }), deleteSession: async () => { calls.push('delete'); } };
     const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await enteredEvents;
@@ -1662,7 +1666,7 @@ suite('receipt-backed start producer turn', () => {
   test('aborts a stalled deletion before owner disposal releases runtime shutdown', async () => {
     const calls: string[] = [];
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await new Promise<never>(() => undefined); }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('delete'); options?.abortSignal?.addEventListener('abort', () => { calls.push('delete-aborted'); reject(new Error('aborted')); }, { once: true }); }) };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await waitForAbort(options?.abortSignal); }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('delete'); options?.abortSignal?.addEventListener('abort', () => { calls.push('delete-aborted'); reject(new Error('aborted')); }, { once: true }); }) };
     const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await enteredEvents;
@@ -1751,7 +1755,7 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ runTurn: async () => never, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(cleanup, ['cancel', 'delete']);
     cleanup.length = 0;
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ events: async function* () { await never; }, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ events: async function* (_s, _t, _after, options) { await Promise.race([never, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(cleanup, ['cancel', 'delete']);
   });
 

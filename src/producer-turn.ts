@@ -142,13 +142,14 @@ export class ReceiptBackedStartCoordinator {
             this.activeSessionId = sessionId;
           }
         }
+        if (!session.cancelled) this.abort.abort();
         return { status: 'failed', diagnostic: session.cancelled ? 'cancelled' : 'deadline_exceeded' };
       }
       sessionId = idOf(session.value); this.activeSessionId = sessionId;
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
       const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `start\n${input.requestId}` }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
-      if (!turn.completed) return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' };
+      if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId, input.acceptReceipt);
@@ -164,14 +165,14 @@ export class ReceiptBackedStartCoordinator {
         try { while (true) {
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           const remaining = deadline - Date.now();
-          if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+          if (remaining <= 0) { this.abort.abort(); return { status: 'failed', diagnostic: 'deadline_exceeded' }; }
           const eventDeadline = receipt ? deadline : reconciliationCutoff ?? deadline;
           const next = await (receiptGrace ? Promise.race([beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })), receiptGrace.then((value) => ({ kind: 'grace' as const, value }))]) : beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })));
           if (next.kind === 'grace') {
-            if (!next.value.completed) return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' };
+            if (!next.value.completed) { if (!next.value.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
             return receipt!;
           }
-          if (!next.value.completed) return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' };
+          if (!next.value.completed) { if (!next.value.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
           // Cancellation may have arrived while the native iterator was
           // blocked. Do not let its subsequently delivered receipt commit.
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
@@ -185,7 +186,13 @@ export class ReceiptBackedStartCoordinator {
           const terminal = terminalState(envelope.event);
           if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
-        } } finally { await iterator.return?.().catch(() => undefined); }
+        } } finally {
+          // An async generator already blocked in a native read may never
+          // observe return(). Start its one cancellation first, request the
+          // close, and wait only for the bounded teardown lease.
+          const teardown = this.beginTeardown(sessionId);
+          if (iterator.return) await untilTeardown(iterator.return().catch(() => undefined), teardown.controller.signal);
+        }
         const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') { receipt = result; publish(receipt); }
         // The stream may have ended between persisted events. Reconcile once
         // before the one permitted cursor-resubscription.
@@ -193,7 +200,7 @@ export class ReceiptBackedStartCoordinator {
           reconciliationCutoff ??= Math.min(deadline, Date.now() + 5_000);
           const reconciliationDeadline = reconciliationCutoff;
           const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId, requestOptions(this.abort.signal, reconciliationDeadline)).catch(() => []), reconciliationDeadline, this.cancelledSignal);
-          if (!persisted.completed) return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'deadline_exceeded' };
+          if (!persisted.completed) { if (!persisted.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
           // Persisted history is authoritative for causality, not merely a
           // cursor continuation: it can contain a call missed before a live
           // response with a higher sequence. Stable event ids make replay safe.
@@ -212,7 +219,7 @@ export class ReceiptBackedStartCoordinator {
       }
       if (receipt) {
         const grace = await receiptGrace!;
-        if (!grace.completed) return { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
+        if (!grace.completed) { if (!grace.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
         if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
         return receipt;
       }
@@ -221,7 +228,7 @@ export class ReceiptBackedStartCoordinator {
       // three-minute operation deadline.
       const reconciliationDeadline = reconciliationCutoff ?? Math.min(deadline, Date.now() + 5_000);
       const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId, requestOptions(this.abort.signal, reconciliationDeadline)).catch(() => []), reconciliationDeadline, this.cancelledSignal);
-      if (!persisted.completed) return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'missing_receipt' };
+      if (!persisted.completed) { if (!persisted.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'missing_receipt' }; }
       for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
         const envelope = eventEnvelope(event);
         if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); }
