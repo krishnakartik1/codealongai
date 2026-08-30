@@ -85,7 +85,7 @@ export class LoopbackMcpEndpoint {
     }, async (input: { schemaVersion: 1; query: string; cursor?: string }) => this.workspaceResult(async () => {
       const after = decodeCursor(input.cursor, 'search', input.query);
       const matches = await this.workspace.search(input.query, after);
-      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`);
+      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`, 20);
     }));
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
@@ -266,12 +266,12 @@ export class LoopbackMcpEndpoint {
   }
 }
 
-function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item)): { paths?: T[]; matches?: T[]; nextCursor?: string } {
+function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item), pageSize = 200): { paths?: T[]; matches?: T[]; nextCursor?: string } {
   const after = decodeCursor(cursor, tool, query);
   const start = after === undefined ? 0 : items.findIndex((item) => key(item) > after);
-  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + 200);
+  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + pageSize);
   const response = tool === 'list' ? { paths: page } : { matches: page };
-  if (page.length === 200 && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
+  if (page.length === pageSize && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
   return response;
 }
 
