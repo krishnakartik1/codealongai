@@ -463,6 +463,75 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('Reset clears an obsolete failed-question retry before a later public question', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeWarning = notificationWindow.showWarningMessage; const nativeError = errorWindow.showErrorMessage;
+      let questionFailures = 0;
+      notificationWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      errorWindow.showErrorMessage = (async (message: string) => { if (message === 'CodeAlongAI could not answer the question.') questionFailures += 1; return undefined; }) as unknown as typeof vscode.window.showErrorMessage;
+      try {
+        if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the prior walkthrough should reset'); }
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const first = await eventually(() => api.session, 'Ask should create the first walkthrough');
+        const firstTarget = await eventually(() => api.replyTargetAt(first.attentionStopId), 'the first walkthrough should accept a question');
+        commandRuntime.producerEventError = new Error('provider failure');
+        await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: firstTarget, text: 'This retry must become obsolete.' });
+        await eventually(() => questionFailures === 1 ? true : undefined, 'the failed question should install its retry capability');
+        await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+        await eventually(() => api.session === undefined ? true : undefined, 'Reset should revoke the failed question authority');
+        commandRuntime.producerEventError = undefined;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const second = await eventually(() => api.session, 'Ask should create a fresh walkthrough after Reset');
+        const secondTarget = await eventually(() => api.replyTargetAt(second.attentionStopId), 'the fresh walkthrough should accept a new question');
+        const callsBeforeQuestion = commandRuntime.producerTurnCalls.length;
+        await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: secondTarget, text: 'This must use fresh authority.' });
+        await eventually(() => commandRuntime.producerTurnCalls.length === callsBeforeQuestion + 3 ? true : undefined, 'the later public question should start a new producer turn');
+      } finally { commandRuntime.producerEventError = undefined; notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; }
+    }));
+  });
+
+  test('drops a selected replacement retry that becomes stale during deferred readiness', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const quickPickWindow = vscode.window as unknown as { showQuickPick: typeof vscode.window.showQuickPick };
+      const nativeWarning = notificationWindow.showWarningMessage; const nativeError = errorWindow.showErrorMessage; const nativeQuickPick = quickPickWindow.showQuickPick;
+      const warnings: string[] = [];
+      let chooseRetry: ((action: string) => void) | undefined; let releaseReadiness: ((action: string | undefined) => void) | undefined;
+      notificationWindow.showWarningMessage = (async (message: string) => { warnings.push(message); return message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined; }) as typeof vscode.window.showWarningMessage;
+      errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => message === 'CodeAlongAI could not replace the walkthrough. Your current walkthrough is unchanged.' ? new Promise<string>((resolve) => { chooseRetry = resolve; }) : Promise.resolve(undefined)) as unknown as typeof vscode.window.showErrorMessage;
+      quickPickWindow.showQuickPick = (async () => ({ stopId: 'checkout-origin' })) as unknown as typeof vscode.window.showQuickPick;
+      try {
+        if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the prior walkthrough should reset'); }
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => api.session, 'Ask should create a walkthrough to replace');
+        commandRuntime.producerEventError = new Error('provider failure');
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => chooseRetry, 'the failed replacement should offer Retry replacement');
+        commandRuntime.producerEventError = undefined;
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
+        setReadinessActionSelectorForTests(async () => new Promise((resolve) => { releaseReadiness = resolve; }));
+        chooseRetry!('Retry replacement');
+        await eventually(() => releaseReadiness, 'selected Retry replacement should enter readiness');
+        await vscode.commands.executeCommand('codealongai.walkthrough.destinations');
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        releaseReadiness!('Retry Setup');
+        await eventually(() => warnings.some((message) => message.startsWith('That replacement is no longer current.')) ? true : undefined, 'stale deferred readiness should require a fresh confirmation');
+        assert.equal(api.hasPendingWalkthroughRequest, false);
+      } finally { commandRuntime.producerEventError = undefined; commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' }; setReadinessActionSelectorForTests(undefined); notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; quickPickWindow.showQuickPick = nativeQuickPick; }
+    }));
+  });
+
   test('does not queue duplicate public Asks and cancellation keeps the request pending', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
