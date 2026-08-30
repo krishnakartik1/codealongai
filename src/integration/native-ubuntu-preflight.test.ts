@@ -10,6 +10,7 @@ import { terminateOwnedSidecar } from '../trueforge-native';
 import { TrueForgeSidecar } from '../trueforge';
 import { emptyTrueForgeProducer } from '../test/trueforge-runtime-double';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const ready = { enabled: true, ubuntuX64: true, nodeVersion: 'v22.14.0', buildCommit: '1'.repeat(40), trueforgeVersion: '0.1.4', sdkVersion: '0.1.3', mcpServerVersion: '2.0.0', dataPath: '/operator/trueforge', model: 'openai/example', reasoningEffort: 'medium', reply: 'operator input' };
 test('native acceptance preflight distinguishes skips, external blocks, and ready execution', () => {
@@ -71,4 +72,8 @@ test('one owned acceptance crash restarts through the public sidecar without a p
 test('TrueForge package metadata is reachable from its supported CLI seed', () => {
   const requireFromRoot = createRequire(`${process.cwd()}/package.json`); let directory = path.dirname(requireFromRoot.resolve('@truefoundry/trueforge/dist/cli.js'));
   while (true) { try { const manifest = require(`${directory}/package.json`) as { name?: string; version?: string }; if (manifest.name === '@truefoundry/trueforge') { assert.equal(manifest.version, '0.1.4'); return; } } catch {} const parent = path.dirname(directory); assert.notEqual(parent, directory); directory = parent; }
+});
+test('file URL roots preserve spaces and escaped checkout characters', () => {
+  const root = fileURLToPath(new URL('file:///tmp/codealongai%20checkout%20%23native/'));
+  assert.equal(root, '/tmp/codealongai checkout #native/');
 });
