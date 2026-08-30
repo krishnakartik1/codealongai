@@ -48,8 +48,8 @@ test('public capability parsing retains only an exact server version', () => {
   assert.deepEqual(trueForgeCapabilitySummary(200, '{"version":"not-a-version"}'), { available: true, version: undefined });
   assert.deepEqual(trueForgeCapabilitySummary(500, '{}'), { available: false, version: undefined });
 });
-test('readiness evidence requires Daytona, build-pinned skill, connector, ownership, and cleanup', () => {
-  const commit = '2'.repeat(40); const facts = { provider: 'daytona' as const, phases: ['snapshots', 'sandboxes', 'ready'], skillCommit: commit, connectorDiscovered: true, ownership: true, probeCleaned: true };
+test('configuration evidence requires build-pinned skill, connector, and ownership', () => {
+  const commit = '2'.repeat(40); const facts = { skillCommit: commit, connectorDiscovered: true, ownership: true };
   assert.equal(validNativeReadinessFacts(facts, commit), true);
   assert.equal(validNativeReadinessFacts({ ...facts, connectorDiscovered: false }, commit), false);
 });
