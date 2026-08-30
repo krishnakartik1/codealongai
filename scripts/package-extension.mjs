@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -17,6 +18,28 @@ metadata.codealongai = { ...(metadata.codealongai ?? {}), buildCommit: requested
 const root = new URL('..', import.meta.url).pathname;
 const out = join(root, 'out');
 const packagedOut = join(root, '.package-out');
+const runtimePackages = ['@truefoundry/trueforge', '@truefoundry/trueforge-sdk', '@modelcontextprotocol/server', '@modelcontextprotocol/node', 'zod'];
+const requireFromRoot = createRequire(join(root, 'package.json'));
+async function runtimeClosure() {
+  const seen = new Set();
+  const manifestFor = async (name, resolver) => {
+    let directory = resolver;
+    while (true) {
+      const candidate = join(directory, 'node_modules', name);
+      try { const metadata = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8')); if (metadata.name === name) return { directory: candidate, metadata }; }
+      catch { /* Continue to the package root. */ }
+      const parent = dirname(directory); if (parent === directory) throw new Error(`Cannot resolve package metadata for ${name}.`); directory = parent;
+    }
+  };
+  const visit = async (name, resolver) => {
+    const { directory, metadata } = await manifestFor(name, resolver);
+    if (seen.has(directory)) return;
+    seen.add(directory);
+    for (const dependency of Object.keys({ ...(metadata.dependencies ?? {}), ...(metadata.optionalDependencies ?? {}) })) await visit(dependency, directory);
+  };
+  for (const name of runtimePackages) await visit(name, root);
+  return [...seen];
+}
 try {
   // The build directory is generated and explicitly scoped; source is never cleaned.
   await rm(out, { recursive: true, force: true });
@@ -29,8 +52,8 @@ try {
   const staging = await mkdtemp(join(tmpdir(), 'codealongai-vsix-dependencies-'));
   try {
     await mkdir(join(staging, 'extension', 'node_modules'), { recursive: true });
-    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
-    for (const entry of Object.keys(lock.packages ?? {}).filter((value) => value.startsWith('node_modules/') && lock.packages?.[value]?.dev !== true)) await cp(join(root, entry), join(staging, 'extension', entry), { recursive: true });
+    const dependencyRoot = join(root, 'node_modules');
+    for (const directory of await runtimeClosure()) await cp(directory, join(staging, 'extension', 'node_modules', relative(dependencyRoot, directory)), { recursive: true });
     await run('zip', ['-q', '-r', join(root, 'codealongai.vsix'), 'extension/node_modules'], { cwd: staging });
   } finally { await rm(staging, { recursive: true, force: true }); }
 } finally {

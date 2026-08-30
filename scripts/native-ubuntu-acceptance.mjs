@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { runTests } from '@vscode/test-electron';
 import { nativeUbuntuPreflight, safeNativeEvidence } from '../out/acceptance/native-ubuntu-preflight.js';
@@ -34,7 +35,9 @@ try {
   await writeFile(join(profile, 'User', 'settings.json'), `${JSON.stringify({ 'codealongai.mcp.enabled': true, 'codealongai.trueforge.dataPath': input.dataPath, 'codealongai.trueforge.model': input.model, 'codealongai.trueforge.reasoningEffort': input.reasoningEffort })}\n`);
   await run('npm', ['run', 'package'], { cwd: root });
   await run('unzip', ['-q', join(root, 'codealongai.vsix'), '-d', join(temporary, 'vsix')]);
-  const code = await runTests({ extensionDevelopmentPath: join(temporary, 'vsix', 'extension'), extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1', CODEALONGAI_NATIVE_ACCEPTANCE_OBSERVATION: observation }, stdout: sink, stderr: sink });
+  const extensionPath = join(temporary, 'vsix', 'extension'); const packagedRequire = createRequire(join(extensionPath, 'package.json'));
+  for (const [name, version] of [['@truefoundry/trueforge', '0.1.4'], ['@truefoundry/trueforge-sdk', '0.1.3'], ['@modelcontextprotocol/server', '2.0.0'], ['@modelcontextprotocol/node', '2.0.0'], ['zod', '4.1.5']]) { const manifest = JSON.parse(await readFile(packagedRequire.resolve(`${name}/package.json`), 'utf8')); if (manifest.version !== version) throw new Error('packaged dependency mismatch'); }
+  const code = await runTests({ extensionDevelopmentPath: extensionPath, extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1', CODEALONGAI_NATIVE_ACCEPTANCE_BUILD_COMMIT: buildCommit, CODEALONGAI_NATIVE_ACCEPTANCE_OBSERVATION: observation }, stdout: sink, stderr: sink });
   if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0 || observed.turns?.length !== 2) throw new Error('incomplete observation'); result = 'PASS'; }
 } catch { result = 'FAIL'; }
 try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
