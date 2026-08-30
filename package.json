@@ -136,7 +136,8 @@
     "package": "node scripts/package-extension.mjs",
     "test:integration": "npm run build && node --test out/integration/trueforge.integration.test.js",
     "test": "npm run test:integration && vscode-test",
-    "test:headless": "npm run test:integration && xvfb-run -a vscode-test"
+    "test:headless": "npm run test:integration && xvfb-run -a vscode-test",
+    "test:native-ubuntu-acceptance": "npm run build && node scripts/native-ubuntu-acceptance.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
