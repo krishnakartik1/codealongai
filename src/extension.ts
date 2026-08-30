@@ -334,6 +334,14 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return { endpointState, session };
     } catch (error) {
       if (current) {
+        const pending = authority.getPendingReplacement();
+        const active = authority.getSession();
+        if (!pending || pending.id !== request.id || !active || active.id !== pending.expectedSessionId || active.revision !== pending.expectedRevision) {
+          authority.discardReplacement(request.id);
+          retryReplacement = undefined;
+          void vscode.window.showWarningMessage('That replacement is no longer current. Start a new walkthrough again to confirm a replacement.');
+          return undefined;
+        }
         retryReplacement = async () => {
           try {
             await startTurnOwner.settled?.catch(() => undefined);

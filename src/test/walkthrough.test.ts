@@ -430,6 +430,39 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('drops a stale failed replacement before offering any retry action', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const quickPickWindow = vscode.window as unknown as { showQuickPick: typeof vscode.window.showQuickPick };
+      const nativeWarning = notificationWindow.showWarningMessage; const nativeError = errorWindow.showErrorMessage;
+      const nativeQuickPick = quickPickWindow.showQuickPick;
+      const warnings: string[] = []; const errors: { message: string; actions: readonly string[] }[] = [];
+      let release: (() => void) | undefined;
+      notificationWindow.showWarningMessage = (async (message: string) => { warnings.push(message); return message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined; }) as typeof vscode.window.showWarningMessage;
+      errorWindow.showErrorMessage = (async (message: string, ...actions: string[]) => { errors.push({ message, actions }); return undefined; }) as unknown as typeof vscode.window.showErrorMessage;
+      quickPickWindow.showQuickPick = (async () => ({ stopId: 'checkout-origin' })) as unknown as typeof vscode.window.showQuickPick;
+      try {
+        if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the prior walkthrough should reset'); }
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => api.session, 'Ask should create the walkthrough');
+        commandRuntime.producerEventWait = new Promise<void>((resolve) => { release = resolve; });
+        const callsBeforeReplacement = commandRuntime.producerTurnCalls.length;
+        const replacement = vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => commandRuntime.producerTurnCalls.length === callsBeforeReplacement + 3 ? true : undefined, 'the replacement turn should be in flight');
+        await vscode.commands.executeCommand('codealongai.walkthrough.destinations');
+        release!(); await replacement;
+        await eventually(() => warnings.some((message) => message.startsWith('That replacement is no longer current.')) ? true : undefined, 'stale replacement should require a new confirmation');
+        assert.equal(errors.some((error) => error.actions.includes('Retry replacement')), false);
+        assert.equal(api.hasPendingWalkthroughRequest, false);
+      } finally { release?.(); commandRuntime.producerEventWait = undefined; notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; quickPickWindow.showQuickPick = nativeQuickPick; }
+    }));
+  });
+
   test('does not queue duplicate public Asks and cancellation keeps the request pending', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
