@@ -982,11 +982,11 @@ suite('producer readiness', () => {
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
-        skills: { createOrUpdate: async (request) => { calls.push(request); return {}; }, list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: '1111111111111111111111111111111111111111', path: 'skills/codealongai' } }] }) },
-        mcpServers: { createOrUpdate: async (request) => { calls.push(request); return {}; } }
+        skills: { sentinel: 'skill', async createOrUpdate(request) { assert.equal((this as unknown as { sentinel: string }).sentinel, 'skill'); calls.push(request); return {}; }, list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: '1111111111111111111111111111111111111111', path: 'skills/codealongai' } }] }) },
+        mcpServers: { sentinel: 'connector', async createOrUpdate(request) { assert.equal((this as unknown as { sentinel: string }).sentinel, 'connector'); calls.push(request); return {}; } }
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
-      mcpServers: { listTools: async () => catalog },
+      mcpServers: { sentinel: 'catalog', async listTools() { assert.equal((this as unknown as { sentinel: string }).sentinel, 'catalog'); return catalog; } },
       sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'safe-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] } }; })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
     }));
     assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready' });
