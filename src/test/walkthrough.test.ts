@@ -1721,7 +1721,7 @@ suite('receipt-backed start producer turn', () => {
     const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as unknown as Record<string, unknown>;
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
     assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).fileDownloads, false);
-    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['@all'], requireApprovalForTools: [] }]);
+    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], requireApprovalForTools: [] }]);
     assert.equal(JSON.stringify(spec).includes('url'), false);
   });
 
@@ -1737,7 +1737,7 @@ suite('receipt-backed start producer turn', () => {
     try {
       await new TrueForge({ baseUrl: `http://127.0.0.1:${address.port}` }).sessions.create({ agent: { spec: startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
       assert.equal(received.url, '/api/v1/sessions');
-      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['@all'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 8 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
+      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 8 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
 });

@@ -14,6 +14,7 @@ export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: s
 
 const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
 const startTool = 'codealongai_start_walkthrough';
+const permittedTools = [...allowedReads, startTool];
 
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
@@ -21,7 +22,7 @@ export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.Agen
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', enableTools: ['@all'], requireApprovalForTools: [] }],
+    mcpServers: [{ name: 'codealongai-mcp', enableTools: permittedTools, requireApprovalForTools: [] }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 8 },
     instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
@@ -43,8 +44,8 @@ export class StartTurnReducer {
     const eventId = string(record.id);
     if (eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     const type = string(record.type);
-    if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
-    if (type === 'model.message') { const calls = modelToolCalls(record); if (calls.length !== 1) { if (Array.isArray(record.toolCalls) && record.toolCalls.length > 0) this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
+    if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
+    if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
   }
   public get result(): StartTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
@@ -52,7 +53,7 @@ export class StartTurnReducer {
   private acceptCall(call: ProducerCall): void {
     if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
     const { id, name, arguments: args } = call;
-    if (++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
+    if (name !== startTool && ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
     if (this.callsUsed === 1 && (name !== 'codealongai_get_walkthrough_request' || args.requestId !== this.requestId)) { this.failure = 'request_authority_required'; return; }
     if (this.callsUsed > 1 && name === 'codealongai_get_walkthrough_request') { this.failure = 'request_authority_required'; return; }
     if (name === 'codealongai_list_workspace_files' && this.listed) { this.failure = 'workspace_list_repeated'; return; }
