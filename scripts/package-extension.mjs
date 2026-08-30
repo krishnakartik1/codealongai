@@ -3,9 +3,11 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
+const root = fileURLToPath(new URL('..', import.meta.url));
 const packageUrl = new URL('../package.json', import.meta.url);
 const original = await readFile(packageUrl, 'utf8');
 const { stdout } = await run('git', ['rev-parse', 'HEAD']);
@@ -15,7 +17,6 @@ if (!/^[0-9a-f]{40}$/i.test(requested) || requested !== head) throw new Error('P
 
 const metadata = JSON.parse(original);
 metadata.codealongai = { ...(metadata.codealongai ?? {}), buildCommit: requested };
-const root = new URL('..', import.meta.url).pathname;
 const out = join(root, 'out');
 const packagedOut = join(root, '.package-out');
 const runtimePackages = ['@truefoundry/trueforge', '@truefoundry/trueforge-sdk', '@modelcontextprotocol/server', '@modelcontextprotocol/node', 'zod'];
