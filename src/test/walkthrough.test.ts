@@ -1990,6 +1990,31 @@ suite('receipt-backed start producer turn', () => {
     calls.push('runtime-shutdown');
     assert.deepEqual(calls, ['cancel', 'runtime-shutdown-attempt', 'delete', 'runtime-shutdown']);
   });
+  test('rejects a new turn once disposal begins while retained cleanup is pending', async () => {
+    let releaseCancel: (() => void) | undefined; const nativeCancel = new Promise<void>((resolve) => { releaseCancel = resolve; });
+    let lateSessions = 0;
+    const call = (id: string, name: string, args: object) => ({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    const response = (id: string, content: object) => ({ type: 'tool.response', id: `response-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(content) });
+    const activeRuntime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'active-session' }), runTurn: async () => ({ id: 'active-turn' }), events: async function* (_s, _t, _after, options) {
+      yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' });
+      yield response('authority', { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } });
+      yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 });
+      yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } });
+      yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' });
+      yield response('start', { schemaVersion: 1, requestId: 'request-1', sessionId: 'walkthrough', revision: 1, attentionStopId: 'origin' });
+      await waitForAbort(options?.abortSignal);
+    }, cancelTurn: async () => { await nativeCancel; }, deleteSession: async () => undefined };
+    const lateRuntime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { lateSessions += 1; return { id: 'late-session' }; }, runTurn: async () => ({ id: 'late-turn' }), events: async function* () { yield { type: 'turn.done', state: { status: 'done' } }; } };
+    const owner = new ProducerTurnOwner();
+    assert.equal((await owner.start(activeRuntime, { requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } })).status, 'committed');
+    const disposing = owner.dispose();
+    const late = owner.start(lateRuntime, { requestId: 'request-2', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(lateSessions, 0, 'a start admitted after disposal begins could escape the cleanup snapshot.');
+      assert.deepEqual(await late, { status: 'failed', diagnostic: 'start_busy' });
+    } finally { releaseCancel!(); await Promise.allSettled([disposing, late]); }
+  });
   test('uses a teardown window after the request deadline before deleting', async () => {
     const calls: string[] = [];
     let releaseCancel: (() => void) | undefined; const cancelHeld = new Promise<void>((resolve) => { releaseCancel = resolve; });

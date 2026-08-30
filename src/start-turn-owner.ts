@@ -5,8 +5,10 @@ import { ReceiptBackedProducerCoordinator, type ProducerTurnInput, type Producer
 export class ProducerTurnOwner {
   private active: { readonly requestId: string; readonly coordinator: ReceiptBackedProducerCoordinator; readonly operation: Promise<ProducerTurnResult> } | undefined;
   private readonly retained = new Set<{ readonly coordinator: ReceiptBackedProducerCoordinator; readonly cleanup: Promise<ProducerTurnResult> }>();
+  private disposing = false;
   public constructor(private readonly createCoordinator: (runtime: TrueForgeProducerRuntime) => ReceiptBackedProducerCoordinator = (runtime) => new ReceiptBackedProducerCoordinator(runtime)) {}
   public start(runtime: TrueForgeProducerRuntime, input: ProducerTurnInput): Promise<ProducerTurnResult> {
+    if (this.disposing) return Promise.resolve({ status: 'failed', diagnostic: 'start_busy' });
     if (this.active) return this.active.requestId === input.requestId ? this.active.operation : Promise.resolve({ status: 'failed', diagnostic: 'start_busy' });
     const coordinator = this.createCoordinator(runtime);
     const operation = coordinator.start(input);
@@ -33,6 +35,7 @@ export class ProducerTurnOwner {
   public async cancel(): Promise<void> { this.active?.coordinator.cancel(); }
   /** Shutdown waits for the coordinator's bounded cancellation and cleanup. */
   public async dispose(): Promise<void> {
+    this.disposing = true;
     const retained = [...this.retained];
     retained.forEach(({ coordinator }) => coordinator.cancel());
     await Promise.all(retained.map(({ cleanup }) => cleanup));
