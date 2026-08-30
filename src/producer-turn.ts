@@ -13,6 +13,7 @@ export interface StartTurnInput {
    * coordinators may omit it. */
   readonly acceptReceipt?: (receipt: StartReceipt) => boolean;
   readonly rollbackTentativeStart?: () => void;
+  readonly rollbackTentativeQuestion?: () => void;
 }
 
 export type StartTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
@@ -286,7 +287,7 @@ export class ReceiptBackedStartCoordinator {
       // The MCP command may have committed just before a lost response,
       // cancellation, or malformed receipt. The authority itself decides
       // whether this request still owns a tentative session.
-      if (input.kind !== 'question') input.rollbackTentativeStart?.();
+      if (input.kind === 'question') input.rollbackTentativeQuestion?.(); else input.rollbackTentativeStart?.();
       this.activeSessionId = undefined;
       if (sessionId) {
         // A session is never deleted while its one native cancellation is in

@@ -405,7 +405,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {
         const cancellation = token.onCancellationRequested(() => { void questionTurnOwner.cancel(); });
-        try { return await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }); }
+        try { return await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); } }); }
         finally { cancellation.dispose(); }
       });
       if (result.status !== 'committed') throw new Error(result.diagnostic);
