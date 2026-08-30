@@ -43,6 +43,12 @@ const providerDiagnostic = (value: unknown): string => {
   return cause === undefined ? value.message : `${value.message}: ${providerDiagnostic(cause)}`;
 };
 
+const producerTurnMessage = (input: ProducerTurnInput): string => {
+  if (input.kind === 'question') return `A CodeAlongAI user asked a follow-up question in the editor. Retrieve the authorized question request with ID "${input.requestId}" using CodeAlongAI MCP, answer exactly that request, commit the matching question outcome, and stop at its receipt.`;
+  if (input.kind === 'replacement') return `A CodeAlongAI user asked to replace a walkthrough. Retrieve the authorized request with ID "${input.requestId}" using CodeAlongAI MCP, create and commit exactly that replacement, and stop at its receipt.`;
+  return `A CodeAlongAI user has asked to start a walkthrough. Retrieve the authorized request with ID "${input.requestId}" using CodeAlongAI MCP, create exactly that walkthrough, commit it, and stop at the matching receipt.`;
+};
+
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
 export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentSpec {
@@ -216,7 +222,7 @@ export class ReceiptBackedProducerCoordinator {
       sessionId = idOf(session.value); this.activeSessionId = sessionId; input.observe?.({ kind: 'session-created' });
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
-      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `${input.kind ?? 'start'}\n${input.requestId}` }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
+      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: producerTurnMessage(input) }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
       if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
       const turnId = idOf(turn.value); input.observe?.({ kind: 'turn-created' });
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
