@@ -1,4 +1,4 @@
-import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
+import { mergeEventDelta, type TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import { TrueForgeStreamFailure, type TrueForgeProducerRuntime, type TrueForgeRequestOptions } from './trueforge-contract';
 import type { QuestionReceipt } from './walkthrough';
 
@@ -81,6 +81,8 @@ export function producerSessionRequestSummary(request: unknown, kind: 'start' | 
 /** Normalizes native and system tool events without trusting their prose. */
 export class ProducerTurnReducer {
   private readonly seenEvents = new Set<string>();
+  private readonly streamingMessages = new Map<string, Record<string, unknown>>();
+  private readonly completedMessages = new Set<string>();
   private pending: { id: string; name: string } | undefined;
   private readonly deferredResults = new Map<string, unknown>();
   private callsUsed = 0;
@@ -94,16 +96,37 @@ export class ProducerTurnReducer {
   public accept(event: unknown): void {
     if (this.receipt || this.failure) return;
     const record = object(event); if (!record) return;
-    const eventId = string(record.id);
-    if (eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     const type = string(record.type);
+    const eventId = string(record.id);
+    if (type !== 'model.message.delta' && eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     if ((type === 'model.message' || type === 'tool.response') && (typeof record.id !== 'string' || record.threadId !== 'main')) { this.failure = rawDiagnostic('tool provenance requires a string event id and main thread', event); return; }
     if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
-    if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = rawDiagnostic('tool provenance requires exactly one valid tool call', event); return; } this.acceptCall(calls[0]); return; }
+    if (type === 'model.message') {
+      if (!eventId) { this.failure = rawDiagnostic('tool provenance requires a string event id', event); return; }
+      this.streamingMessages.set(eventId, record);
+      if (record.finishReason !== undefined) this.acceptCompletedMessage(record);
+      return;
+    }
+    if (type === 'model.message.delta') {
+      if (!eventId) { this.failure = rawDiagnostic('model message delta requires a matching base message id', event); return; }
+      const base = this.streamingMessages.get(eventId);
+      if (!base) { this.failure = rawDiagnostic('model message delta arrived without a retained base message', event); return; }
+      mergeEventDelta(base as never, record as never);
+      if (record.finishReason !== undefined) this.acceptCompletedMessage(base);
+      return;
+    }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
   }
   public get result(): ProducerTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
   public fail(diagnostic: string): void { if (!this.receipt) this.failure = diagnostic; }
+  private acceptCompletedMessage(record: Record<string, unknown>): void {
+    const eventId = string(record.id);
+    if (!eventId || this.completedMessages.has(eventId)) return;
+    this.completedMessages.add(eventId);
+    const rawCalls = record.toolCalls; const calls = modelToolCalls(record);
+    if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = rawDiagnostic('tool provenance requires exactly one valid completed tool call', record); return; }
+    this.acceptCall(calls[0]);
+  }
   private acceptCall(call: ProducerCall): void {
     if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : rawDiagnostic('tool provenance requires CodeAlongAI MCP tool metadata', call); return; }
     const { id, name, arguments: args } = call;
