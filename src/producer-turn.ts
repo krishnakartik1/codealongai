@@ -67,7 +67,7 @@ export class StartTurnReducer {
     // A real start request carries its origin descriptor; those calls must be
     // grounded by the exact authorized read. Older malformed event fixtures
     // remain non-committing at the MCP boundary and are only correlation tests.
-    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || (args.origin !== undefined && !this.originRead))) { this.failure = this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
+    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (args.origin !== undefined && !this.originRead))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
     if (name === 'codealongai_list_workspace_files') this.listed = true;
     if (name === startTool) this.transitioned = true;
     this.pending = { id, name };
