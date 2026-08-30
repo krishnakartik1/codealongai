@@ -16,7 +16,5 @@ CONTEXT.md
 RULE.md
 codealongai.vsix
 tsconfig.json
-out/test
-out/**/*.map
-out/acceptance/**
+out/**
 scripts/native-ubuntu-acceptance.mjs

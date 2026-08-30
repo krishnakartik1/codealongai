@@ -28,14 +28,14 @@ const observation = join(temporary, 'observation.json');
 const sink = { write() { return true; } };
 let result = 'FAIL';
 let cleanup = [];
-let observed = { phases: [], calls: [], receiptMatched: false, terminalDone: false, cleanup: [] };
+let observed = { phases: [], calls: [], turns: [], receiptMatched: false, terminalDone: false, cleanup: [] };
 try {
   await mkdir(join(profile, 'User'), { recursive: true });
   await writeFile(join(profile, 'User', 'settings.json'), `${JSON.stringify({ 'codealongai.mcp.enabled': true, 'codealongai.trueforge.dataPath': input.dataPath, 'codealongai.trueforge.model': input.model, 'codealongai.trueforge.reasoningEffort': input.reasoningEffort })}\n`);
   await run('npm', ['run', 'package'], { cwd: root });
   await run('unzip', ['-q', join(root, 'codealongai.vsix'), '-d', join(temporary, 'vsix')]);
   const code = await runTests({ extensionDevelopmentPath: join(temporary, 'vsix', 'extension'), extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1', CODEALONGAI_NATIVE_ACCEPTANCE_OBSERVATION: observation }, stdout: sink, stderr: sink });
-  if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0) throw new Error('incomplete observation'); result = 'PASS'; }
+  if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0 || observed.turns?.length !== 2) throw new Error('incomplete observation'); result = 'PASS'; }
 } catch { result = 'FAIL'; }
 try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
 catch { result = 'FAIL'; }
