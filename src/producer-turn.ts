@@ -20,8 +20,8 @@ export function startProducerAgentSpec(input: StartTurnInput): unknown {
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', url: input.mcpUrl }],
-    config: { sandbox: { enabled: true, provider: 'daytona', fileDownloads: false }, retries: 0, approvals: false, dynamicSubagents: false, askUser: false },
+    mcpServers: [{ name: 'codealongai-mcp', url: input.mcpUrl, enableTools: ['@all'], requireApprovalForTools: [] }],
+    config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 8 },
     instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
 }
@@ -84,7 +84,7 @@ export class ReceiptBackedStartCoordinator {
     try {
       sessionId = idOf(await this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } }));
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
-      const turnId = idOf(await this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start walkthrough request ${input.requestId}.` }], unchained: true } }));
+      const turnId = idOf(await this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start a walkthrough for request ID ${input.requestId}.` }], previousTurnId: 'none' } }));
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId);
       const deadline = Date.now() + this.timeoutMs;

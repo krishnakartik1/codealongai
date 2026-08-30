@@ -1224,7 +1224,7 @@ suite('receipt-backed start producer turn', () => {
   test('creates a capability-minimal Daytona agent spec with a selected skill', () => {
     const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as Record<string, unknown>;
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
-    assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).provider, 'daytona');
+    assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).fileDownloads, false);
   });
 });
 

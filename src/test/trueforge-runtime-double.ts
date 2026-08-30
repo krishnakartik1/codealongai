@@ -31,7 +31,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
       runTurn: async (input) => { turn = input.request as Record<string, unknown>; return { data: { id: 'test-turn' } }; },
       events: async function* () {
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
-        const requestId = typeof text === 'string' ? text.match(/request ([^.]*)\./)?.[1] : undefined;
+        const requestId = typeof text === 'string' ? text.match(/request ID ([^.]*)\./)?.[1] : undefined;
         const mcpUrl = ((((spec?.agent as Record<string, unknown> | undefined)?.spec as Record<string, unknown> | undefined)?.mcpServers as readonly { url?: unknown }[] | undefined)?.[0])?.url;
         if (!requestId || typeof mcpUrl !== 'string') return;
         const port = Number(new URL(mcpUrl).port);
