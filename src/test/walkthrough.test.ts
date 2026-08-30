@@ -2367,6 +2367,20 @@ suite('replacement and reset over loopback MCP', () => {
 });
 
 suite('question-generated walkthrough graph', () => {
+  test('returns an identical cached generated-question receipt without revalidating a changed anchor', async () => {
+    const authority = new WalkthroughAuthority(); const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Ask', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+    authority.start(authority.captureStart(origin).id, origin); const question = authority.captureQuestion('origin', 'Add'); let unavailable = false; let reads = 0;
+    const source: WorkspaceSource = { workspaceFolderCount: () => 1, listFiles: async () => ['child.ts'], readFile: async (path) => { reads += 1; return unavailable ? { path, dirty: false, failure: 'file_unsupported' } : { path, text: 'x', dirty: false }; } };
+    const endpoint = new LoopbackMcpEndpoint(authority, source); await endpoint.start(0); const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`)); const client = new Client({ name: 'retry', version: '1' }, { versionNegotiation: { mode: 'auto' } }); await client.connect(transport);
+    const outcome: QuestionOutcome = { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [{ id: 'child', displayName: 'Child', explanationMarkdown: 'Child', path: 'child.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, destinationIds: [], backId: 'origin' }], appendedDestinations: [{ sourceStopId: 'origin', destinationIds: ['child'] }], recommendedNextUpdates: [] } };
+    try {
+      const input = { schemaVersion: 1, requestId: question.id, expectedSessionId: authority.getSession()!.id, expectedRevision: authority.getSession()!.revision, outcome };
+      const first = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: input }); assert.equal(first.isError, undefined); assert.equal(authority.acknowledgeQuestionReceipt(first.structuredContent as import('../walkthrough').QuestionReceipt), true);
+      const beforeRetryReads = reads; unavailable = true;
+      const retry = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: input }); assert.deepEqual(retry.structuredContent, first.structuredContent); assert.equal(reads, beforeRetryReads);
+      const changed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { ...input, outcome: { ...outcome, answerMarkdown: 'Changed.' } } }); assert.equal(changed.isError, true); assert.ok(reads > beforeRetryReads);
+    } finally { await transport.close(); await endpoint.stop(); }
+  });
   test('commits an injected generated graph atomically over the real loopback boundary', async () => {
     const authority = new WalkthroughAuthority();
     const origin = { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'Ask away', document: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } } };
