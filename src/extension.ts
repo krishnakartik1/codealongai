@@ -85,6 +85,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
   let startCoordinator: ReceiptBackedStartCoordinator | undefined;
+  let startCoordinatorProducer: TrueForgeProducerRuntime | undefined;
   let retryReplacement: (() => Promise<void>) | undefined;
   let retryReset: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
@@ -257,7 +258,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       } else {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const producer = trueForge.producer;
-        if (!startCoordinator || readinessProducer !== producer) { startCoordinator = new ReceiptBackedStartCoordinator(producer); }
+        if (!startCoordinator || startCoordinatorProducer !== producer) { startCoordinator = new ReceiptBackedStartCoordinator(producer); startCoordinatorProducer = producer; }
         const result = await startCoordinator.start({ requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
       }

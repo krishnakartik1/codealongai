@@ -23,7 +23,7 @@ import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
 import { DaytonaProbeState, producerAgentSpec } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
-import { StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
+import { ReceiptBackedStartCoordinator, StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -1204,21 +1204,43 @@ suite('bounded workspace context', () => {
 suite('receipt-backed start producer turn', () => {
   test('accepts only a correlated start receipt after matching request authority', () => {
     const reducer = new StartTurnReducer('request-1');
-    reducer.accept({ type: 'truefoundry-system:call_tool', sequence: 1, data: { callId: 'authority', name: 'codealongai_get_walkthrough_request', arguments: { requestId: 'request-1' } } });
-    reducer.accept({ type: 'truefoundry-system:call_tool', sequence: 2, data: { callId: 'start', name: 'codealongai_start_walkthrough', arguments: { requestId: 'request-1' } } });
-    reducer.accept({ type: 'tool.response', sequence: 3, data: { callId: 'other', structuredContent: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } } });
+    reducer.accept({ type: 'model.message', id: 'call-1', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
+    reducer.accept({ type: 'model.message', id: 'call-2', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
+    reducer.accept({ type: 'tool.response', id: 'response-other', threadId: 'main', createdAt: 'now', toolCallId: 'other', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.equal(reducer.result, undefined);
-    reducer.accept({ type: 'tool.response', sequence: 4, data: { callId: 'start', structuredContent: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } } });
+    reducer.accept({ type: 'tool.response', id: 'response-start', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.deepEqual(reducer.result, { status: 'committed', receipt: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } });
   });
 
   test('fails an out-of-order tool call and refuses sandbox command events', () => {
     const reducer = new StartTurnReducer('request-1');
-    reducer.accept({ type: 'truefoundry-system:call_tool', data: { callId: 'start', name: 'codealongai_start_walkthrough', arguments: { requestId: 'request-1' } } });
+    reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'request_authority_required' });
     const command = new StartTurnReducer('request-1');
     command.accept({ type: 'sandbox.command' });
     assert.deepEqual(command.result, { status: 'failed', diagnostic: 'unexpected_command' });
+  });
+
+  test('deduplicates a replayed pinned event by its stable string id', () => {
+    const reducer = new StartTurnReducer('request-1');
+    const authority = { type: 'model.message', id: 'replayed-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) } }] };
+    reducer.accept(authority); reducer.accept(authority);
+    reducer.accept({ type: 'model.message', id: 'start-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) } }] });
+    reducer.accept({ type: 'tool.response', id: 'start-response', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
+    assert.equal(reducer.result?.status, 'committed');
+  });
+
+  test('applies one absolute deadline to stalled create, turn, and stream operations', async () => {
+    const never = new Promise<never>(() => undefined);
+    const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' };
+    const base = (overrides: Partial<TrueForgeProducerRuntime>): TrueForgeProducerRuntime => ({ ...emptyTrueForgeProducer, createSession: async () => ({ data: { id: 'session' } }), runTurn: async () => ({ data: { id: 'turn' } }), events: async function* () { yield* []; }, ...overrides });
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ createSession: async () => never }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    const cleanup: string[] = [];
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ runTurn: async () => never, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(cleanup, ['cancel', 'delete']);
+    cleanup.length = 0;
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ events: async function* () { await never; }, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(cleanup, ['cancel', 'delete']);
   });
 
   test('creates a capability-minimal Daytona agent spec with a selected skill', () => {
