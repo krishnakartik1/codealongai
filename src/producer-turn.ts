@@ -20,7 +20,7 @@ export interface ProducerTurnInput {
   readonly observe?: (event: ProducerTurnObservation) => void;
 }
 
-export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden'; readonly name?: string; };
+export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'sandbox-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden'; readonly name?: string; };
 
 export type ProducerReceipt = StartReceipt | QuestionReceipt;
 export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: ProducerReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
@@ -125,6 +125,7 @@ function observeProducerEvent(observe: ProducerTurnInput['observe'], event: unkn
   if (!observe) return;
   const record = object(event); if (!record) return;
   const type = string(record.type);
+  if (type === 'sandbox.created') { observe({ kind: 'sandbox-created' }); return; }
   if (type === 'model.message') { const calls = modelToolCalls(record); if (calls.length === 1) observe({ kind: 'call', name: calls[0].name }); return; }
   if (terminalState(event) === 'done') observe({ kind: 'terminal-done' });
   else if (terminalState(event) === 'failed') observe({ kind: 'terminal-failed' });
