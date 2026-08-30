@@ -27,7 +27,7 @@ export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.Agen
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
     mcpServers: [{ name: 'codealongai-mcp', enableTools: permittedTools, requireApprovalForTools: [] }],
-    config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 8 },
+    config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
     instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
 }
@@ -48,6 +48,7 @@ export class StartTurnReducer {
     const eventId = string(record.id);
     if (eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     const type = string(record.type);
+    if ((type === 'model.message' || type === 'tool.response') && (typeof record.id !== 'string' || record.threadId !== 'main')) { this.failure = 'tool_provenance'; return; }
     if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
     if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
@@ -77,7 +78,10 @@ export class StartTurnReducer {
     const pending = this.pending; this.pending = undefined;
     const result = object(content); if (!result || result.isError === true) { this.failure = safeToolError(result); return; }
     if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
-    if (pending.name === 'codealongai_read_workspace_file') this.originRead = true;
+    if (pending.name === 'codealongai_read_workspace_file') {
+      if (!this.origin || !exactOriginRead(result, this.origin)) { this.failure = 'origin_read_invalid'; return; }
+      this.originRead = true;
+    }
     if (pending.name !== startTool) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
@@ -187,11 +191,9 @@ export class ReceiptBackedStartCoordinator {
           if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
         } } finally {
-          // An async generator already blocked in a native read may never
-          // observe return(). Start its one cancellation first, request the
-          // close, and wait only for the bounded teardown lease.
-          const teardown = this.beginTeardown(sessionId);
-          if (iterator.return) await untilTeardown(iterator.return().catch(() => undefined), teardown.controller.signal);
+          // EOF is recoverable. Closing this subscription must not cancel the
+          // native turn before its one reconciliation and cursor retry.
+          if (iterator.return) await iterator.return().catch(() => undefined);
         }
         const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') { receipt = result; publish(receipt); }
         // The stream may have ended between persisted events. Reconcile once
@@ -300,6 +302,10 @@ function authorizedOrigin(value: unknown, requestId: string): { path: string; st
   const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = finite(start?.line); const endLine = finite(end?.line);
   const startCharacter = finite(start?.character); const endCharacter = finite(end?.character);
   return request?.schemaVersion === 1 && request?.requestId === requestId && request?.kind === 'start' && request?.authorizedAction === 'start' && request?.status === 'pending' && path !== undefined && startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined ? { path, startLine, endLine: endCharacter === 0 ? endLine : endLine + 1 } : undefined;
+}
+function exactOriginRead(value: Record<string, unknown>, origin: { path: string; startLine: number; endLine: number }): boolean {
+  const result = object(value.structuredContent) ?? value;
+  return result?.schemaVersion === 1 && result.path === origin.path && result.startLine === origin.startLine && result.endLine === origin.endLine && typeof result.text === 'string' && result.text.length > 0;
 }
 function safeToolError(value: Record<string, unknown> | undefined): string {
   const structured = object(value?.structuredContent) ?? value;

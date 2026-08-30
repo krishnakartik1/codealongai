@@ -45,6 +45,7 @@ export class WalkthroughAuthority {
   /** A start is visible to the MCP caller before its producer receipt is
    * accepted, but remains entirely memory-owned and reversible. */
   private tentativeStart: StartReceipt | undefined;
+  private tentativeSession: WalkthroughSession | undefined;
   private acceptedStartReceipt: StartReceipt | undefined;
   private questionRequest: QuestionRequest | undefined;
   private readonly questionRequests = new Map<string, QuestionRequest>();
@@ -55,21 +56,32 @@ export class WalkthroughAuthority {
   private readonly resetRequests = new Map<string, ResetRequest>();
   private readonly sessionReceipts = new Map<string, SessionReceipt>();
   private session: WalkthroughSession | undefined;
-  public captureStart(origin: OriginAnchor): StartRequest { if (this.startRequest?.status === 'pending') return this.getStartRequest(this.startRequest.id)!; const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; return this.getStartRequest(request.id)!; }
+  public captureStart(origin: OriginAnchor): StartRequest { if (this.startRequest?.status === 'pending') return this.getStartRequest(this.startRequest.id)!; const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; this.acceptedStartReceipt = undefined; return this.getStartRequest(request.id)!; }
   public getStartRequest(id: string): StartRequest | undefined { const request = this.startRequest?.id === id ? this.startRequest : undefined; return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, origin: copyAnchor(request.snapshot.origin) } }; }
   public getSession(): WalkthroughSession | undefined { return this.session && copySession(this.session); }
   public getPendingStart(): StartRequest | undefined { return this.startRequest?.status === 'pending' ? this.getStartRequest(this.startRequest.id) : undefined; }
   public start(requestId: string, origin: OriginDescriptor): WalkthroughSession { const request = this.startRequest?.id === requestId ? this.startRequest : undefined; if (!request || request.status !== 'pending' || this.session || this.tentativeStart) throw new Error('start request is unavailable'); if (!sameAnchor(request.origin, origin)) throw new Error('origin does not match the authorized request'); this.session = this.newSession(origin); request.status = 'consumed'; return this.getSession()!; }
   /** The producer MCP transition is intentionally not the general in-process
    * start path: only it waits for a matching external receipt. */
-  public startTentative(requestId: string, origin: OriginDescriptor): WalkthroughSession { const request = this.startRequest?.id === requestId ? this.startRequest : undefined; if (!request || request.status !== 'pending' || this.session || this.tentativeStart) throw new Error('start request is unavailable'); if (!sameAnchor(request.origin, origin)) throw new Error('origin does not match the authorized request'); this.session = this.newSession(origin); this.tentativeStart = { schemaVersion: 1, requestId, sessionId: this.session.id, revision: this.session.revision, attentionStopId: this.session.attentionStopId }; return this.getSession()!; }
+  public startTentative(requestId: string, origin: OriginDescriptor): WalkthroughSession {
+    const identical = (session: WalkthroughSession | undefined, receipt: StartReceipt | undefined): WalkthroughSession | undefined => receipt?.requestId === requestId && session && JSON.stringify(session.origin) === JSON.stringify(origin) ? copySession(session) : undefined;
+    const retry = identical(this.tentativeSession, this.tentativeStart) ?? identical(this.session, this.acceptedStartReceipt);
+    if (retry) return retry;
+    const request = this.startRequest?.id === requestId ? this.startRequest : undefined;
+    if (!request || request.status !== 'pending' || this.session || this.tentativeStart) throw new Error('start request is unavailable');
+    if (!sameAnchor(request.origin, origin)) throw new Error('origin does not match the authorized request');
+    const session = this.newSession(origin);
+    this.tentativeSession = session;
+    this.tentativeStart = { schemaVersion: 1, requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
+    return copySession(session);
+  }
   /** Finalize only the exact receipt produced by the still-current tentative
    * session. Accepted receipts are immutable and cannot be rolled back. */
-  public acknowledgeStartReceipt(receipt: StartReceipt): boolean { const request = this.startRequest; const tentative = this.tentativeStart; const session = this.session; if (!request || request.status !== 'pending' || !tentative || !session || JSON.stringify(tentative) !== JSON.stringify(receipt) || session.id !== receipt.sessionId || session.revision !== receipt.revision || session.attentionStopId !== receipt.attentionStopId) return false; request.status = 'consumed'; this.tentativeStart = undefined; this.acceptedStartReceipt = { ...receipt }; return true; }
+  public acknowledgeStartReceipt(receipt: StartReceipt): boolean { const request = this.startRequest; const tentative = this.tentativeStart; const session = this.tentativeSession; if (!request || request.status !== 'pending' || !tentative || !session || JSON.stringify(tentative) !== JSON.stringify(receipt) || session.id !== receipt.sessionId || session.revision !== receipt.revision || session.attentionStopId !== receipt.attentionStopId) return false; request.status = 'consumed'; this.session = session; this.tentativeSession = undefined; this.tentativeStart = undefined; this.acceptedStartReceipt = { ...receipt }; return true; }
   /** Remove only the session still owned by this exact tentative receipt.
    * The original request object was never consumed, so retry sees the same
    * immutable request identity and origin. */
-  public rollbackTentativeStart(receipt?: StartReceipt): boolean { const tentative = this.tentativeStart; const session = this.session; if (!tentative || !session || (receipt !== undefined && JSON.stringify(tentative) !== JSON.stringify(receipt)) || session.id !== tentative.sessionId || session.revision !== tentative.revision || session.attentionStopId !== tentative.attentionStopId) return false; this.session = undefined; this.tentativeStart = undefined; return true; }
+  public rollbackTentativeStart(receipt?: StartReceipt): boolean { const tentative = this.tentativeStart; const session = this.tentativeSession; if (!tentative || !session || (receipt !== undefined && JSON.stringify(tentative) !== JSON.stringify(receipt)) || session.id !== tentative.sessionId || session.revision !== tentative.revision || session.attentionStopId !== tentative.attentionStopId) return false; this.tentativeSession = undefined; this.tentativeStart = undefined; return true; }
   public captureReplacement(origin: OriginAnchor): ReplacementRequest { const session = this.session; if (!session) throw new Error('walkthrough replacement is unavailable'); if (this.replacementRequest?.status === 'pending') return this.getReplacementRequest(this.replacementRequest.id)!; const request: ReplacementRequest = { id: identifier('request'), kind: 'replace', origin: copyAnchor(origin), expectedSessionId: session.id, expectedRevision: session.revision, snapshot: { capturedAt: new Date().toISOString(), session: copySession(session) }, status: 'pending' }; this.replacementRequest = request; this.replacementRequests.set(request.id, request); return this.getReplacementRequest(request.id)!; }
   public getReplacementRequest(id: string): ReplacementRequest | undefined { const request = this.replacementRequests.get(id); return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, session: copySession(request.snapshot.session) } }; }
   public getPendingReplacement(): ReplacementRequest | undefined { return this.replacementRequest?.status === 'pending' ? this.getReplacementRequest(this.replacementRequest.id) : undefined; }

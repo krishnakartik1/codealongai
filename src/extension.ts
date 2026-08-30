@@ -134,12 +134,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
-  const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'sidecar_crash' => {
+  const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'path_invalid' | 'range_invalid' | 'sidecar_crash' => {
     const diagnostic = value instanceof Error ? value.message : '';
     if (diagnostic === 'cancelled') return 'cancellation';
     if (diagnostic === 'deadline_exceeded') return 'timeout';
     if (diagnostic === 'unexpected_command') return 'unexpected_command';
     if (diagnostic === 'missing_receipt') return 'missing_receipt';
+    if (diagnostic === 'path_invalid' || diagnostic === 'range_invalid') return diagnostic;
     if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
     return 'provider_error';
   };
