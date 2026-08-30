@@ -17,11 +17,14 @@ let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => Tr
 let testReadinessActionSelector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined;
 let testReadinessSelectorGeneration = 0;
 let testEnvironment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined;
+let testMcpPortObserver: ((port: number) => void) | undefined;
 
 /** Test harness registration only; production never calls this. */
 export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
 /** Test harness registration only; production uses the host environment checks. */
 export function setTrueForgeEnvironmentForTests(environment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined): void { testEnvironment = environment; }
+/** Test-only loopback endpoint observation; production has no runtime URL seam. */
+export function setMcpPortObserverForTests(observer: ((port: number) => void) | undefined): void { testMcpPortObserver = observer; }
 /** Test-only notification seam; production always uses VS Code's notification UI. */
 export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; testReadinessSelectorGeneration += 1; }
 /** Exercises the same test-only notification selector and ephemeral retry dispatch used by the reporter. */
@@ -72,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
     return {
       get port() { return listener.port; },
-      start: async () => { await listener.start(0); endpoint = listener; output.info('MCP endpoint is ready.'); },
+      start: async () => { await listener.start(0); endpoint = listener; if (listener.port !== undefined) testMcpPortObserver?.(listener.port); output.info('MCP endpoint is ready.'); },
       stop: async () => { await listener.stop(); if (endpoint === listener) endpoint = undefined; output.info('MCP endpoint stopped.'); }
     };
   });

@@ -1,3 +1,4 @@
+import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { TrueForgeProducerRuntime } from './trueforge-contract';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
@@ -16,11 +17,11 @@ const startTool = 'codealongai_start_walkthrough';
 
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
-export function startProducerAgentSpec(input: StartTurnInput): unknown {
+export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.AgentSpec {
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', url: input.mcpUrl, enableTools: ['@all'], requireApprovalForTools: [] }],
+    mcpServers: [{ name: 'codealongai-mcp', enableTools: ['@all'], requireApprovalForTools: [] }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 8 },
     instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
@@ -136,7 +137,10 @@ function modelToolCalls(value: Record<string, unknown>): readonly { id: string; 
     if (!id || !name || !args) return [];
     // Pinned SDK represents system tools as regular ToolCall values. Their
     // payload names the underlying MCP tool and has no independent authority.
-    if (name === 'truefoundry-system:call_tool') { const nestedName = string(args.name ?? args.toolName); const nestedArgs = object(args.arguments ?? args.input); return nestedName && nestedArgs ? [{ id, name: nestedName, arguments: nestedArgs }] : []; }
+    if (name === 'call_tool' && object(item?.toolInfo)?.type === 'truefoundry-system') {
+      const server = string(args.mcp_server); const nestedName = string(args.tool_name); const nestedArgs = jsonObject(args.input);
+      return server === 'codealongai-mcp' && nestedName && nestedArgs ? [{ id, name: nestedName, arguments: nestedArgs }] : [];
+    }
     return [{ id, name, arguments: args }];
   });
 }

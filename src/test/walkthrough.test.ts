@@ -13,7 +13,7 @@ import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { TrueForge } from '@truefoundry/trueforge-sdk';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setMcpPortObserverForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerReadinessResult, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
@@ -34,6 +34,7 @@ interface WalkthroughTestApi {
 
 const commandRuntime = new TrueForgeRuntimeDouble();
 setTrueForgeRuntimeForTests(() => commandRuntime);
+setMcpPortObserverForTests((port) => { commandRuntime.mcpPort = port; });
 setBuildCommitForTests('1111111111111111111111111111111111111111');
 
 function sdkWithProbeEvents(events: readonly unknown[]): SdkTrueForgeProducerRuntime {
@@ -1263,6 +1264,17 @@ suite('receipt-backed start producer turn', () => {
     assert.equal(reducer.result?.status, 'committed');
   });
 
+  test('normalizes the pinned deferred MCP call_tool wrapper only for CodeAlongAI', () => {
+    const reducer = new StartTurnReducer('request-1');
+    reducer.accept({ type: 'model.message', id: 'wrapped-authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_get_walkthrough_request', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
+    reducer.accept({ type: 'model.message', id: 'wrapped-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_start_walkthrough', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
+    reducer.accept({ type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
+    assert.equal(reducer.result?.status, 'committed');
+    const foreign = new StartTurnReducer('request-1');
+    foreign.accept({ type: 'model.message', id: 'foreign', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'other', tool_name: 'codealongai_get_walkthrough_request', input: '{}' }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
+    assert.equal(foreign.result, undefined);
+  });
+
   test('applies one absolute deadline to stalled create, turn, and stream operations', async () => {
     const never = new Promise<never>(() => undefined);
     const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' };
@@ -1277,9 +1289,27 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('creates a capability-minimal Daytona agent spec with a selected skill', () => {
-    const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as Record<string, unknown>;
+    const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as unknown as Record<string, unknown>;
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
     assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).fileDownloads, false);
+    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['@all'], requireApprovalForTools: [] }]);
+    assert.equal(JSON.stringify(spec).includes('url'), false);
+  });
+
+  test('serializes the pinned start AgentSpec without a connector URL', async () => {
+    let received: { url?: string; body?: Record<string, unknown> } = {};
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => { received = { url: request.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }; response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ id: 'session' })); });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); assert.ok(address && typeof address === 'object');
+    try {
+      await new TrueForge({ baseUrl: `http://127.0.0.1:${address.port}` }).sessions.create({ agent: { spec: startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
+      assert.equal(received.url, '/api/v1/sessions');
+      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['@all'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 8 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
 });
 
@@ -1302,6 +1332,8 @@ suite('workspace context over loopback MCP', () => {
       const rejected = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: '../secret.ts' } });
       assert.equal(rejected.isError, true);
       assert.deepEqual(rejected.structuredContent, { schemaVersion: 1, code: 'path_outside_workspace', message: 'The requested workspace file is unavailable.', retryable: false });
+      const invalidRange = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts', startLine: 3, endLine: 4 } });
+      assert.deepEqual(invalidRange.structuredContent, { schemaVersion: 1, code: 'range_invalid', message: 'The requested line interval is invalid.', retryable: false });
     } finally {
       await transport.close();
       await endpoint.stop();
