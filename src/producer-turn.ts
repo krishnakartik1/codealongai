@@ -106,20 +106,33 @@ export class ReceiptBackedStartCoordinator {
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId);
+      let lastSequence = -1;
       // A native stream can close between a persisted call and response. Subscribe
       // once more to the same turn; the reducer's sequence set makes that safe.
       for (let subscription = 0; subscription < 2; subscription += 1) {
-        const iterator = this.runtime.events(sessionId, turnId)[Symbol.asyncIterator]();
+        const iterator = this.runtime.events(sessionId, turnId, lastSequence < 0 ? undefined : lastSequence)[Symbol.asyncIterator]();
         while (true) {
           const remaining = deadline - Date.now();
           if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
           const next = await beforeDeadline(iterator.next(), deadline);
           if (!next.completed) return { status: 'failed', diagnostic: 'deadline_exceeded' };
           if (next.value.done) break;
-          reducer.accept(next.value.value);
+          const envelope = eventEnvelope(next.value.value);
+          if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
+          reducer.accept(envelope.event);
           const result = reducer.result; if (result) return result;
         }
         const result = reducer.result; if (result) return result;
+        // The stream may have ended between persisted events. Reconcile once
+        // before the one permitted cursor-resubscription.
+        if (subscription === 0) {
+          for (const event of await this.runtime.listTurnEvents(sessionId, turnId).catch(() => [])) {
+            const envelope = eventEnvelope(event);
+            if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
+            reducer.accept(envelope.event);
+            const reconciled = reducer.result; if (reconciled) return reconciled;
+          }
+        }
       }
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
@@ -163,6 +176,7 @@ function authorizedOrigin(value: unknown): { path: string; startLine: number; en
   return path !== undefined && startLine !== undefined && endLine !== undefined ? { path, startLine, endLine: endLine + 1 } : undefined;
 }
 function finite(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
+function eventEnvelope(value: unknown): { sequence: number | undefined; event: unknown } { const record = object(value); const sequence = finite(record?.sequenceNumber ?? record?.sequence_number ?? record?.sequence); return { sequence, event: object(record?.event) ?? value }; }
 function jsonValue(value: string): unknown { try { return JSON.parse(value); } catch { return undefined; } }
 function jsonObject(value: unknown): Record<string, unknown> | undefined { return typeof value === 'string' ? object(jsonValue(value)) : object(value); }
 async function beforeDeadline<T>(operation: Promise<T>, deadline: number): Promise<{ completed: true; value: T } | { completed: false }> {

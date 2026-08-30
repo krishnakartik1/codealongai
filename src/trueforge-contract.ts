@@ -39,7 +39,10 @@ export interface TrueForgeProducerRuntime {
   discoverSkills(): Promise<unknown>;
   createSession(sessionRequest: unknown): Promise<unknown>;
   runTurn(input: TrueForgeTurnRequest): Promise<unknown>;
-  events(sessionId: string, turnId: string): AsyncIterable<unknown>;
+  /** Live events resume exclusively after this persisted SSE sequence number. */
+  events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown>;
+  /** Persisted turn events reconcile a one-time stream interruption. */
+  listTurnEvents(sessionId: string, turnId: string): Promise<readonly unknown[]>;
   cancelTurn(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   /** Creates and disposes a credential-free, provider-backed readiness probe. */

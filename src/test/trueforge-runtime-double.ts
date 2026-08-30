@@ -4,7 +4,7 @@ import { commitDeterministicOrigin } from '../mcp';
 
 export const emptyTrueForgeProducer: TrueForgeProducerRuntime = {
   discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
-  createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, cancelTurn: async () => undefined, deleteSession: async () => undefined
+  createSession: async () => ({}), runTurn: async () => ({}), events: async function* () { yield {}; }, listTurnEvents: async () => [], cancelTurn: async () => undefined, deleteSession: async () => undefined
   , probeDaytona: async () => ({ provider: 'daytona', phase: 'provider', outcome: 'failed' }), prepareProducer: async () => ({ phase: 'model', outcome: 'failed' })
 };
 
