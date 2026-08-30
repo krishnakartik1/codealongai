@@ -118,7 +118,7 @@ function waitForChildExit(child: import('node:child_process').ChildProcess): Pro
 }
 
 suite('Extension Development Host walkthrough', () => {
-  test('retries the captured Ask and Reply origins only after Daytona setup is ready', async () => {
+  test('runs the captured Ask and Reply origins through producer readiness', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0];
@@ -131,17 +131,9 @@ suite('Extension Development Host walkthrough', () => {
 
       const askProbes = commandRuntime.probeCalls;
       const askPrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        editor.selection = new vscode.Selection(0, 0, 0, 1);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
       await vscode.commands.executeCommand('codealongai.walkthrough.ask');
       const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.probeCalls, askProbes + 3);
+      assert.equal(commandRuntime.probeCalls, askProbes);
       assert.equal(commandRuntime.prepareCalls, askPrepares + 1);
       assert.deepEqual(origin.origin, {
       stopId: 'checkout-origin',
@@ -154,11 +146,10 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
-      const blockedReadinessCases: { readonly name: string; readonly actions: readonly string[]; readonly environment?: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> }; readonly sidecar?: boolean; readonly daytona?: DaytonaProbeResult; readonly producer?: TrueForgeProducerReadinessResult }[] = [
+      const blockedReadinessCases: { readonly name: string; readonly actions: readonly string[]; readonly environment?: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> }; readonly sidecar?: boolean; readonly producer?: TrueForgeProducerReadinessResult }[] = [
         { name: 'node', actions: ['Configure Node', 'Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => true, resolveNodeExecutable: async () => { throw new Error('node unavailable'); } } },
         { name: 'architecture', actions: ['Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => false, resolveNodeExecutable: async () => process.execPath } },
         { name: 'sidecar', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], sidecar: true },
-        ...(['provider', 'authentication', 'authentication-or-snapshots', 'model', 'sandboxes', 'snapshots', 'sandbox-create', 'cleanup', 'setup'] as const).map((phase) => ({ name: `daytona-${phase === 'provider' ? 'provider-project-configuration' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], daytona: { provider: 'daytona' as const, phase, outcome: phase === 'cleanup' ? 'residual' as const : 'failed' as const } })),
         ...(['model', 'alias', 'reasoning', 'authentication', 'skill', 'connector'] as const).map((phase) => ({ name: `producer-${phase === 'authentication' ? 'terminal-authentication' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], producer: { phase, outcome: 'failed' as const } })),
         { name: 'producer-terminal-network', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
         { name: 'producer-paused-done', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
@@ -166,7 +157,6 @@ suite('Extension Development Host walkthrough', () => {
       ];
       for (const readinessCase of blockedReadinessCases) {
         const before = api.session;
-        commandRuntime.daytonaProbe = readinessCase.daytona ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
         commandRuntime.producerReadiness = readinessCase.producer ?? { phase: 'ready', outcome: 'ready' };
         commandRuntime.healthy = !readinessCase.sidecar;
         commandRuntime.failStart = readinessCase.sidecar === true;
@@ -196,58 +186,14 @@ suite('Extension Development Host walkthrough', () => {
           setTrueForgeEnvironmentForTests(undefined);
           commandRuntime.healthy = true;
           commandRuntime.failStart = false;
-          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
           commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
         }
       }
-      const setupOpens = commandRuntime.calls.filter((call) => call.startsWith('open:')).length;
-      const setupPrepares = commandRuntime.prepareCalls;
-      const beforeSetup = api.session;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Open TrueForge Setup';
-      });
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Setup must not capture this reply.' });
-      await eventually(() => commandRuntime.calls.filter((call) => call.startsWith('open:')).length >= setupOpens + 1 ? true : undefined, 'the selected public setup action should invoke the registered Configure command');
-      await eventually(() => commandRuntime.prepareCalls === setupPrepares + 1 ? true : undefined, 'the registered Configure command should complete its public readiness check');
-      setReadinessActionSelectorForTests(undefined);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      assert.deepEqual(api.session, beforeSetup);
-      assert.equal(api.hasPendingWalkthroughRequest, false);
-
-      let resolveOldSelection: ((action: string | undefined) => void) | undefined;
-      let selections = 0;
-      const stalePrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async () => {
-        selections += 1;
-        return selections === 1 ? new Promise((resolve) => { resolveOldSelection = resolve; }) : undefined;
-      });
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => resolveOldSelection, 'the older Daytona notification should await its selection');
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => selections === 2 ? true : undefined, 'the newer Daytona notification should supersede the older one');
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      resolveOldSelection!('Open TrueForge Setup');
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.prepareCalls, stalePrepares);
-      assert.deepEqual(api.session, beforeSetup);
-
       const replyProbes = commandRuntime.probeCalls;
       const replyPrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
       const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.probeCalls, replyProbes + 3);
+      assert.equal(commandRuntime.probeCalls, replyProbes);
       assert.equal(commandRuntime.prepareCalls, replyPrepares + 1);
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
       assert.deepEqual(branched.stops[0].conversation.slice(-2), [{ author: 'You', bodyMarkdown: 'Follow this value.' }, { author: 'CodeAlongAI', bodyMarkdown: 'Follow the value through the subtotal function and its reducer.' }]);
@@ -281,16 +227,8 @@ suite('Extension Development Host walkthrough', () => {
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement);
 
         notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-        setReadinessActionSelectorForTests(async (actions) => {
-          assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-          editor.selection = new vscode.Selection(0, 0, 0, 1);
-          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-          return 'Retry Setup';
-        });
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         const replacement = await eventually(() => api.session?.id !== beforeReplacement.id ? api.session : undefined, 'the confirmed public Ask command should replace the walkthrough');
-        setReadinessActionSelectorForTests(undefined);
         assert.equal(replacement.stops.length, 1);
         assert.deepEqual(replacement.origin?.range, { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } });
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement + 1);
@@ -304,66 +242,36 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
-  test('Configure TrueForge completes ready setup without creating a walkthrough session', async () => {
+  test('registered Configure and Ask reach the real producer without a Daytona probe', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
     await withProducerConfigured(async () => {
       await withMcpEnabled(api, async () => {
-        const checks = commandRuntime.prepareCalls;
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        const probes = commandRuntime.probeCalls;
+        const producerTurns = commandRuntime.producerTurnCalls.length;
         commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
         await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.ok(commandRuntime.prepareCalls > checks);
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => api.session, 'the registered Ask command should reach the receipt-backed producer turn');
+        assert.equal(commandRuntime.probeCalls, probes, 'Configure and Ask must not create a Daytona readiness probe');
+        assert.deepEqual(commandRuntime.producerTurnCalls.slice(producerTurns).map((call) => call.kind), ['session', 'turn', 'events']);
       });
     });
-    assert.deepEqual(api.session, before);
+    assert.notDeepEqual(api.session, before);
     assert.equal(api.hasPendingWalkthroughRequest, false);
   });
 
-  test('Configure TrueForge retries a failed Daytona readiness check through its registered command', async () => {
+  test('Configure TrueForge opens setup without a Daytona or producer readiness check', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const prepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
-      try {
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls > prepares ? true : undefined, 'Retry Setup should rerun Configure and producer readiness');
-      } finally {
-        setReadinessActionSelectorForTests(undefined);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      }
-    }));
-  });
-
-  test('refreshes the retained readiness coordinator when the external producer is replaced', async () => {
-    const api = await activeWalkthrough();
-    await withProducerConfigured(() => withMcpEnabled(api, async () => {
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
-      commandRuntime.maximumConcurrentPrepares = 0;
-      const prepares = commandRuntime.prepareCalls;
-      let release: (() => void) | undefined;
-      commandRuntime.prepareWait = new Promise<void>((resolve) => { release = resolve; });
-      try {
-        const first = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls === prepares + 1 ? true : undefined, 'the first retained producer readiness check should begin');
-        const queued = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.equal(commandRuntime.prepareCalls, prepares + 1);
-        commandRuntime.replaceProducerForTests();
-        const refreshed = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls === prepares + 2 ? true : undefined, 'the replacement producer should receive a fresh coordinator');
-        assert.equal(commandRuntime.maximumConcurrentPrepares, 2);
-        release!();
-        await Promise.all([first, queued, refreshed]);
-        assert.equal(commandRuntime.prepareCalls, prepares + 3);
-      } finally { commandRuntime.prepareWait = undefined; }
+      const probes = commandRuntime.probeCalls;
+      await vscode.commands.executeCommand('codealongai.trueforge.configure');
+      assert.equal(commandRuntime.prepareCalls, prepares);
+      assert.equal(commandRuntime.probeCalls, probes);
     }));
   });
 
@@ -1147,28 +1055,6 @@ suite('Daytona producer readiness', () => {
 
     const unavailable = new DaytonaReadiness({ probeDaytona: async () => ({ provider: 'daytona', phase: 'ready', outcome: 'ready' }) }, { open: async () => { throw new Error('external URI unavailable'); } });
     assert.deepEqual(await unavailable.configureOrRetry(), { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' });
-  });
-
-  test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
-    const api = await activeWalkthrough();
-    const before = api.session;
-    await withMcpEnabled(api, async () => {
-      const probesBefore = commandRuntime.probeCalls;
-      try {
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.deepEqual(api.session, before);
-        assert.equal(api.hasPendingWalkthroughRequest, false);
-        assert.equal(commandRuntime.probeCalls, probesBefore + 1);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.deepEqual(api.session, before);
-        assert.equal(api.hasPendingWalkthroughRequest, false);
-        assert.equal(commandRuntime.probeCalls, probesBefore + 2);
-      } finally {
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      }
-    });
   });
 
   test('proves the disposable public lifecycle and retains only its safe result', async () => {

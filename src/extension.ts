@@ -5,8 +5,7 @@ import { LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
-import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type NativeAcceptanceFacts, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
-import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
+import { NativeTrueForgeRuntime, TrueForgeSidecar, type NativeAcceptanceFacts, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
@@ -89,7 +88,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
       reportUnexpectedSidecarExit,
-      { read: async () => context.globalState.get<{ sessionId: string; result: DaytonaProbeResult }>('codealongai.daytonaProbeResidual'), write: async (value) => { await context.globalState.update('codealongai.daytonaProbeResidual', value); } }
     ),
     configuredTrueForgeDataPath(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('dataPath'), context.globalStorageUri.fsPath)
   );
@@ -226,59 +224,30 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (action === 'Keep walkthrough') authority.discardReset(requestId);
     });
   };
-  const retryDaytonaSetup = async (): Promise<DaytonaReadinessResult> => {
-    try {
-      await trueForge.configure();
-      return await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
-    } catch {
-      return { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' };
-    }
-  };
-  const reportDaytonaReadiness = (readiness: Awaited<ReturnType<DaytonaReadiness['check']>>, retrying = false, originRetry?: () => Thenable<unknown>): void => {
-    if (readiness.action === 'none') {
-      output.info(retrying ? 'Daytona readiness is ready after setup.' : 'Daytona readiness is ready.');
-      if (!retrying) void vscode.window.showInformationMessage('TrueForge setup is ready. Daytona v1 is ready as the producer sandbox.');
-      return;
-    }
-    const prefix = retrying ? 'Daytona setup still needs' : 'Daytona setup needs';
-    output.warn(`${prefix} ${readiness.phase} (${readiness.outcome}).`);
-    const selectionGeneration = ++testReadinessSelectorGeneration;
-    void dispatchReadinessSelection(() => testReadinessActionSelector ? testReadinessActionSelector(['Open TrueForge Setup', 'Retry Setup']) : vscode.window.showWarningMessage(`${prefix} ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup'), async () => {
-      const checked = await retryDaytonaSetup();
-      if (checked.action === 'none') await originRetry?.();
-      else reportDaytonaReadiness(checked, true, originRetry);
-    }).then((action) => {
-      if (selectionGeneration === testReadinessSelectorGeneration && action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
-    });
-  };
-  const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
+  const producerReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
     try {
       if (!await (testEnvironment?.isUbuntuX64() ?? isUbuntuX64())) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'show-output' }, retry); return false; }
       try { await (testEnvironment?.resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined) ?? resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined)); }
       catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }, retry); return false; }
       try { await trueForge.configure(); }
       catch { reportProducerReadiness({ phase: 'sidecar', outcome: 'failed', action: 'retry-trueforge' }, retry); return false; }
-      const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
-      if (readiness.action === 'none') {
-        const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
-        const model = configuration.get<string>('model')?.trim() ?? '';
-        const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
-        const skillCommit = extensionBuildCommit();
-        if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
-        if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
-        const activeProducer = trueForge.producer;
-        if (readinessProducer !== activeProducer) { readinessProducer = activeProducer; producerReadiness = new ProducerReadiness(activeProducer); }
-        const producer = await producerReadiness!.check({
-          model,
-          reasoningEffort,
-          mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
-          skillCommit
-        });
-        if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); nativeCapabilityVersion = (await trueForge.capabilitySummary())?.version; return true; }
-        reportProducerReadiness(producer, retry);
-        return false;
-      }
-      reportDaytonaReadiness(readiness, false, retry);
+      const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+      const model = configuration.get<string>('model')?.trim() ?? '';
+      const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
+      const skillCommit = extensionBuildCommit();
+      if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
+      if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
+      const activeProducer = trueForge.producer;
+      if (readinessProducer !== activeProducer) { readinessProducer = activeProducer; producerReadiness = new ProducerReadiness(activeProducer); }
+      const producer = await producerReadiness!.check({
+        model,
+        reasoningEffort,
+        mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
+        skillCommit
+      });
+      if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); nativeCapabilityVersion = (await trueForge.capabilitySummary())?.version; return true; }
+      reportProducerReadiness(producer, retry);
+      return false;
     } catch {
       output.error('TrueForge readiness failed safely.');
       void vscode.window.showErrorMessage('CodeAlongAI could not verify TrueForge setup before creating a walkthrough request.');
@@ -317,7 +286,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (!current && startPreparation) return startPreparation;
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
       const replacement = authority.getPendingReplacement();
-      const ready = await daytonaReadyForWalkthrough(commitAuthorizedOrigin);
+      const ready = await producerReadyForWalkthrough(commitAuthorizedOrigin);
       if (current && replacement && !requireCurrentReplacement(replacement.id)) return undefined;
       if (!ready) return undefined;
       const active = authority.getSession();
@@ -399,8 +368,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     try {
       await trueForge.configure();
       await updateEndpoint();
-      if (!mcpReady()) { reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' }); return; }
-      await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.trueforge.configure'));
+      if (!mcpReady()) reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' });
     } catch {
       output.error('TrueForge setup failed safely.');
       void vscode.window.showErrorMessage('CodeAlongAI could not start TrueForge setup.');
@@ -444,7 +412,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       showPendingQuestion(pending);
       return;
     }
-    if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
+    if (!pending && !await producerReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
     // Readiness and snapshot capture both await.  Revalidate the exact native
     // Reply origin immediately before consuming its single-use authority.
     let request = authority.getPendingQuestion() ?? retryQuestionRequest;
@@ -463,7 +431,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       await producerTurnOwner.settled?.catch(() => undefined);
       const current = authority.getPendingQuestion();
       if (!current || current.id !== request.id || current.sessionId !== request.sessionId || current.sourceStopId !== request.sourceStopId) return;
-      if (!await daytonaReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
+      if (!await producerReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
       const stillCurrent = authority.getPendingQuestion();
       if (!stillCurrent || stillCurrent.id !== request.id) return;
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
