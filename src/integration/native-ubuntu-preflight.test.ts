@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { untilTeardown } from '../producer-turn';
 import { trueForgeCapabilitySummary } from '../trueforge-native';
 import { terminateOwnedSidecar } from '../trueforge-native';
+import { TrueForgeSidecar } from '../trueforge';
+import { emptyTrueForgeProducer } from '../test/trueforge-runtime-double';
 
 const ready = { enabled: true, ubuntuX64: true, nodeVersion: 'v22.14.0', buildCommit: '1'.repeat(40), trueforgeVersion: '0.1.4', sdkVersion: '0.1.3', mcpServerVersion: '2.0.0', dataPath: '/operator/trueforge', model: 'openai/example', reasoningEffort: 'medium', reply: 'operator input' };
 test('native acceptance preflight distinguishes skips, external blocks, and ready execution', () => {
@@ -54,4 +56,10 @@ test('native owned shutdown escalates after one exact five-second grace', async 
   const child = { exitCode: null, signalCode: null, kill: (signal: string) => { signals.push(signal); return true; }, once: () => child, removeListener: () => child };
   assert.equal(await terminateOwnedSidecar(child as never, async () => true, async (_child, timeout) => { waits.push(timeout); return false; }), 'kill');
   assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']); assert.deepEqual(waits, [5_000, 5_000]);
+});
+test('one owned acceptance crash restarts through the public sidecar without a producer replay', async () => {
+  let starts = 0; let crashed = false; let producerReads = 0;
+  const runtime = { producer: new Proxy(emptyTrueForgeProducer, { get(target, key) { if (key === 'createSession') producerReads += 1; return Reflect.get(target, key); } }), start: async () => { starts += 1; crashed = false; }, health: async () => true, verifyCapability: async () => true, hasExited: () => crashed, ownsRunningChild: async () => !crashed, open: async () => undefined, stop: async () => undefined, crashForAcceptance: async () => { crashed = true; return true; } };
+  const sidecar = new TrueForgeSidecar(runtime, '/operator/store', async () => 48123 + starts);
+  await sidecar.configure(); assert.equal(await sidecar.restartAfterAcceptanceCrash(), true); assert.equal(starts, 2); assert.equal(producerReads, 0);
 });

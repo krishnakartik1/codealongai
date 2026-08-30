@@ -17,6 +17,8 @@ export interface TrueForgeRuntime {
   ownsRunningChild(): Promise<boolean>;
   open(url: string): Promise<void>;
   stop(): Promise<void>;
+  /** Acceptance-gated native crash; production commands never call this. */
+  crashForAcceptance?(): Promise<boolean>;
   /** Optional, whitelist-only acceptance facts from the owned native boundary. */
   acceptanceFacts?(): Promise<NativeAcceptanceFacts | undefined>;
   readonly producer: TrueForgeProducerRuntime;

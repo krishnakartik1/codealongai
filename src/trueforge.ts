@@ -25,6 +25,8 @@ export class TrueForgeSidecar {
   /** Acceptance is opt-in and receives only facts the real runtime has already observed. */
   public acceptanceFacts(): Promise<import('./trueforge-contract').NativeAcceptanceFacts | undefined> { return this.runtime.acceptanceFacts?.() ?? Promise.resolve(undefined); }
   public capabilitySummary(): Promise<{ readonly available: boolean; readonly version: string | undefined } | undefined> { return this.port === undefined ? Promise.resolve(undefined) : this.runtime.capabilitySummary?.(this.port) ?? Promise.resolve(undefined); }
+  /** Opt-in acceptance lifecycle only: crash one verified owned child, then use the normal configure restart boundary. */
+  public async restartAfterAcceptanceCrash(): Promise<boolean> { if (!await this.runtime.crashForAcceptance?.()) return false; await this.configure(); return this.started && this.port !== undefined && await this.runtime.ownsRunningChild(); }
   public async configure(): Promise<void> { if (this.disposed) throw new Error('The TrueForge sidecar is disposed.'); const operation = this.queue.catch(() => undefined).then(() => this.configureOwned()); this.queue = operation; return operation; }
   private async configureOwned(): Promise<void> {
     if (this.started && this.port !== undefined && !this.runtime.hasExited() && await this.runtime.ownsRunningChild() && await this.runtime.health(this.port) && await this.runtime.verifyCapability(this.port)) { await this.runtime.open(loopbackUrl(this.port)); return; }

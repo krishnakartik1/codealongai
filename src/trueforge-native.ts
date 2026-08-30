@@ -63,6 +63,8 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
       await this.releaseOwnership();
     } finally { this.stopping = false; }
   }
+  /** Deliberately crashes only this verified owned child for the opt-in native acceptance scenario. */
+  public async crashForAcceptance(): Promise<boolean> { const child = this.child; const record = this.record; if (!child || !record || childHasExited(child) || !await ownsRecordedChild(record)) return false; child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); return childHasExited(child); }
   public hasExited(): boolean { return this.childExited || this.child === undefined || childHasExited(this.child); }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
   public async acceptanceFacts(): Promise<import('./trueforge-contract').NativeAcceptanceFacts | undefined> {

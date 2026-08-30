@@ -59,6 +59,7 @@ export interface WalkthroughTestApi {
   replyTargetAt(stopId: string): object | undefined;
   /** Boolean-only assertion seam: no conversation content crosses it. */
   sourceThreadHasAnswerAt(stopId: string): boolean;
+  restartOwnedSidecarForAcceptance(): Promise<boolean>;
 }
 
 /** Production activation uses the registered contract-faithful test runtime only in Extension Host tests. */
@@ -562,6 +563,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return target;
     },
     sourceThreadHasAnswerAt(stopId) { return (threads.get(stopId)?.comments.length ?? 0) > 2; }
+    , async restartOwnedSidecarForAcceptance() { return process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' && await trueForge.restartAfterAcceptanceCrash(); }
   };
 }
 

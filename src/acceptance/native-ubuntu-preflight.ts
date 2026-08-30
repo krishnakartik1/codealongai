@@ -15,17 +15,18 @@ export function nativeUbuntuPreflight(input: NativeAcceptanceInput): NativeAccep
 }
 
 export interface NativeTurnEvidence { readonly kind: 'ask' | 'reply'; readonly calls: readonly string[]; readonly policy: string | undefined; readonly sandboxCreated: boolean; readonly sessionCreated: boolean; readonly sessionDeleted: boolean; readonly receiptMatched: boolean; readonly terminalDone: boolean; }
-export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly versions: { readonly trueforge: string; readonly sdk: string; readonly mcp: string; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly turns?: readonly NativeTurnEvidence[]; readonly policies?: readonly string[]; readonly readiness?: { readonly provider: 'daytona'; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly mcpDiscovered: boolean; readonly ownedSidecar: boolean; readonly probeCleaned: boolean; }; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
+export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly versions: { readonly trueforge: string; readonly sdk: string; readonly mcp: string; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly turns?: readonly NativeTurnEvidence[]; readonly lifecycle?: readonly string[]; readonly policies?: readonly string[]; readonly readiness?: { readonly provider: 'daytona'; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly mcpDiscovered: boolean; readonly ownedSidecar: boolean; readonly probeCleaned: boolean; }; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
 /** Removes all values except the fixed public vocabulary permitted in acceptance output. */
 export function safeNativeEvidence(input: SafeNativeEvidence): SafeNativeEvidence {
   const names = input.calls.filter((name) => /^codealongai_[a-z_]+$/.test(name));
   const phases = input.phases.filter((phase) => /^(provider|snapshots|sandboxes|ready|model|reasoning|skill|connector|mcp-discovery)$/.test(phase));
   const cleanup = input.cleanup.filter((value) => /^(owned-sidecar|session-delete|probe-delete|profile-delete)$/.test(value));
   const policies = input.policies?.filter((value) => /^(start|question|replacement)$/.test(value));
+  const lifecycle = input.lifecycle?.filter((value) => /^(restart:1|replay:0)$/.test(value));
   const turns = input.turns?.filter((turn) => (turn.kind === 'ask' || turn.kind === 'reply') && turn.calls.every((name) => /^codealongai_[a-z_]+$/.test(name)) && (turn.policy === 'start' || turn.policy === 'question') && turn.sandboxCreated && turn.sessionCreated && turn.sessionDeleted && turn.receiptMatched && turn.terminalDone);
   const readiness = input.readiness && input.readiness.provider === 'daytona' && /^[0-9a-f]{40}$/i.test(input.readiness.skillCommit) ? input.readiness : undefined;
   const version = (value: string): string => /^\d+\.\d+\.\d+$/.test(value) ? value : 'unknown';
-  return { result: input.result, versions: { trueforge: version(input.versions.trueforge), sdk: version(input.versions.sdk), mcp: version(input.versions.mcp) }, phases, calls: names, ...(turns ? { turns } : {}), ...(policies ? { policies } : {}), ...(readiness ? { readiness } : {}), receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
+  return { result: input.result, versions: { trueforge: version(input.versions.trueforge), sdk: version(input.versions.sdk), mcp: version(input.versions.mcp) }, phases, calls: names, ...(turns ? { turns } : {}), ...(lifecycle ? { lifecycle } : {}), ...(policies ? { policies } : {}), ...(readiness ? { readiness } : {}), receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
 }
 
 const readTools = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
