@@ -45,6 +45,7 @@ export class StartTurnReducer {
   private origin: { path: string; startLine: number; endLine: number } | undefined;
   private activeWalkthroughRead = false;
   private activeSession: { id: string; revision: number } | undefined;
+  private questionRead: { path: string; startLine: number; endLine: number } | undefined;
   private receipt: StartReceipt | undefined;
   private failure: string | undefined;
   public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: StartReceipt) => boolean, private readonly kind: 'start' | 'question' = 'start') {}
@@ -71,6 +72,11 @@ export class StartTurnReducer {
     if (name === 'codealongai_list_workspace_files' && this.listed) { this.failure = 'workspace_list_repeated'; return; }
     if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
     if (this.kind === 'start' && name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
+    if (this.kind === 'question' && name === 'codealongai_read_workspace_file') {
+      const startLine = args.startLine; const endLine = args.endLine;
+      if (typeof args.path !== 'string' || typeof startLine !== 'number' || typeof endLine !== 'number' || !Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine < startLine || endLine - startLine > 200) { this.failure = 'context_range_required'; return; }
+      this.questionRead = { path: args.path, startLine, endLine };
+    }
     if (name !== transitionTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
     if (this.kind === 'question' && name !== transitionTool && this.callsUsed === 2 && name !== 'codealongai_get_walkthrough') { this.failure = 'active_walkthrough_required'; return; }
     if (name === transitionTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (this.kind === 'start' ? !this.originRead : !this.activeWalkthroughRead) || (this.kind === 'question' && (args.expectedSessionId !== this.activeSession?.id || args.expectedRevision !== this.activeSession?.revision)))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : 'transition_invalid'; return; }
@@ -88,7 +94,8 @@ export class StartTurnReducer {
     if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = this.kind === 'question' ? authorizedQuestion(result, this.requestId) : authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
     if (this.kind === 'question' && pending.name === 'codealongai_get_walkthrough') { const active = activeWalkthrough(result, this.origin); if (!active) { this.failure = 'active_walkthrough_invalid'; return; } this.activeSession = active; this.activeWalkthroughRead = true; }
     if (pending.name === 'codealongai_read_workspace_file') {
-      if (!this.origin || !exactOriginRead(result, this.origin)) { this.failure = 'origin_read_invalid'; return; }
+      const expected = this.kind === 'question' ? this.questionRead : this.origin;
+      if (!expected || !exactOriginRead(result, expected)) { this.failure = this.kind === 'question' ? 'context_read_invalid' : 'origin_read_invalid'; return; }
       this.originRead = true;
     }
     if (pending.name !== (this.kind === 'question' ? questionTool : startTool)) return;

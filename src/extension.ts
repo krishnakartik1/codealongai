@@ -73,6 +73,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       sidecarCrashedRequestId = activeRequestId;
       void startTurnOwner.cancel();
     }
+    if (questionTurnOwner.activeRequestId) void questionTurnOwner.cancel();
   };
   const trueForge = new TrueForgeSidecar(
     testRuntimeFactory?.(reportUnexpectedSidecarExit) ?? new NativeTrueForgeRuntime(
@@ -129,7 +130,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
   };
   const discardQuestion = (requestId: string): void => {
-    if (authority.getPendingQuestion()?.id === requestId) authority.discardQuestion(requestId);
+    if (authority.getPendingQuestion()?.id === requestId) { authority.discardQuestion(requestId); void questionTurnOwner.cancel(); }
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
@@ -143,6 +144,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
     return 'provider_error';
   };
+  const questionFailurePhase = (value: unknown): ReturnType<typeof startFailurePhase> => startFailurePhase(value);
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
     const retry = retryStart;
     output.error(`Start turn failed (${phase}).`);
@@ -401,7 +403,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
     try {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
-      const result = await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` });
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {
+        const cancellation = token.onCancellationRequested(() => { void questionTurnOwner.cancel(); });
+        try { return await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }); }
+        finally { cancellation.dispose(); }
+      });
       if (result.status !== 'committed') throw new Error(result.diagnostic);
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
@@ -410,9 +416,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (sourceThread) sourceThread.comments = threadComments(source).map(commentFor);
       refreshThreads(committed, committed.attentionStopId);
     } catch (error) {
-      void vscode.window.showErrorMessage(`CodeAlongAI could not answer the question: ${String(error)}`, 'Retry question', 'Discard question').then((action) => {
+      output.error(`Question turn failed (${questionFailurePhase(error)}).`);
+      void vscode.window.showErrorMessage('CodeAlongAI could not answer the question.', 'Retry question', 'Discard question', 'Show CodeAlongAI Output').then((action) => {
         if (action === 'Retry question') void retryQuestion?.();
         if (action === 'Discard question') discardQuestion(request.id);
+        if (action === 'Show CodeAlongAI Output') { testOutputShowObserver?.(true); output.show(true); }
       });
     }
   });

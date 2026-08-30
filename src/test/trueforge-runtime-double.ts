@@ -62,6 +62,9 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
             yield call('walkthrough', 'codealongai_get_walkthrough', {}, '2026-01-01T00:00:02.000Z');
             const walkthrough = await client.callTool({ name: 'codealongai_get_walkthrough', arguments: {} });
             yield response('walkthrough', walkthrough, '2026-01-01T00:00:03.000Z');
+            yield call('context', 'codealongai_read_workspace_file', { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 3 }, '2026-01-01T00:00:03.250Z');
+            const context = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 3 } });
+            yield response('context', context, '2026-01-01T00:00:03.500Z');
             const snapshot = walkthrough.structuredContent as { sessionId?: string; revision?: number } | undefined;
             const request = authority.structuredContent as { input?: { sourceStopId?: string } } | undefined;
             if (!snapshot?.sessionId || typeof snapshot.revision !== 'number' || !request?.input?.sourceStopId) return;

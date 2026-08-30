@@ -123,9 +123,10 @@ export class LoopbackMcpEndpoint {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), outcome: questionOutcome }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-    }, (input, context) => {
+    }, async (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
+        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor({ path: stop.path, range: stop.range })));
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }

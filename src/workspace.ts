@@ -62,6 +62,16 @@ export class WorkspaceReader {
     return { path: file.path, startLine: actualStart, endLine: actualEnd, text: lines.slice(actualStart, actualEnd).join('\n'), dirty: file.dirty, ...(file.documentVersion === undefined ? {} : { documentVersion: file.documentVersion }) };
   }
 
+  /** Validates a UTF-16 anchor against the same current (including dirty)
+   * source that MCP exposes.  It grants no wider workspace access. */
+  public async validateAnchor(request: { path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }): Promise<void> {
+    const start = request.range?.start; const end = request.range?.end;
+    if (!start || !end || !Number.isInteger(start.line) || !Number.isInteger(start.character) || !Number.isInteger(end.line) || !Number.isInteger(end.character) || start.line < 0 || start.character < 0 || end.line < 0 || end.character < 0) throw new WorkspaceError('range_invalid');
+    const file = await this.read({ path: request.path });
+    const lines = file.text.split('\n');
+    if (start.line >= lines.length || end.line >= lines.length || start.character > lines[start.line].length || end.character > lines[end.line].length || end.line < start.line || (end.line === start.line && end.character < start.character)) throw new WorkspaceError('range_invalid');
+  }
+
   public async search(query: string, after?: string): Promise<WorkspaceMatch[]> {
     if (!query) throw new WorkspaceError('path_invalid');
     const matches: WorkspaceMatch[] = [];
