@@ -168,7 +168,7 @@ export class ProducerTurnReducer {
     if (this.kind === 'question' && pending.name === 'codealongai_get_walkthrough') { const active = activeWalkthrough(result, this.origin); if (!active) { this.failure = 'active_walkthrough_invalid'; return; } this.activeSession = active; this.activeWalkthroughRead = true; }
     if (pending.name === 'codealongai_read_workspace_file') {
       const expected = this.kind === 'question' ? this.questionRead : this.origin;
-      if (!expected || !exactOriginRead(result, expected)) { this.failure = this.kind === 'question' ? 'context_read_invalid' : 'origin_read_invalid'; return; }
+      if (!expected || !(this.kind === 'question' ? questionContextRead(result, expected) : exactOriginRead(result, expected))) { this.failure = this.kind === 'question' ? 'context_read_invalid' : 'origin_read_invalid'; return; }
       this.originRead = true;
     }
     if (pending.name !== (this.kind === 'question' ? questionTool : this.kind === 'replacement' ? replacementTool : startTool)) return;
@@ -471,6 +471,10 @@ function activeWalkthrough(value: Record<string, unknown>, question: { path: str
 function exactOriginRead(value: Record<string, unknown>, origin: { path: string; startLine: number; endLine: number }): boolean {
   const result = object(value.structuredContent) ?? value;
   return result?.schemaVersion === 1 && result.path === origin.path && result.startLine === origin.startLine && result.endLine === origin.endLine && typeof result.text === 'string' && result.text.length > 0;
+}
+function questionContextRead(value: Record<string, unknown>, request: { path: string; startLine: number; endLine: number }): boolean {
+  const result = object(value.structuredContent) ?? value;
+  return result?.schemaVersion === 1 && result.path === request.path && result.startLine === request.startLine && typeof result.endLine === 'number' && result.endLine > request.startLine && result.endLine <= request.endLine && typeof result.text === 'string' && result.text.length > 0;
 }
 function safeToolError(value: Record<string, unknown> | undefined): string {
   const errors = Array.isArray(value?.error) ? value.error : [];
