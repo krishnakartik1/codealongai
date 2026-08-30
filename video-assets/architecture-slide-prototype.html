@@ -1,0 +1,1443 @@
+<!doctype html>
+<!-- PROTOTYPE: throwaway architecture-slide directions for demo/video selection. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CodeAlongAI × TrueForge — Architecture</title>
+  <style>
+    :root {
+      --ink: #08090d;
+      --panel: #0c0e13;
+      --card: #18181b;
+      --line: rgba(255, 255, 255, 0.11);
+      --line-strong: rgba(138, 134, 255, 0.48);
+      --text: #fafafa;
+      --muted: #9f9fa9;
+      --violet: #8a86ff;
+      --violet-hot: #9b8fe8;
+      --violet-deep: #4a2ac5;
+      --blue: #a0d2ff;
+      --scale: 1;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #050609;
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: start center;
+    }
+
+    .viewport {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      transform: scale(var(--scale));
+      transform-origin: top center;
+      flex: none;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 74% 42%, rgba(116, 102, 255, 0.13), transparent 29%),
+        radial-gradient(circle at 28% 78%, rgba(74, 42, 197, 0.08), transparent 27%),
+        var(--ink);
+    }
+
+    .slide.active { display: block; }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.34;
+      pointer-events: none;
+      background-image:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-size: 96px 96px;
+      mask-image: linear-gradient(to bottom, transparent, #000 16%, #000 82%, transparent);
+    }
+
+    .slide::after {
+      content: "";
+      position: absolute;
+      inset: 0 24px 24px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      pointer-events: none;
+    }
+
+    .chrome {
+      position: absolute;
+      top: 54px;
+      left: 72px;
+      right: 72px;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 18px;
+      font-weight: 740;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .brand-mark {
+      position: relative;
+      width: 26px;
+      height: 26px;
+      border: 1px solid var(--violet);
+      transform: rotate(45deg);
+      box-shadow: 0 0 24px rgba(138, 134, 255, 0.45);
+    }
+
+    .brand-mark::before {
+      content: "";
+      position: absolute;
+      inset: 6px;
+      border: 1px solid var(--violet);
+    }
+
+    .brand .x { color: #565760; font-weight: 420; }
+    .brand .forge { color: var(--violet); }
+
+    .index {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      color: var(--muted);
+      font-size: 14px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .title-block {
+      position: absolute;
+      left: 112px;
+      top: 150px;
+      z-index: 3;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--violet);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 34px;
+      height: 1px;
+      background: var(--violet);
+      box-shadow: 0 0 14px var(--violet);
+    }
+
+    h1 {
+      max-width: 1180px;
+      margin: 20px 0 0;
+      font-size: 57px;
+      line-height: 1.04;
+      letter-spacing: -0.045em;
+      font-weight: 620;
+    }
+
+    h1 em {
+      color: var(--violet);
+      font-style: normal;
+    }
+
+    .footer-rule {
+      position: absolute;
+      left: 72px;
+      right: 72px;
+      bottom: 56px;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .footer-rule .promise {
+      color: #d9d8df;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 9px;
+      border-radius: 50%;
+      background: var(--violet);
+      box-shadow: 0 0 14px var(--violet);
+    }
+
+    .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: rgba(8, 9, 13, 0.72);
+    }
+
+    .pill::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--violet);
+      box-shadow: 0 0 9px var(--violet);
+    }
+
+    /* Opening problem slide — linear chat vs. codebase walkthrough */
+    .problem-grid {
+      position: absolute;
+      left: 112px;
+      right: 112px;
+      top: 355px;
+      height: 545px;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 0.86fr 1.14fr;
+      gap: 28px;
+    }
+
+    .comparison-panel {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: rgba(10, 11, 16, .91);
+      box-shadow: 0 24px 64px rgba(0,0,0,.32);
+    }
+
+    .comparison-panel.walkthrough-panel {
+      border-color: rgba(138,134,255,.4);
+      background:
+        radial-gradient(circle at 78% 18%, rgba(138,134,255,.12), transparent 31%),
+        rgba(10, 11, 16, .94);
+    }
+
+    .comparison-head {
+      position: relative;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 69px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12,14,19,.94);
+    }
+
+    .comparison-head strong {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .01em;
+    }
+
+    .comparison-head span {
+      color: var(--muted);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .chat-window {
+      position: absolute;
+      inset: 70px 0 0;
+      overflow: hidden;
+      padding: 20px 23px 0;
+      mask-image: linear-gradient(to bottom, transparent 0, #000 7%, #000 87%, transparent 100%);
+    }
+
+    .chat-stream {
+      display: flex;
+      flex-direction: column;
+      gap: 13px;
+      animation: chat-scroll 9s ease-in-out infinite;
+    }
+
+    .chat-message {
+      max-width: 85%;
+      padding: 13px 15px;
+      border: 1px solid rgba(255,255,255,.075);
+      border-radius: 3px;
+      background: #111218;
+      color: #c8c8cf;
+      font-size: 13px;
+      line-height: 1.42;
+      opacity: .84;
+    }
+
+    .chat-message.user {
+      align-self: flex-end;
+      border-color: rgba(138,134,255,.28);
+      background: rgba(138,134,255,.1);
+      color: #e7e6ff;
+    }
+
+    .chat-message.long {
+      padding-bottom: 18px;
+      background:
+        repeating-linear-gradient(to bottom, transparent 0 18px, rgba(255,255,255,.035) 19px 20px),
+        #111218;
+    }
+
+    .chat-message .role {
+      display: block;
+      margin-bottom: 7px;
+      color: #6f7079;
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .chat-depth {
+      position: absolute;
+      right: 9px;
+      top: 91px;
+      bottom: 22px;
+      width: 3px;
+      background: rgba(255,255,255,.055);
+    }
+
+    .chat-depth::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      height: 25%;
+      background: #65666e;
+      animation: scrollbar-down 9s ease-in-out infinite;
+    }
+
+    @keyframes chat-scroll {
+      0%, 18% { transform: translateY(8px); }
+      68%, 82% { transform: translateY(-168px); }
+      100% { transform: translateY(8px); }
+    }
+
+    @keyframes scrollbar-down {
+      0%, 18% { translate: 0 0; }
+      68%, 82% { translate: 0 270px; }
+      100% { translate: 0 0; }
+    }
+
+    .walkthrough-map {
+      position: absolute;
+      inset: 70px 0 0;
+    }
+
+    .walkthrough-map::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .22;
+      background-image:
+        linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px);
+      background-size: 54px 54px;
+      mask-image: radial-gradient(circle at center, #000, transparent 78%);
+    }
+
+    .hop-line {
+      position: absolute;
+      z-index: 1;
+      height: 1px;
+      border-top: 1px dashed rgba(138,134,255,.3);
+      transform-origin: left center;
+    }
+
+    .hop-line.l1 { left: 21%; top: 119px; width: 30%; transform: rotate(18deg); }
+    .hop-line.l2 { left: 49%; top: 187px; width: 27%; transform: rotate(-31deg); }
+    .hop-line.l3 { left: 25%; top: 312px; width: 32%; transform: rotate(-22deg); }
+    .hop-line.l4 { left: 50%; top: 354px; width: 28%; transform: rotate(24deg); }
+
+    .file-hop {
+      position: absolute;
+      z-index: 2;
+      width: 210px;
+      min-height: 91px;
+      padding: 14px 16px;
+      border: 1px solid rgba(255,255,255,.1);
+      background: #101117;
+      box-shadow: 0 14px 32px rgba(0,0,0,.3);
+      animation: hop-focus 7.5s ease-in-out infinite;
+    }
+
+    .file-hop::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      translate: 0 -50%;
+      border-radius: 50%;
+      background: #4d4e57;
+    }
+
+    .file-hop b {
+      display: block;
+      color: #ececf0;
+      font: 12px/1.2 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .file-hop span {
+      display: block;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .file-hop .step-no {
+      position: absolute;
+      right: 11px;
+      top: 11px;
+      color: #62636d;
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .file-hop.h1 { left: 8%; top: 37px; animation-delay: 0s; }
+    .file-hop.h2 { left: 39%; top: 130px; animation-delay: 1.5s; }
+    .file-hop.h3 { right: 7%; top: 51px; animation-delay: 3s; }
+    .file-hop.h4 { left: 17%; bottom: 36px; animation-delay: 4.5s; }
+    .file-hop.h5 { right: 10%; bottom: 26px; animation-delay: 6s; }
+
+    @keyframes hop-focus {
+      0%, 12% {
+        border-color: rgba(138,134,255,.72);
+        background: linear-gradient(135deg, rgba(138,134,255,.17), #111219 54%);
+        box-shadow: 0 0 0 1px rgba(138,134,255,.08), 0 0 30px rgba(138,134,255,.18);
+        transform: translateY(-3px);
+      }
+      20%, 100% {
+        border-color: rgba(255,255,255,.1);
+        background: #101117;
+        box-shadow: 0 14px 32px rgba(0,0,0,.3);
+        transform: translateY(0);
+      }
+    }
+
+    .collection-walkthrough {
+      position: absolute;
+      inset: 70px 0 0;
+      display: grid;
+      grid-template-columns: 36% 64%;
+    }
+
+    .file-collection {
+      position: relative;
+      padding: 22px 20px;
+      border-right: 1px solid var(--line);
+      background: rgba(8,9,13,.5);
+    }
+
+    .collection-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 15px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      color: var(--muted);
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .collection-title b {
+      color: #6f7079;
+      font-weight: 500;
+    }
+
+    .collection-files {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 17px;
+    }
+
+    .collection-file {
+      position: relative;
+      overflow: hidden;
+      padding: 10px 9px 10px 27px;
+      border: 1px solid rgba(255,255,255,.065);
+      background: #0e0f14;
+      color: #777881;
+      font: 9px/1.15 "SFMono-Regular", Consolas, monospace;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .collection-file::before {
+      content: "";
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      width: 8px;
+      height: 10px;
+      translate: 0 -50%;
+      border: 1px solid #4e4f58;
+      border-radius: 1px;
+    }
+
+    .collection-file.pick {
+      animation: collection-pick 10s linear infinite;
+      animation-delay: var(--delay);
+    }
+
+    @keyframes collection-pick {
+      0%, 17% {
+        z-index: 2;
+        color: #ececff;
+        border-color: rgba(138,134,255,.66);
+        background: rgba(138,134,255,.14);
+        box-shadow: 0 0 22px rgba(138,134,255,.17);
+        transform: translateX(5px);
+      }
+      20%, 100% {
+        z-index: 1;
+        color: #777881;
+        border-color: rgba(255,255,255,.065);
+        background: #0e0f14;
+        box-shadow: none;
+        transform: translateX(0);
+      }
+    }
+
+    .file-focus {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .file-focus::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .25;
+      background-image:
+        linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(circle at center, #000, transparent 82%);
+    }
+
+    .file-pull {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      z-index: 2;
+      width: 77px;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(138,134,255,.18), var(--violet));
+      box-shadow: 0 0 15px rgba(138,134,255,.25);
+    }
+
+    .file-pull::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -4px;
+      width: 7px;
+      height: 7px;
+      border-top: 1px solid var(--violet);
+      border-right: 1px solid var(--violet);
+      transform: rotate(45deg);
+    }
+
+    .focus-card {
+      position: absolute;
+      left: 77px;
+      right: 24px;
+      top: 47px;
+      z-index: 3;
+      height: 319px;
+      padding: 21px 23px;
+      opacity: 0;
+      border: 1px solid rgba(138,134,255,.45);
+      background:
+        radial-gradient(circle at 100% 0, rgba(138,134,255,.16), transparent 34%),
+        #101117;
+      box-shadow: 0 24px 54px rgba(0,0,0,.42), 0 0 35px rgba(74,42,197,.12);
+      animation: focus-file 10s linear infinite;
+      animation-delay: var(--delay);
+    }
+
+    @keyframes focus-file {
+      0% {
+        opacity: 0;
+        transform: translateX(-28px) scale(.96);
+      }
+      3%, 16% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+      }
+      19%, 100% {
+        opacity: 0;
+        transform: translateX(18px) scale(.985);
+      }
+    }
+
+    .focus-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+
+    .focus-card-head .tour-step {
+      color: var(--violet);
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .focus-card-head .file-path {
+      color: #72737c;
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .focus-card h3 {
+      margin: 18px 0 0;
+      font: 600 19px/1.15 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: -.025em;
+    }
+
+    .focus-card p {
+      margin: 9px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .mini-code {
+      margin-top: 17px;
+      padding: 13px 15px;
+      border-left: 2px solid rgba(138,134,255,.55);
+      background: #0a0b10;
+      color: #b9bac3;
+      font: 10px/1.75 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .mini-code .keyword { color: var(--violet-hot); }
+    .mini-code .function { color: var(--blue); }
+    .mini-code .faint { color: #62636d; }
+
+    .tour-progress {
+      position: absolute;
+      left: 77px;
+      right: 24px;
+      bottom: 29px;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 7px;
+    }
+
+    .tour-progress i {
+      height: 2px;
+      background: rgba(255,255,255,.09);
+      animation: progress-stop 10s linear infinite;
+      animation-delay: var(--delay);
+    }
+
+    @keyframes progress-stop {
+      0%, 17% { background: var(--violet); box-shadow: 0 0 9px rgba(138,134,255,.5); }
+      20%, 100% { background: rgba(255,255,255,.09); box-shadow: none; }
+    }
+
+    .problem-caption {
+      position: absolute;
+      left: 50%;
+      bottom: 17px;
+      translate: -50% 0;
+      z-index: 5;
+      padding: 8px 13px;
+      border: 1px solid rgba(138,134,255,.2);
+      background: rgba(8,9,13,.9);
+      color: var(--violet);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    /* Variant A — signal path */
+    .a-diagram {
+      position: absolute;
+      left: 112px;
+      right: 112px;
+      top: 330px;
+      height: 510px;
+      z-index: 2;
+    }
+
+    .slide-a .footer-rule { bottom: 72px; }
+
+    .a-flow {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: 350px 104px 300px 136px minmax(0, 1fr);
+      align-items: center;
+    }
+
+    .signal-node {
+      position: relative;
+      height: 272px;
+      padding: 28px 30px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.045), transparent 38%),
+        rgba(12, 14, 19, 0.93);
+      box-shadow: 0 22px 58px rgba(0,0,0,.28);
+    }
+
+    .signal-node::before,
+    .signal-node::after {
+      content: "";
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      pointer-events: none;
+    }
+
+    .signal-node::before { left: -1px; top: -1px; border-left: 1px solid var(--violet); border-top: 1px solid var(--violet); }
+    .signal-node::after { right: -1px; bottom: -1px; border-right: 1px solid var(--violet); border-bottom: 1px solid var(--violet); }
+
+    .signal-node.source {
+      border-color: rgba(138, 134, 255, 0.48);
+      background:
+        radial-gradient(circle at 80% 10%, rgba(138,134,255,.18), transparent 40%),
+        linear-gradient(145deg, rgba(255,255,255,.055), transparent 40%),
+        #101118;
+      box-shadow: 0 0 0 1px rgba(138,134,255,.06), 0 28px 74px rgba(0,0,0,.4), 0 0 52px rgba(74,42,197,.09);
+    }
+
+    .signal-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .signal-icon {
+      display: grid;
+      place-items: center;
+      width: 46px;
+      height: 46px;
+      border: 1px solid var(--line-strong);
+      color: var(--violet);
+      background: rgba(138,134,255,.055);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 16px;
+      box-shadow: inset 0 0 24px rgba(138,134,255,.06);
+    }
+
+    .signal-kicker {
+      margin-top: 23px;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .signal-name {
+      margin-top: 7px;
+      font-size: 25px;
+      line-height: 1.05;
+      letter-spacing: -.025em;
+      font-weight: 630;
+    }
+
+    .signal-desc {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .signal-arrow {
+      position: relative;
+      align-self: center;
+      height: 1px;
+      margin: 0 16px;
+      background: linear-gradient(90deg, rgba(138,134,255,.22), var(--violet));
+      box-shadow: 0 0 18px rgba(138,134,255,.28);
+    }
+
+    .signal-arrow::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -5px;
+      width: 9px;
+      height: 9px;
+      border-top: 1px solid var(--violet);
+      border-right: 1px solid var(--violet);
+      transform: rotate(45deg);
+    }
+
+    .signal-arrow span {
+      position: absolute;
+      left: 50%;
+      bottom: 17px;
+      translate: -50% 0;
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 10px;
+      letter-spacing: .12em;
+      white-space: nowrap;
+      text-transform: uppercase;
+    }
+
+    .signal-arrow.output {
+      height: 2px;
+      background: linear-gradient(90deg, rgba(138,134,255,.35), #b6b3ff);
+    }
+
+    .walkthrough-card {
+      position: relative;
+      height: 438px;
+      padding: 23px 27px 20px;
+      border: 1px solid rgba(138, 134, 255, .45);
+      background:
+        radial-gradient(circle at 100% 0, rgba(138,134,255,.14), transparent 34%),
+        linear-gradient(145deg, rgba(255,255,255,.04), transparent 32%),
+        rgba(12,14,19,.97);
+      box-shadow: 0 30px 76px rgba(0,0,0,.42), 0 0 50px rgba(74,42,197,.09);
+    }
+
+    .walkthrough-return {
+      position: absolute;
+      left: 174px;
+      right: 779px;
+      top: 391px;
+      height: 105px;
+      z-index: 3;
+      border-left: 1px dashed rgba(160,210,255,.55);
+      border-bottom: 1px dashed rgba(160,210,255,.55);
+      border-radius: 0 0 0 16px;
+      pointer-events: none;
+    }
+
+    .walkthrough-return::before {
+      content: "↑";
+      position: absolute;
+      left: -9px;
+      top: -13px;
+      color: var(--blue);
+      font: 19px/1 "SFMono-Regular", Consolas, monospace;
+      text-shadow: 0 0 14px rgba(160,210,255,.6);
+    }
+
+    .walkthrough-return::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      height: 22px;
+      border-right: 1px dashed rgba(160,210,255,.55);
+    }
+
+    .walkthrough-return span {
+      position: absolute;
+      left: 50%;
+      bottom: -14px;
+      translate: -50% 0;
+      padding: 6px 12px;
+      border: 1px solid rgba(160,210,255,.2);
+      background: #090b10;
+      color: var(--blue);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .walkthrough-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .walkthrough-head .overline {
+      display: block;
+      color: var(--violet);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .walkthrough-head strong {
+      display: block;
+      max-width: 410px;
+      margin-top: 9px;
+      font-size: 21px;
+      line-height: 1.18;
+      letter-spacing: -.02em;
+    }
+
+    .walkthrough-meta {
+      padding: 7px 10px;
+      border: 1px solid rgba(138,134,255,.23);
+      color: var(--muted);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .walkthrough-stops {
+      position: relative;
+      display: grid;
+      gap: 0;
+      margin-top: 13px;
+    }
+
+    .walkthrough-stops::before {
+      content: "";
+      position: absolute;
+      left: 15px;
+      top: 26px;
+      bottom: 27px;
+      width: 1px;
+      background: linear-gradient(to bottom, var(--violet), rgba(138,134,255,.16));
+    }
+
+    .walkthrough-stop {
+      position: relative;
+      display: grid;
+      grid-template-columns: 32px 1fr auto;
+      gap: 13px;
+      align-items: center;
+      min-height: 56px;
+      border-bottom: 1px solid rgba(255,255,255,.055);
+    }
+
+    .walkthrough-stop:last-child { border-bottom: 0; }
+
+    .stop-index {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      width: 31px;
+      height: 31px;
+      border: 1px solid rgba(138,134,255,.42);
+      border-radius: 50%;
+      color: var(--violet);
+      background: #0d0e14;
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      box-shadow: 0 0 16px rgba(138,134,255,.08);
+    }
+
+    .stop-copy b {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .stop-copy code {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font: 10px/1.25 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .stop-kind {
+      color: #71727c;
+      font: 9px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    /* Variant B — orbital system */
+    .slide-b .title-block { top: 143px; }
+    .slide-b h1 { max-width: 810px; font-size: 54px; }
+
+    .orbit-system {
+      position: absolute;
+      width: 990px;
+      height: 820px;
+      right: 30px;
+      top: 130px;
+      z-index: 2;
+    }
+
+    .orbit {
+      position: absolute;
+      border: 1px solid rgba(138,134,255,.18);
+      border-radius: 50%;
+      transform: rotate(-12deg);
+    }
+
+    .orbit.o1 { width: 370px; height: 370px; left: 305px; top: 223px; border-style: dashed; }
+    .orbit.o2 { width: 590px; height: 590px; left: 195px; top: 113px; }
+    .orbit.o3 { width: 800px; height: 800px; left: 90px; top: 8px; border-color: rgba(255,255,255,.075); }
+
+    .orbit.o1::after,
+    .orbit.o2::after {
+      content: "";
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--violet);
+      box-shadow: 0 0 18px var(--violet);
+      animation: pulse 2.8s ease-in-out infinite;
+    }
+
+    .orbit.o1::after { left: 44px; top: 54px; }
+    .orbit.o2::after { right: 74px; bottom: 61px; animation-delay: 1s; }
+
+    @keyframes pulse { 50% { opacity: .3; transform: scale(.7); } }
+
+    .forge-core {
+      position: absolute;
+      left: 383px;
+      top: 302px;
+      width: 220px;
+      height: 220px;
+      z-index: 3;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid rgba(138,134,255,.55);
+      background: radial-gradient(circle, rgba(138,134,255,.19), rgba(12,14,19,.94) 67%);
+      clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%);
+      filter: drop-shadow(0 0 30px rgba(138,134,255,.17));
+    }
+
+    .forge-core::before {
+      content: "";
+      position: absolute;
+      inset: 17px;
+      border: 1px dashed rgba(138,134,255,.31);
+      clip-path: inherit;
+    }
+
+    .core-copy { position: relative; z-index: 2; }
+    .core-copy strong { display: block; font-size: 25px; letter-spacing: .05em; }
+    .core-copy span { display: block; margin-top: 9px; color: var(--violet); font-size: 10px; letter-spacing: .15em; text-transform: uppercase; }
+
+    .orbital-node {
+      position: absolute;
+      z-index: 4;
+      width: 220px;
+      min-height: 120px;
+      padding: 19px 21px;
+      border: 1px solid var(--line);
+      background: rgba(12,14,19,.94);
+      box-shadow: 0 20px 44px rgba(0,0,0,.35);
+    }
+
+    .orbital-node .num { color: var(--violet); font: 11px/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .12em; }
+    .orbital-node strong { display: block; margin-top: 12px; font-size: 19px; }
+    .orbital-node span { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .orbital-node.code { left: 44px; top: 338px; }
+    .orbital-node.daytona { right: 22px; top: 160px; }
+    .orbital-node.mcp { right: 28px; bottom: 126px; }
+
+    .orbit-legend {
+      position: absolute;
+      left: 112px;
+      top: 468px;
+      z-index: 3;
+      width: 510px;
+      display: grid;
+      gap: 17px;
+    }
+
+    .legend-row {
+      display: grid;
+      grid-template-columns: 80px 1fr;
+      align-items: center;
+      padding: 15px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .legend-row b { color: var(--violet); font: 12px/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .1em; }
+    .legend-row span { color: #d8d8de; font-size: 15px; }
+
+    /* Variant C — trust zones */
+    .slide-c .title-block { top: 137px; }
+    .slide-c h1 { font-size: 52px; }
+
+    .zones {
+      position: absolute;
+      left: 112px;
+      right: 112px;
+      top: 362px;
+      height: 540px;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 1.14fr .62fr 1fr;
+      gap: 20px;
+    }
+
+    .zone {
+      position: relative;
+      border: 1px solid var(--line);
+      background: rgba(9, 10, 15, .84);
+      padding: 27px;
+    }
+
+    .zone.local { border-color: rgba(255,255,255,.17); }
+    .zone.harness { border-color: rgba(138,134,255,.4); background: rgba(20,18,35,.72); }
+    .zone.remote { border-style: dashed; }
+
+    .zone-label {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font: 11px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .zone-label b { color: var(--violet); font-weight: 500; }
+
+    .stack {
+      margin-top: 26px;
+      display: grid;
+      gap: 13px;
+    }
+
+    .stack-card {
+      min-height: 112px;
+      padding: 19px 21px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .stack-card.accent { border-color: rgba(138,134,255,.45); background: linear-gradient(120deg, rgba(138,134,255,.12), rgba(12,14,19,.96) 48%); }
+    .stack-card b { display: block; font-size: 20px; }
+    .stack-card span { display: block; margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .stack-card code { color: var(--violet); font: 11px "SFMono-Regular", Consolas, monospace; }
+
+    .harness-core {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 210px;
+      height: 210px;
+      translate: -50% -50%;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid rgba(138,134,255,.5);
+      border-radius: 50%;
+      box-shadow: 0 0 0 24px rgba(138,134,255,.025), 0 0 0 25px rgba(138,134,255,.11), 0 0 50px rgba(74,42,197,.14);
+    }
+
+    .harness-core::before {
+      content: "";
+      position: absolute;
+      inset: 15px;
+      border: 1px dashed rgba(138,134,255,.25);
+      border-radius: 50%;
+    }
+
+    .harness-core b { position: relative; display: block; font-size: 22px; letter-spacing: .04em; }
+    .harness-core span { position: relative; display: block; margin-top: 8px; color: var(--violet); font: 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .12em; text-transform: uppercase; }
+
+    .flow-tag {
+      position: absolute;
+      z-index: 5;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      background: #090a0f;
+      color: var(--muted);
+      font: 10px/1 "SFMono-Regular", Consolas, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .flow-tag.request { left: 31.4%; top: 115px; color: var(--violet); }
+    .flow-tag.tools { right: 27.7%; top: 115px; color: var(--violet); }
+    .flow-tag.receipt { left: 31.1%; bottom: 102px; color: var(--blue); }
+    .flow-tag.result { right: 26.6%; bottom: 102px; color: var(--blue); }
+
+    .zone-arrow {
+      position: absolute;
+      height: 1px;
+      z-index: 3;
+      background: linear-gradient(90deg, transparent, var(--violet), transparent);
+    }
+
+    .zone-arrow.top-a { left: 29%; width: 17%; top: 147px; }
+    .zone-arrow.top-b { right: 28%; width: 17%; top: 147px; }
+    .zone-arrow.bottom-a { left: 29%; width: 17%; bottom: 135px; background: linear-gradient(90deg, transparent, var(--blue), transparent); }
+    .zone-arrow.bottom-b { right: 28%; width: 17%; bottom: 135px; background: linear-gradient(90deg, transparent, var(--blue), transparent); }
+
+    /* Prototype controls */
+    .switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      z-index: 50;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 12px;
+      background: rgba(12,14,19,.9);
+      box-shadow: 0 14px 50px rgba(0,0,0,.45);
+      backdrop-filter: blur(18px);
+    }
+
+    .switcher button {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 15px;
+      background: transparent;
+      color: var(--muted);
+      font: 12px/1 "SFMono-Regular", Consolas, monospace;
+      cursor: pointer;
+    }
+
+    .switcher button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+    .switcher button.active { color: #fff; background: rgba(138,134,255,.19); box-shadow: inset 0 0 0 1px rgba(138,134,255,.3); }
+
+    .clean .switcher { display: none; }
+    .still *, .still *::before, .still *::after { animation-play-state: paused !important; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="viewport" aria-label="CodeAlongAI demo slides">
+    <section class="slide slide-problem active" data-slide="problem">
+      <div class="chrome">
+        <div class="brand"><span class="brand-mark"></span><span>CodeAlongAI</span><span class="x">×</span><span class="forge">TrueForge</span></div>
+        <div class="index">Problem / 01</div>
+      </div>
+      <div class="title-block">
+        <div class="eyebrow">Why another interface?</div>
+        <h1>Chat is linear. <em>Codebases are not.</em></h1>
+      </div>
+      <div class="problem-grid">
+        <section class="comparison-panel chat-panel">
+          <div class="comparison-head"><strong>A chat keeps moving down</strong><span>One thread</span></div>
+          <div class="chat-window">
+            <div class="chat-stream">
+              <div class="chat-message user"><span class="role">You</span>How does this FastAPI endpoint work?</div>
+              <div class="chat-message long"><span class="role">Assistant</span>The request enters the application and is matched against a registered route. The framework then inspects the endpoint signature, builds a dependency graph, resolves each dependency, validates the request values...</div>
+              <div class="chat-message user"><span class="role">You</span>Wait—where are dependencies resolved?</div>
+              <div class="chat-message long"><span class="role">Assistant</span>Dependencies are resolved before the endpoint is called. FastAPI walks the dependant tree recursively, extracts values from the request, executes generators, collects errors...</div>
+              <div class="chat-message user"><span class="role">You</span>And how does that connect back to the route?</div>
+              <div class="chat-message long"><span class="role">Assistant</span>The solved values are passed into the endpoint function. Its return value then moves through response serialization and validation before the final response is created...</div>
+            </div>
+          </div>
+          <div class="chat-depth"></div>
+          <span class="problem-caption">Context disappears into the scroll</span>
+        </section>
+
+        <section class="comparison-panel walkthrough-panel">
+          <div class="comparison-head"><strong>A walkthrough moves with the code</strong><span>Five anchored stops</span></div>
+          <div class="collection-walkthrough">
+            <div class="file-collection">
+              <div class="collection-title"><span>FastAPI source</span><b>12 files</b></div>
+              <div class="collection-files">
+                <span class="collection-file">main.py</span>
+                <span class="collection-file pick" style="--delay:0s">applications.py</span>
+                <span class="collection-file">params.py</span>
+                <span class="collection-file pick" style="--delay:2s">routing.py</span>
+                <span class="collection-file pick" style="--delay:4s">dependencies/utils.py</span>
+                <span class="collection-file pick" style="--delay:8s">encoders.py</span>
+                <span class="collection-file pick" style="--delay:6s">concurrency.py</span>
+                <span class="collection-file">exceptions.py</span>
+                <span class="collection-file">_compat.py</span>
+                <span class="collection-file">responses.py</span>
+                <span class="collection-file">openapi/utils.py</span>
+                <span class="collection-file">security/base.py</span>
+              </div>
+            </div>
+
+            <div class="file-focus">
+              <span class="file-pull"></span>
+              <article class="focus-card" style="--delay:0s">
+                <div class="focus-card-head"><span class="tour-step">Stop 01 / 05</span><span class="file-path">fastapi/applications.py</span></div>
+                <h3>FastAPI.__call__</h3>
+                <p>The walkthrough begins where the application receives the request.</p>
+                <div class="mini-code"><span class="keyword">async def</span> <span class="function">__call__</span>(self, scope, receive, send):<br><span class="faint">&nbsp;&nbsp;# hand the request into the ASGI stack</span><br>&nbsp;&nbsp;await super().__call__(scope, receive, send)</div>
+              </article>
+              <article class="focus-card" style="--delay:2s">
+                <div class="focus-card-head"><span class="tour-step">Stop 02 / 05</span><span class="file-path">fastapi/routing.py</span></div>
+                <h3>get_request_handler</h3>
+                <p>Next, the selected route builds the handler for this endpoint.</p>
+                <div class="mini-code"><span class="keyword">def</span> <span class="function">get_request_handler</span>(dependant, body_field, ...):<br><span class="faint">&nbsp;&nbsp;# coordinate the request lifecycle</span><br>&nbsp;&nbsp;async def app(request):</div>
+              </article>
+              <article class="focus-card" style="--delay:4s">
+                <div class="focus-card-head"><span class="tour-step">Stop 03 / 05</span><span class="file-path">fastapi/dependencies/utils.py</span></div>
+                <h3>solve_dependencies</h3>
+                <p>The path jumps files to resolve everything the endpoint needs.</p>
+                <div class="mini-code">solved_result = await <span class="function">solve_dependencies</span>(<br>&nbsp;&nbsp;request=request,<br>&nbsp;&nbsp;dependant=dependant,<br>)</div>
+              </article>
+              <article class="focus-card" style="--delay:6s">
+                <div class="focus-card-head"><span class="tour-step">Stop 04 / 05</span><span class="file-path">fastapi/concurrency.py</span></div>
+                <h3>run_in_threadpool</h3>
+                <p>A synchronous endpoint crosses into the worker-thread boundary.</p>
+                <div class="mini-code"><span class="keyword">return await</span> <span class="function">run_in_threadpool</span>(<br>&nbsp;&nbsp;dependant.call,<br>&nbsp;&nbsp;**values,<br>)</div>
+              </article>
+              <article class="focus-card" style="--delay:8s">
+                <div class="focus-card-head"><span class="tour-step">Stop 05 / 05</span><span class="file-path">fastapi/encoders.py</span></div>
+                <h3>jsonable_encoder</h3>
+                <p>The final stop converts the endpoint result into response-safe data.</p>
+                <div class="mini-code">content = <span class="function">jsonable_encoder</span>(<br>&nbsp;&nbsp;response_content,<br>&nbsp;&nbsp;exclude_none=True,<br>)</div>
+              </article>
+              <div class="tour-progress">
+                <i style="--delay:0s"></i><i style="--delay:2s"></i><i style="--delay:4s"></i><i style="--delay:6s"></i><i style="--delay:8s"></i>
+              </div>
+            </div>
+          </div>
+          <span class="problem-caption">Select a file · learn the step · follow the next hop</span>
+        </section>
+      </div>
+      <div class="footer-rule">
+        <span><i class="status-dot"></i>The answer is not the map</span>
+        <span class="promise">Learning needs a path you can move through.</span>
+      </div>
+    </section>
+
+    <section class="slide slide-a" data-slide="architecture">
+      <div class="chrome">
+        <div class="brand"><span class="brand-mark"></span><span>CodeAlongAI</span><span class="x">×</span><span class="forge">TrueForge</span></div>
+        <div class="index">Architecture / 02</div>
+      </div>
+      <div class="title-block">
+        <div class="eyebrow">Bounded agent architecture</div>
+        <h1>From a code question to a <em>validated walkthrough.</em></h1>
+      </div>
+      <div class="a-diagram">
+        <div class="a-flow">
+          <article class="signal-node source">
+            <div class="signal-top"><div class="signal-icon">{ }</div><span class="pill">User-owned</span></div>
+            <div class="signal-kicker">01 / Native interface</div>
+            <div class="signal-name">CodeAlongAI in VS Code</div>
+            <div class="signal-desc">The learner asks from the exact code they are trying to understand.</div>
+          </article>
+          <div class="signal-arrow"><span>Ask / Reply</span></div>
+          <article class="signal-node">
+            <div class="signal-top"><div class="signal-icon">TF</div><span class="pill">Isolated</span></div>
+            <div class="signal-kicker">02 / Agent harness</div>
+            <div class="signal-name">TrueForge</div>
+            <div class="signal-desc">Reasons over bounded context and assembles the learning path.</div>
+          </article>
+          <div class="signal-arrow output"><span>Build walkthrough</span></div>
+          <article class="walkthrough-card">
+            <div class="walkthrough-head">
+              <div>
+                <span class="overline">Generated walkthrough</span>
+                <strong>How a request reaches its FastAPI route handler</strong>
+              </div>
+              <span class="walkthrough-meta">05 stops</span>
+            </div>
+            <div class="walkthrough-stops">
+              <div class="walkthrough-stop"><span class="stop-index">01</span><span class="stop-copy"><b>Application entrypoint</b><code>fastapi/applications.py · FastAPI()</code></span><span class="stop-kind">origin</span></div>
+              <div class="walkthrough-stop"><span class="stop-index">02</span><span class="stop-copy"><b>Route registration</b><code>@app.get("/items/{item_id}")</code></span><span class="stop-kind">jump</span></div>
+              <div class="walkthrough-stop"><span class="stop-index">03</span><span class="stop-copy"><b>Dependency graph</b><code>solve_dependencies(request, dependant)</code></span><span class="stop-kind">expand</span></div>
+              <div class="walkthrough-stop"><span class="stop-index">04</span><span class="stop-copy"><b>Endpoint execution</b><code>run_endpoint_function(**values)</code></span><span class="stop-kind">follow</span></div>
+              <div class="walkthrough-stop"><span class="stop-index">05</span><span class="stop-copy"><b>Response serialization</b><code>serialize_response(field, response)</code></span><span class="stop-kind">return</span></div>
+            </div>
+          </article>
+        </div>
+        <div class="walkthrough-return"><span>Validated walkthrough returns to CodeAlongAI</span></div>
+      </div>
+      <div class="footer-rule">
+        <span><i class="status-dot"></i>One question · one bounded turn · one explorable path</span>
+        <span class="promise">A linear answer becomes a journey through the codebase.</span>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const deck = ["problem", "architecture"];
+    let currentSlide = deck.includes(params.get("slide")) ? params.get("slide") : "problem";
+
+    if (params.has("still")) document.body.classList.add("still");
+
+    function fit() {
+      const scale = Math.min(innerWidth / 1920, innerHeight / 1080);
+      document.documentElement.style.setProperty("--scale", scale);
+    }
+
+    function showSlide(name) {
+      currentSlide = name;
+      document.querySelectorAll("[data-slide]").forEach((slide) => {
+        slide.classList.toggle("active", slide.dataset.slide === currentSlide);
+      });
+      const next = new URL(location.href);
+      next.searchParams.set("slide", currentSlide);
+      history.replaceState({}, "", next);
+    }
+
+    function moveSlide(direction) {
+      const index = deck.indexOf(currentSlide);
+      const nextIndex = Math.max(0, Math.min(deck.length - 1, index + direction));
+      showSlide(deck[nextIndex]);
+    }
+
+    addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === " ") moveSlide(1);
+      if (event.key === "ArrowLeft") moveSlide(-1);
+    });
+    addEventListener("resize", fit);
+    fit();
+    showSlide(currentSlide);
+  </script>
+</body>
+</html>

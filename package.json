@@ -2,7 +2,7 @@
   "name": "codealongai",
   "displayName": "CodeAlongAI",
   "description": "A model-free hackathon prototype for collaborating with an AI companion in the editor.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "krishnakartik1",
   "private": true,
   "engines": {
