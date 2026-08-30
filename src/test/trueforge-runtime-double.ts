@@ -22,6 +22,11 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public daytonaProbe: DaytonaProbeResult = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   public producerReadiness: TrueForgeProducerReadinessResult = { phase: 'ready', outcome: 'ready' };
   public readonly producerTurnCalls: { readonly producer: TrueForgeProducerRuntime; readonly kind: 'session' | 'turn' | 'events' }[] = [];
+  /** Deferred only by Extension Host ownership tests; production-shaped events
+   * still follow once it is released. */
+  public producerEventWait: Promise<void> | undefined;
+  public producerCancelCalls = 0;
+  public producerCancelled = false;
   public mcpPort: number | undefined;
   private producerIdentity: TrueForgeProducerRuntime | undefined;
   public get producer(): TrueForgeProducerRuntime {
@@ -30,10 +35,12 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
     let turn: Record<string, unknown> | undefined;
     const producer: TrueForgeProducerRuntime = {
       ...emptyTrueForgeProducer,
-      createSession: async (request) => { runtime.producerTurnCalls.push({ producer, kind: 'session' }); spec = request as Record<string, unknown>; return { data: { id: 'test-session' } }; },
+      createSession: async (request) => { runtime.producerCancelled = false; runtime.producerTurnCalls.push({ producer, kind: 'session' }); spec = request as Record<string, unknown>; return { data: { id: 'test-session' } }; },
       runTurn: async (input) => { runtime.producerTurnCalls.push({ producer, kind: 'turn' }); turn = input.request as Record<string, unknown>; return { data: { id: 'test-turn' } }; },
       events: async function* () {
         runtime.producerTurnCalls.push({ producer, kind: 'events' });
+        await runtime.producerEventWait;
+        if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
         const requestId = typeof text === 'string' ? text.match(/request ID ([^.]*)\./)?.[1] : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
@@ -45,6 +52,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         yield { type: 'tool.response', id: 'response-start', threadId: 'main', createdAt: '2026-01-01T00:00:03.000Z', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId, sessionId: 'test-session', revision: 1, attentionStopId: 'checkout-origin' }) };
         yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
       },
+      cancelTurn: async () => { runtime.producerCancelCalls += 1; runtime.producerCancelled = true; },
       probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } }
     };
     return this.producerIdentity ??= producer;

@@ -248,10 +248,14 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
+    // Capture once before asynchronous readiness. A second public Ask is a
+    // reference to this pending learner request, never a queued producer turn.
+    if (!current && authority.getPendingStart()) return undefined;
+    const startRequest = current ? undefined : authority.captureStart(origin);
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
       if (!await daytonaReadyForWalkthrough(commitAuthorizedOrigin)) return undefined;
       const replacement = authority.getPendingReplacement();
-      const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
+      const request = current ? (replacement ?? authority.captureReplacement(origin)) : startRequest!;
       const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
       try {
       if (current) {
@@ -261,7 +265,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const producer = trueForge.producer;
         const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
-          const cancellation = token.onCancellationRequested(() => { void startTurnOwner.dispose(); });
+          const cancellation = token.onCancellationRequested(() => { void startTurnOwner.cancel(); });
           try { return await startTurnOwner.start(producer, { requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }); }
           finally { cancellation.dispose(); }
         });

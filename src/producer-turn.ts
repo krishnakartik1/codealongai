@@ -126,6 +126,9 @@ export class ReceiptBackedStartCoordinator {
           if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
           const next = await beforeDeadline(iterator.next(), deadline);
           if (!next.completed) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+          // Cancellation may have arrived while the native iterator was
+          // blocked. Do not let its subsequently delivered receipt commit.
+          if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           if (next.value.done) break;
           const envelope = eventEnvelope(next.value.value);
           if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }

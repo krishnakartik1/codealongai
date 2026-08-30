@@ -14,5 +14,9 @@ export class StartTurnOwner {
     return operation;
   }
   public get requestId(): string | undefined { return this.active?.requestId; }
-  public async dispose(): Promise<void> { const active = this.active; this.active = undefined; await active?.coordinator.cancel(); }
+  /** Cancellation is intentionally not a release. The active operation keeps
+   * ownership until its cleanup has finished, so an adapter replacement cannot
+   * overlap a still-running native turn. */
+  public async cancel(): Promise<void> { await this.active?.coordinator.cancel(); }
+  public async dispose(): Promise<void> { await this.cancel(); }
 }

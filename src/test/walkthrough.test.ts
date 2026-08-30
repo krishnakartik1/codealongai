@@ -371,6 +371,49 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('does not queue duplicate public Asks and cancellation keeps the request pending', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const nativeWarning = notificationWindow.showWarningMessage;
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeError = errorWindow.showErrorMessage;
+      let discardCancelledRequest: ((action: string) => void) | undefined;
+      notificationWindow.showWarningMessage = (async (message: string) => message.startsWith('Reset this walkthrough?') ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      errorWindow.showErrorMessage = (() => new Promise<string>((resolve) => { discardCancelledRequest = resolve; })) as typeof vscode.window.showErrorMessage;
+      if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the walkthrough should reset'); }
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      let release: (() => void) | undefined;
+      commandRuntime.producerEventWait = new Promise<void>((resolve) => { release = resolve; });
+      const windowWithProgress = vscode.window as unknown as { withProgress: typeof vscode.window.withProgress };
+      const nativeWithProgress = windowWithProgress.withProgress;
+      const tokenSource = new vscode.CancellationTokenSource();
+      try {
+        windowWithProgress.withProgress = ((_: vscode.ProgressOptions, task: (progress: vscode.Progress<{ message?: string; increment?: number }>, token: vscode.CancellationToken) => Thenable<unknown>) => task({ report: () => undefined }, tokenSource.token)) as typeof vscode.window.withProgress;
+        const before = commandRuntime.producerTurnCalls.length;
+        const first = vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => commandRuntime.producerTurnCalls.length === before + 3 ? true : undefined, 'the first Ask should start its one producer turn');
+        const duplicate = vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(commandRuntime.producerTurnCalls.length, before + 3);
+        tokenSource.cancel();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(commandRuntime.producerCancelCalls > 0, true, 'the native progress cancellation token cancels the active producer turn');
+        release!();
+        await Promise.all([first, duplicate]);
+        assert.equal(commandRuntime.producerCancelCalls > 0, true);
+        assert.equal(api.session, undefined);
+        assert.equal(api.hasPendingWalkthroughRequest, true);
+        discardCancelledRequest!('Discard request');
+        await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the test should discard its cancelled request before later public tests');
+      } finally {
+        release?.(); commandRuntime.producerEventWait = undefined; windowWithProgress.withProgress = nativeWithProgress; notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; tokenSource.dispose();
+      }
+    }));
+  });
+
 });
 
 suite('MCP lifecycle', () => {
@@ -1246,6 +1289,23 @@ suite('receipt-backed start producer turn', () => {
     assert.equal(owner.start(runtime, input), owner.start(runtime, { ...input, requestId: 'request-2' }));
     await startedSession; await new Promise<void>((resolve) => setImmediate(resolve)); await owner.dispose();
     assert.equal(cancelCalls, 1);
+  });
+  test('holds ownership across cancellation until cleanup, then uses a replacement producer', async () => {
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let aSessions = 0; let bSessions = 0; let cancelled = 0;
+    const runtimeA: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { aSessions += 1; return { id: 'a-session' }; }, runTurn: async () => ({ id: 'a-turn' }), events: async function* () { await held; yield { type: 'turn.done', id: 'a-done', state: { status: 'done' } }; }, cancelTurn: async () => { cancelled += 1; } };
+    const runtimeB: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { bSessions += 1; return { id: 'b-session' }; }, runTurn: async () => ({ id: 'b-turn' }), events: async function* () { yield { type: 'turn.done', id: 'b-done', state: { status: 'done' } }; } };
+    const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
+    const first = owner.start(runtimeA, input);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await owner.cancel();
+    assert.equal(owner.start(runtimeB, { ...input, requestId: 'request-2' }), first);
+    assert.equal(aSessions, 1); assert.equal(bSessions, 0); assert.equal(cancelled, 1);
+    release!();
+    await first;
+    await owner.start(runtimeB, { ...input, requestId: 'request-2' });
+    assert.equal(bSessions, 1);
   });
   test('disables pinned SDK request retries and stream reconnects at client construction', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
