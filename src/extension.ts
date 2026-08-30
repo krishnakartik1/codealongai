@@ -405,7 +405,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     // Readiness and snapshot capture both await.  Revalidate the exact native
     // Reply origin immediately before consuming its single-use authority.
     let request = authority.getPendingQuestion() ?? retryQuestionRequest;
-    if (request && (request.sourceStopId !== sourceStopId || request.text !== text)) return;
+    if (request && (request.sourceStopId !== sourceStopId || request.text !== text)) { showPendingQuestion(request); return; }
     if (!request) {
       const snapshot = await captureQuestionSnapshot(session);
       const current = authority.getSession();
