@@ -258,6 +258,7 @@ suite('Extension Development Host walkthrough', () => {
       assert.equal(document.isDirty, false);
       assert.deepEqual(editor.selection, selection);
       await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the completed public reply should clear its request before another reply begins');
+      assert.equal(api.replyTargetAt('pricing-function'), undefined, 'the generated Definition must not create a native thread before explicit navigation');
 
       await vscode.commands.executeCommand('codealongai.walkthrough.next');
       const definitionSession = await eventually(() => api.session?.attentionStopId === 'pricing-function' ? api.session : undefined, 'the public Next command should move walkthrough attention to Definition');
