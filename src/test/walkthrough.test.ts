@@ -883,22 +883,24 @@ suite('TrueForge setup sidecar', () => {
 
   test('maps the complete producer contract through the pinned SDK client seam', async () => {
     const calls: unknown[] = [];
+    const abortSignal = new AbortController().signal;
+    const requestOptions = { abortSignal, timeoutInSeconds: 7.25 };
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', (baseUrl) => ({
       settings: { modelProviders: { list: async () => { calls.push([baseUrl, 'configured-providers']); return 'providers'; } }, skills: { list: async () => { calls.push('configured-skills'); return 'skills'; } }, sandboxProviders: { get: async () => { calls.push('configured-sandbox'); return 'sandbox'; }, createOrUpdate: async () => 'sandbox' } },
       catalogs: { modelProviders: { list: async () => { calls.push('catalog-providers'); return 'catalog'; } } },
       models: { list: async () => { calls.push('models'); return 'models'; } }, skills: { list: async () => { calls.push('skills'); return 'skills'; } },
       sessions: {
         create: async (input) => { calls.push(['create', input]); return 'session'; }, createTurn: async (id, input) => { calls.push(['turn', id, input]); return 'turn'; },
-        subscribeToTurn: async (id, turn) => { calls.push(['events', id, turn]); return (async function* () { yield 'event'; })(); }, cancel: async (id) => { calls.push(['cancel', id]); return undefined; }, delete: async (id) => { calls.push(['delete', id]); return undefined; }
+        subscribeToTurn: async (id, turn) => { calls.push(['events', id, turn]); return (async function* () { yield 'event'; })(); }, cancel: async (id, request, options) => { calls.push(['cancel', id, request, options]); return undefined; }, delete: async (id, options) => { calls.push(['delete', id, options]); return undefined; }
       }
     }));
     assert.deepEqual(await sdk.discoverConfiguration(), ['providers', 'skills', 'sandbox']);
     assert.equal(await sdk.discoverProviders(), 'catalog'); assert.equal(await sdk.discoverModels(), 'models'); assert.equal(await sdk.discoverSkills(), 'skills');
     assert.equal(await sdk.createSession({ agentId: 'a' }), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' } }), 'turn');
     const events: unknown[] = []; for await (const event of sdk.events('s', 't')) events.push(event);
-    await sdk.cancelTurn('s'); await sdk.deleteSession('s');
+    await sdk.cancelTurn('s', requestOptions); await sdk.deleteSession('s', requestOptions);
     assert.deepEqual(events, ['event']);
-    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's'], ['delete', 's']]);
+    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's', undefined, requestOptions], ['delete', 's', requestOptions]]);
   });
 
 });
@@ -1521,6 +1523,16 @@ suite('receipt-backed start producer turn', () => {
     releaseCancel!();
     assert.deepEqual(await operation, { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(calls, ['cancel:false', 'delete:false']);
+  });
+  test('passes the configured teardown timeout and one signal to cancel and delete', async () => {
+    const options: { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number }[] = [];
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { await new Promise<never>(() => undefined); }, cancelTurn: async (_id, requestOptions) => { options.push(requestOptions ?? {}); }, deleteSession: async (_id, requestOptions) => { options.push(requestOptions ?? {}); } };
+    await new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 123).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    assert.equal(options.length, 2);
+    assert.equal(options[0].timeoutInSeconds, 0.123);
+    assert.equal(options[1].timeoutInSeconds, 0.123);
+    assert.equal(options[0].abortSignal, options[1].abortSignal);
+    assert.equal(options[0].abortSignal?.aborted, false);
   });
   test('aborts a stalled native cancellation before owner disposal releases runtime shutdown', async () => {
     const calls: string[] = [];
