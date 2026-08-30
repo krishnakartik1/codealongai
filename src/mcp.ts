@@ -19,6 +19,11 @@ const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotent
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
 const defaultToolCallDeadlineMs = 30_000;
+interface GeneratedAnchor { readonly path: string; readonly startLine: number; readonly startCharacter: number; readonly endLine: number; readonly endCharacter: number; }
+function generatedAnchors(outcome: { kind: string; patch?: { addedStops: readonly { path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }[] } }): readonly GeneratedAnchor[] {
+  if (outcome.kind !== 'generated-walkthrough' || !outcome.patch) return [];
+  return outcome.patch.addedStops.map((stop) => ({ path: stop.path, startLine: stop.range.start.line, startCharacter: stop.range.start.character, endLine: stop.range.end.line, endCharacter: stop.range.end.character }));
+}
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
@@ -126,11 +131,14 @@ export class LoopbackMcpEndpoint {
     }, async (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
-        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor(stop.path, stop.range.start.line, stop.range.start.character, stop.range.end.line, stop.range.end.character)));
+        const commit = { requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision };
+        const cached = this.authority.cachedQuestionReceipt(commit, input.outcome as QuestionOutcome);
+        if (cached) return { structuredContent: cached, content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        for (const anchor of generatedAnchors(input.outcome)) await this.workspace.validateAnchor(anchor.path, anchor.startLine, anchor.startCharacter, anchor.endLine, anchor.endCharacter);
         // Validation can suspend. The same HTTP attempt must still own the
         // transition at the point we stage its receipt-backed candidate.
         if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
-        const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
+        const receipt = this.authority.commitQuestionOutcome(commit, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch (error) { return error instanceof WorkspaceError && (error.code === 'path_invalid' || error.code === 'range_invalid') ? domainErrorResult(error.code, error.code === 'path_invalid' ? 'The requested workspace file is unavailable.' : 'The requested line interval is invalid.', false) : domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });

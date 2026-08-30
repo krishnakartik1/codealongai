@@ -1,5 +1,6 @@
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './trueforge-contract';
+import type { QuestionReceipt } from './walkthrough';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
 export interface ProducerTurnInput {
@@ -11,12 +12,13 @@ export interface ProducerTurnInput {
   readonly mcpUrl: string;
   /** Production supplies the extension-owned receipt validator; fixture-only
    * coordinators may omit it. */
-  readonly acceptReceipt?: (receipt: StartReceipt) => boolean;
+  readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean;
   readonly rollbackTentativeStart?: () => void;
   readonly rollbackTentativeQuestion?: () => void;
 }
 
-export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
+export type ProducerReceipt = StartReceipt | QuestionReceipt;
+export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: ProducerReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
 export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: string; readonly sessionId: string; readonly revision: number; readonly attentionStopId: string; }
 
 const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
@@ -47,9 +49,9 @@ export class ProducerTurnReducer {
   private activeWalkthroughRead = false;
   private activeSession: { id: string; revision: number } | undefined;
   private questionRead: { path: string; startLine: number; endLine: number } | undefined;
-  private receipt: StartReceipt | undefined;
+  private receipt: ProducerReceipt | undefined;
   private failure: string | undefined;
-  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: StartReceipt) => boolean, private readonly kind: 'start' | 'question' = 'start') {}
+  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean, private readonly kind: 'start' | 'question' = 'start') {}
   public accept(event: unknown): void {
     if (this.receipt || this.failure) return;
     const record = object(event); if (!record) return;
@@ -335,7 +337,7 @@ function toolResult(value: Record<string, unknown>): { id: string; content: unkn
   const id = string(value.toolCallId); const content = string(value.content);
   return value.type === 'tool.response' && id && content !== undefined ? { id, content: jsonValue(content) } : undefined;
 }
-function receiptFrom(value: unknown): StartReceipt | undefined { const item = object(value); const candidate = object(item?.structuredContent) ?? item; return candidate?.schemaVersion === 1 && typeof candidate.requestId === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.revision === 'number' && typeof candidate.attentionStopId === 'string' ? candidate as unknown as StartReceipt : undefined; }
+function receiptFrom(value: unknown): ProducerReceipt | undefined { const item = object(value); const candidate = object(item?.structuredContent) ?? item; return candidate?.schemaVersion === 1 && typeof candidate.requestId === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.revision === 'number' && typeof candidate.attentionStopId === 'string' ? candidate as unknown as ProducerReceipt : undefined; }
 function authorizedOrigin(value: unknown, requestId: string): { path: string; startLine: number; endLine: number } | undefined {
   const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = finite(start?.line); const endLine = finite(end?.line);
   const startCharacter = finite(start?.character); const endCharacter = finite(end?.character);
