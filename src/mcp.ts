@@ -7,7 +7,8 @@ import type { NavigationDirection, OriginDescriptor, QuestionCommit, QuestionOut
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
-const pathInput = z.object({ schemaVersion, path: z.string().min(1), startLine: z.number().int().nonnegative().optional(), endLine: z.number().int().nonnegative().optional() }).strict();
+// Domain code, not Zod's generic parser error, owns stable path/range diagnostics.
+const pathInput = z.object({ schemaVersion, path: z.unknown().optional(), startLine: z.unknown().optional(), endLine: z.unknown().optional() }).strict();
 const position = z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict();
 const range = z.object({ start: position, end: position }).strict();
 const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
@@ -73,7 +74,7 @@ export class LoopbackMcpEndpoint {
     }));
     server.registerTool('codealongai_read_workspace_file', {
       description: 'Read bounded text from one workspace file.', inputSchema: pathInput, annotations: readAnnotations
-    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input)));
+    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input as { path: string; startLine?: number; endLine?: number })));
     server.registerTool('codealongai_search_workspace', {
       description: 'Search workspace text literally and case-sensitively.', inputSchema: z.object({ schemaVersion, query: z.string().min(1).refine((value) => !/[\r\n]/.test(value), 'query must be single-line'), cursor: z.string().optional() }).strict(), annotations: readAnnotations
     }, async (input: { schemaVersion: 1; query: string; cursor?: string }) => this.workspaceResult(async () => {

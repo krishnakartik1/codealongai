@@ -1375,6 +1375,19 @@ suite('workspace context over loopback MCP', () => {
       assert.deepEqual(rejected.structuredContent, { schemaVersion: 1, code: 'path_outside_workspace', message: 'The requested workspace file is unavailable.', retryable: false });
       const invalidRange = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts', startLine: 3, endLine: 4 } });
       assert.deepEqual(invalidRange.structuredContent, { schemaVersion: 1, code: 'range_invalid', message: 'The requested line interval is invalid.', retryable: false });
+      for (const arguments_ of [
+        { schemaVersion: 1, path: 'src/draft.ts', startLine: -1, endLine: 0 },
+        { schemaVersion: 1, path: 'src/draft.ts', startLine: 0.5, endLine: 1 },
+        { schemaVersion: 1, path: 'src/draft.ts', startLine: 1, endLine: 0 },
+        { schemaVersion: 1, path: 'src/draft.ts', startLine: 0 }
+      ]) {
+        const malformedRange = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: arguments_ });
+        assert.deepEqual(malformedRange.structuredContent, { schemaVersion: 1, code: 'range_invalid', message: 'The requested line interval is invalid.', retryable: false });
+      }
+      for (const path of ['', 42, undefined]) {
+        const malformedPath = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path } });
+        assert.deepEqual(malformedPath.structuredContent, { schemaVersion: 1, code: 'path_invalid', message: 'The requested workspace file is unavailable.', retryable: false });
+      }
     } finally {
       await transport.close();
       await endpoint.stop();

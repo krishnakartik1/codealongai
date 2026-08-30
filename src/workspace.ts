@@ -46,7 +46,8 @@ export class WorkspaceReader {
 
   public async read(request: { path: string; startLine?: number; endLine?: number }): Promise<{ path: string; startLine: number; endLine: number; text: string; dirty: boolean; documentVersion?: number }> {
     const { path: candidate, startLine, endLine } = request;
-    if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('path_invalid');
+    if (typeof candidate !== 'string' || !candidate) throw new WorkspaceError('path_invalid');
+    if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('range_invalid');
     const requested = normalizeWorkspacePath(candidate);
     this.requireWorkspace();
     const file = this.classify(await this.source.readFile(requested));
