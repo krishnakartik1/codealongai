@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { readdir } from 'node:fs/promises';
 
 export type NativeAcceptancePreflight = { readonly status: 'skip'; readonly reason: 'opt-in' | 'platform'; } | { readonly status: 'blocked'; readonly reason: 'configuration' | 'node' | 'build'; } | { readonly status: 'ready'; };
 export interface NativeAcceptanceInput { readonly enabled: boolean; readonly ubuntuX64: boolean; readonly nodeVersion: string; readonly buildCommit: string | undefined; readonly trueforgeVersion: string | undefined; readonly sdkVersion: string | undefined; readonly mcpServerVersion: string | undefined; readonly dataPath: string | undefined; readonly model: string | undefined; readonly reasoningEffort: string | undefined; readonly reply: string | undefined; }
@@ -31,4 +32,25 @@ export function validTurnCallSequence(kind: 'ask' | 'reply', calls: readonly str
   if (kind === 'reply' && calls[1] !== 'codealongai_get_walkthrough') return false;
   if (calls.slice(0, -1).some((name) => !readTools.has(name)) || calls.slice(1).includes('codealongai_get_walkthrough_request')) return false;
   return new Set(calls.slice(0, -1).filter((name) => name === 'codealongai_list_workspace_files')).size <= 1;
+}
+
+/** Counts only local Sandbox Runtime directory markers beneath the operator-owned store. Names never leave this function. */
+export async function localSandboxRuntimeDirectoryCount(store: string): Promise<number> {
+  let count = 0;
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(directory, entry.name);
+      if (entry.name === 'sandbox-runtime' || entry.name === '.sandbox-runtime') count += 1;
+      await visit(child);
+    }
+  };
+  await visit(store);
+  return count;
+}
+
+export interface NativeReadinessFacts { readonly provider: 'daytona'; readonly phases: readonly string[]; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly ownership: boolean; readonly probeCleaned: boolean; }
+/** Whitelist-only readiness evidence; rejects missing selected provider, build pin, connector, ownership, or cleanup. */
+export function validNativeReadinessFacts(facts: NativeReadinessFacts, buildCommit: string): boolean {
+  return facts.provider === 'daytona' && facts.phases.includes('snapshots') && facts.phases.includes('sandboxes') && facts.phases.includes('ready') && facts.skillCommit === buildCommit && /^[0-9a-f]{40}$/i.test(facts.skillCommit) && facts.connectorDiscovered && facts.ownership && facts.probeCleaned;
 }

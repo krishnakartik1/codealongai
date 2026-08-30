@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nativeUbuntuPreflight, safeNativeEvidence, validTurnCallSequence } from '../acceptance/native-ubuntu-preflight';
+import { localSandboxRuntimeDirectoryCount, nativeUbuntuPreflight, safeNativeEvidence, validNativeReadinessFacts, validTurnCallSequence } from '../acceptance/native-ubuntu-preflight';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { untilTeardown } from '../producer-turn';
 import { trueForgeCapabilitySummary } from '../trueforge-native';
 
@@ -31,4 +34,14 @@ test('public capability parsing retains only an exact server version', () => {
   assert.deepEqual(trueForgeCapabilitySummary(200, '{"version":"0.1.4","private":"ignored"}'), { available: true, version: '0.1.4' });
   assert.deepEqual(trueForgeCapabilitySummary(200, '{"version":"not-a-version"}'), { available: true, version: undefined });
   assert.deepEqual(trueForgeCapabilitySummary(500, '{}'), { available: false, version: undefined });
+});
+test('readiness evidence requires Daytona, build-pinned skill, connector, ownership, and cleanup', () => {
+  const commit = '2'.repeat(40); const facts = { provider: 'daytona' as const, phases: ['snapshots', 'sandboxes', 'ready'], skillCommit: commit, connectorDiscovered: true, ownership: true, probeCleaned: true };
+  assert.equal(validNativeReadinessFacts(facts, commit), true);
+  assert.equal(validNativeReadinessFacts({ ...facts, connectorDiscovered: false }, commit), false);
+});
+test('sandbox runtime count returns only a count', async () => {
+  const store = await mkdtemp(path.join(os.tmpdir(), 'codealongai-sandbox-count-'));
+  try { await mkdir(path.join(store, 'nested', 'sandbox-runtime'), { recursive: true }); assert.equal(await localSandboxRuntimeDirectoryCount(store), 1); }
+  finally { await rm(store, { recursive: true, force: true }); }
 });
