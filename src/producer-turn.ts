@@ -37,6 +37,12 @@ const replacementTool = 'codealongai_replace_walkthrough';
 const questionTool = 'codealongai_commit_question_outcome';
 const permittedTools = [...allowedReads, startTool];
 
+const providerDiagnostic = (value: unknown): string => {
+  if (!(value instanceof Error)) return String(value);
+  const cause = (value as Error & { cause?: unknown }).cause;
+  return cause === undefined ? value.message : `${value.message}: ${providerDiagnostic(cause)}`;
+};
+
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
 export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentSpec {
@@ -331,7 +337,7 @@ export class ReceiptBackedProducerCoordinator {
         }
       }
       return { status: 'failed', diagnostic: 'missing_receipt' };
-    } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
+    } catch (error) { return { status: 'failed', diagnostic: providerDiagnostic(error) }; }
     finally {
       // The MCP command may have committed just before a lost response,
       // cancellation, or malformed receipt. The authority itself decides

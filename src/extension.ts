@@ -164,7 +164,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     await producerTurnOwner.settled?.catch(() => undefined);
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
-  const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'path_invalid' | 'range_invalid' | 'sidecar_crash' => {
+  const startFailurePhase = (value: unknown): string => {
     const diagnostic = value instanceof Error ? value.message : '';
     if (diagnostic === 'cancelled') return 'cancellation';
     if (diagnostic === 'deadline_exceeded') return 'timeout';
@@ -172,7 +172,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (diagnostic === 'missing_receipt') return 'missing_receipt';
     if (diagnostic === 'path_invalid' || diagnostic === 'range_invalid') return diagnostic;
     if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
-    return 'provider_error';
+    return diagnostic || 'provider_error';
   };
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
     const retry = retryStart;
