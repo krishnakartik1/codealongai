@@ -120,6 +120,24 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     questionOutcomes.delete(requestId);
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
+  const clearStartRetry = (): void => { retryStart = undefined; };
+  const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'sidecar_crash' => {
+    const diagnostic = value instanceof Error ? value.message : '';
+    if (diagnostic === 'cancelled') return 'cancellation';
+    if (diagnostic === 'deadline_exceeded') return 'timeout';
+    if (diagnostic === 'unexpected_command') return 'unexpected_command';
+    if (diagnostic === 'missing_receipt') return 'missing_receipt';
+    if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
+    return 'provider_error';
+  };
+  const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
+    output.error(`Start turn failed (${phase}).`);
+    void vscode.window.showErrorMessage('CodeAlongAI could not start the walkthrough.', 'Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output').then((action) => {
+      if (action === 'Retry walkthrough') void retryStart?.();
+      if (action === 'Discard request' && authority.getPendingStart()?.id === requestId) { authority.discardStart(); clearStartRetry(); }
+      if (action === 'Show CodeAlongAI Output') output.show(true);
+    });
+  };
   const updateEndpoint = async (): Promise<void> => {
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
     const enabled = config.get<boolean>('enabled', false);
@@ -278,6 +296,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       disposeThreads();
       threadFor(session.stops[0], editor.document);
       retryReplacement = undefined;
+      clearStartRetry();
       return { endpointState, session };
     } catch (error) {
       if (current) {
@@ -295,11 +314,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         showReplacementFailure(request.id);
         return undefined;
       }
-      retryStart = async () => { await commitAuthorizedOrigin(); };
-      void vscode.window.showErrorMessage(`CodeAlongAI could not start the walkthrough: ${String(error)}`, 'Retry walkthrough', 'Discard request').then((action) => {
-        if (action === 'Retry walkthrough') void retryStart?.();
-        if (action === 'Discard request') authority.discardStart();
-      });
+      const failedRequestId = request.id;
+      retryStart = async () => {
+        // A retry is an ephemeral capability for precisely this still-pending
+        // request. It never revives a completed, discarded, or replaced turn.
+        if (authority.getSession() || authority.getPendingStart()?.id !== failedRequestId || startTurnOwner.activeRequestId !== undefined) return;
+        clearStartRetry();
+        await commitAuthorizedOrigin();
+      };
+      showStartFailure(failedRequestId, startFailurePhase(error));
         return undefined;
       }
     };
@@ -412,7 +435,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
-  disposeExtension = async () => { await startTurnOwner.dispose(); authority.discardStart(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
+  disposeExtension = async () => { clearStartRetry(); await startTurnOwner.dispose(); authority.discardStart(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
   context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();

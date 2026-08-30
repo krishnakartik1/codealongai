@@ -14,6 +14,7 @@ export class StartTurnOwner {
     return operation;
   }
   public get requestId(): string | undefined { return this.active?.requestId; }
+  public get activeRequestId(): string | undefined { return this.active?.requestId; }
   /** Cancellation is intentionally not a release. The active operation keeps
    * ownership until its cleanup has finished, so an adapter replacement cannot
    * overlap a still-running native turn. */
