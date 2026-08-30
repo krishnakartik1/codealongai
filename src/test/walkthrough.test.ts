@@ -1925,6 +1925,27 @@ suite('receipt-backed start producer turn', () => {
     await owner.start(runtimeB, { ...input, requestId: 'request-2' });
     assert.equal(bSessions, 1);
   });
+  test('disposes a committed turn through provider cleanup before runtime shutdown', async () => {
+    const calls: string[] = [];
+    const call = (id: string, name: string, args: object) => ({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    const response = (id: string, content: object) => ({ type: 'tool.response', id: `response-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(content) });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_sessionId, _turnId, _after, options) {
+      yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' });
+      yield response('authority', { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } });
+      yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 });
+      yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } });
+      yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' });
+      yield response('start', { schemaVersion: 1, requestId: 'request-1', sessionId: 'walkthrough', revision: 1, attentionStopId: 'origin' });
+      await waitForAbort(options?.abortSignal);
+    }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    const owner = new ProducerTurnOwner();
+    const committed = await owner.start(runtime, { requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } });
+    assert.equal(committed.status, 'committed', 'the receipt must admit a subsequent turn before terminal grace settles');
+    const disposing = owner.dispose();
+    await disposing;
+    calls.push('runtime-shutdown');
+    assert.deepEqual(calls, ['cancel', 'delete', 'runtime-shutdown']);
+  });
   test('retains a cancelled creating session until it is deleted before shutdown', async () => {
     let resolveSession: ((value: { id: string }) => void) | undefined;
     let turns = 0; const deleted: string[] = []; let createOptions: import('../trueforge-contract').TrueForgeRequestOptions | undefined;
