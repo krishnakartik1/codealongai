@@ -2,7 +2,7 @@ import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
 import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './trueforge-contract';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
-export interface StartTurnInput {
+export interface ProducerTurnInput {
   /** Native Reply uses the same short-lived receipt coordinator as Ask. */
   readonly kind?: 'start' | 'question';
   readonly requestId: string;
@@ -16,7 +16,7 @@ export interface StartTurnInput {
   readonly rollbackTentativeQuestion?: () => void;
 }
 
-export type StartTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
+export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
 export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: string; readonly sessionId: string; readonly revision: number; readonly attentionStopId: string; }
 
 const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
@@ -26,7 +26,7 @@ const permittedTools = [...allowedReads, startTool];
 
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
-export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.AgentSpec {
+export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentSpec {
   const question = input.kind === 'question';
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
@@ -38,7 +38,7 @@ export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.Agen
 }
 
 /** Normalizes native and system tool events without trusting their prose. */
-export class StartTurnReducer {
+export class ProducerTurnReducer {
   private readonly seenEvents = new Set<string>();
   private pending: { id: string; name: string } | undefined;
   private readonly deferredResults = new Map<string, unknown>();
@@ -61,7 +61,7 @@ export class StartTurnReducer {
     if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
   }
-  public get result(): StartTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
+  public get result(): ProducerTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
   public fail(diagnostic: string): void { if (!this.receipt) this.failure = diagnostic; }
   private acceptCall(call: ProducerCall): void {
     if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
@@ -112,10 +112,10 @@ export class StartTurnReducer {
 }
 
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
-export class ReceiptBackedStartCoordinator {
-  private active: Promise<StartTurnResult> | undefined;
-  private cleanup: Promise<StartTurnResult> | undefined;
-  private publish: ((result: StartTurnResult) => void) | undefined;
+export class ReceiptBackedProducerCoordinator {
+  private active: Promise<ProducerTurnResult> | undefined;
+  private cleanup: Promise<ProducerTurnResult> | undefined;
+  private publish: ((result: ProducerTurnResult) => void) | undefined;
   private activeSessionId: string | undefined;
   private cancelled = false;
   private cancelWaiter: (() => void) | undefined;
@@ -124,10 +124,10 @@ export class ReceiptBackedStartCoordinator {
   private nativeCancel: Promise<void> | undefined;
   private teardown: { readonly controller: AbortController; readonly timer: ReturnType<typeof setTimeout> } | undefined;
   public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number, signal?: AbortSignal) => Promise<void> = gracePeriod, private readonly teardownTimeoutMs = 5_000) {}
-  public start(input: StartTurnInput): Promise<StartTurnResult> {
+  public start(input: ProducerTurnInput): Promise<ProducerTurnResult> {
     if (this.active) return this.active;
-    let publish!: (result: StartTurnResult) => void;
-    const visible = new Promise<StartTurnResult>((resolve) => { publish = resolve; });
+    let publish!: (result: ProducerTurnResult) => void;
+    const visible = new Promise<ProducerTurnResult>((resolve) => { publish = resolve; });
     this.publish = publish;
     const cleanup = this.run(input, publish);
     this.active = visible; this.cleanup = cleanup;
@@ -137,7 +137,7 @@ export class ReceiptBackedStartCoordinator {
     return visible;
   }
   /** Completion of the bounded ownership/cleanup lease, not user-visible success. */
-  public get settled(): Promise<StartTurnResult> | undefined { return this.cleanup; }
+  public get settled(): Promise<ProducerTurnResult> | undefined { return this.cleanup; }
   /** Wake every producer wait immediately. Cleanup remains owned by run(). */
   public cancel(): void {
     if (this.cancelled) return;
@@ -147,11 +147,11 @@ export class ReceiptBackedStartCoordinator {
     this.abort.abort();
     if (this.activeSessionId) this.beginTeardown(this.activeSessionId);
   }
-  private async run(input: StartTurnInput, publish: (result: StartTurnResult) => void): Promise<StartTurnResult> {
+  private async run(input: ProducerTurnInput, publish: (result: ProducerTurnResult) => void): Promise<ProducerTurnResult> {
     let sessionId: string | undefined;
     const deadline = Date.now() + this.timeoutMs;
     try {
-      const creating = this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } }, teardownOptions(this.abort.signal, this.timeoutMs));
+      const creating = this.runtime.createSession({ agent: { spec: producerAgentSpec(input) } }, teardownOptions(this.abort.signal, this.timeoutMs));
       const session = await beforeDeadline(creating, deadline, this.cancelledSignal);
       if (!session.completed) {
         if (session.cancelled) {
@@ -173,10 +173,10 @@ export class ReceiptBackedStartCoordinator {
       if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
-      const reducer = new StartTurnReducer(input.requestId, input.acceptReceipt, input.kind ?? 'start');
+      const reducer = new ProducerTurnReducer(input.requestId, input.acceptReceipt, input.kind ?? 'start');
       let lastSequence = -1;
       const seenSequences = new Set<number>();
-      let receipt: Extract<StartTurnResult, { status: 'committed' }> | undefined;
+      let receipt: Extract<ProducerTurnResult, { status: 'committed' }> | undefined;
       let receiptGrace: Promise<{ completed: true; value: void } | { completed: false; cancelled: boolean }> | undefined;
       let reconciliationCutoff: number | undefined;
       // A native stream can close between a persisted call and response. Subscribe

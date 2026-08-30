@@ -21,11 +21,11 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
-import { DaytonaProbeState, producerAgentSpec, trueForgeClientOptions } from '../trueforge-sdk';
+import { DaytonaProbeState, producerAgentSpec as readinessProducerAgentSpec, trueForgeClientOptions } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
-import { ReceiptBackedStartCoordinator, StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
-import { StartTurnOwner } from '../start-turn-owner';
+import { ReceiptBackedProducerCoordinator, ProducerTurnReducer, producerAgentSpec } from '../producer-turn';
+import { ProducerTurnOwner } from '../start-turn-owner';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -1209,7 +1209,7 @@ suite('producer readiness', () => {
       }
     });
 
-    await client.sessions.create({ agent: { spec: producerAgentSpec({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }) } });
+    await client.sessions.create({ agent: { spec: readinessProducerAgentSpec({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }) } });
 
     assert.deepEqual(wireRequest, {
       agent: {
@@ -1482,7 +1482,7 @@ suite('bounded workspace context', () => {
 });
 
 suite('receipt-backed start producer turn', () => {
-  const acceptExactOriginRead = (reducer: StartTurnReducer): void => {
+  const acceptExactOriginRead = (reducer: ProducerTurnReducer): void => {
     reducer.accept({ type: 'model.message', id: 'origin-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'origin', type: 'function', function: { name: 'codealongai_read_workspace_file', arguments: JSON.stringify({ schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2 }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'origin-response', threadId: 'main', createdAt: 'now', toolCallId: 'origin', content: JSON.stringify({ structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }) });
   };
@@ -1586,7 +1586,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackRuntime(endpoint.port!, request.id, () => tentative!(), Promise.resolve(), false);
-      const result = await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => authority.rollbackTentativeStart() });
+      const result = await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => authority.rollbackTentativeStart() });
       await tentativeSeen;
       assert.deepEqual(result, { status: 'failed', diagnostic: 'missing_receipt' });
       assert.equal(authority.getSession(), undefined);
@@ -1599,7 +1599,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), Promise.resolve(), false);
-      const result = await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      const result = await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
       await tentativeSeen;
       assert.deepEqual(result, { status: 'failed', diagnostic: 'missing_receipt' });
       assert.deepEqual(authority.getSession(), before);
@@ -1612,7 +1612,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), Promise.resolve(), false);
-      const operation = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      const operation = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
       await tentativeSeen;
       const committed = authority.getSession()!;
       authority.navigateDestination({ sessionId: committed.id, revision: committed.revision, targetStopId: 'origin' });
@@ -1632,7 +1632,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), responseGate, true);
-      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined);
       const operation = coordinator.start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
       await tentativeSeen;
       coordinator.cancel();
@@ -1648,7 +1648,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => undefined, Promise.resolve(), true, true);
-      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined);
       const result = await coordinator.start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
       assert.equal(result.status, 'committed');
       const accepted = authority.getSession()!;
@@ -1666,7 +1666,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackRuntime(endpoint.port!, request.id, () => tentative!(), responseGate, true);
-      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined);
       const operation = coordinator.start({ requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => authority.rollbackTentativeStart() });
       await tentativeSeen;
       assert.equal(authority.getSession(), undefined, 'the loopback start must stay private before its response');
@@ -1683,7 +1683,7 @@ suite('receipt-backed start producer turn', () => {
     await endpoint.start(0);
     try {
       const runtime = loopbackRuntime(endpoint.port!, request.id, () => undefined, Promise.resolve(), true);
-      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined);
       const result = await coordinator.start({ requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => authority.rollbackTentativeStart() });
       assert.equal(result.status, 'committed');
       const session = authority.getSession();
@@ -1714,7 +1714,7 @@ suite('receipt-backed start producer turn', () => {
     const pending = new Promise<never>(() => undefined);
     let started: (() => void) | undefined; const startedSession = new Promise<void>((resolve) => { started = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { started!(); return { id: 'session' }; }, runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { await Promise.race([pending, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { cancelCalls += 1; } };
-    const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
+    const owner = new ProducerTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
     assert.equal(owner.start(runtime, input), owner.start(runtime, input));
     assert.deepEqual(await owner.start(runtime, { ...input, requestId: 'request-2' }), { status: 'failed', diagnostic: 'start_busy' });
     await startedSession; await new Promise<void>((resolve) => setImmediate(resolve)); await owner.dispose();
@@ -1726,7 +1726,7 @@ suite('receipt-backed start producer turn', () => {
     let aSessions = 0; let bSessions = 0; let cancelled = 0;
     const runtimeA: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { aSessions += 1; return { id: 'a-session' }; }, runTurn: async () => ({ id: 'a-turn' }), events: async function* () { await held; yield { type: 'turn.done', id: 'a-done', state: { status: 'done' } }; }, cancelTurn: async () => { cancelled += 1; } };
     const runtimeB: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { bSessions += 1; return { id: 'b-session' }; }, runTurn: async () => ({ id: 'b-turn' }), events: async function* () { yield { type: 'turn.done', id: 'b-done', state: { status: 'done' } }; } };
-    const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
+    const owner = new ProducerTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
     const first = owner.start(runtimeA, input);
     await new Promise<void>((resolve) => setImmediate(resolve));
     await owner.cancel();
@@ -1742,7 +1742,7 @@ suite('receipt-backed start producer turn', () => {
     let resolveSession: ((value: { id: string }) => void) | undefined;
     let turns = 0; const deleted: string[] = []; let createOptions: import('../trueforge-contract').TrueForgeRequestOptions | undefined;
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async (_request, options) => { createOptions = options; return new Promise<{ id: string }>((resolve) => { resolveSession = resolve; }); }, runTurn: async () => { turns += 1; return { id: 'turn' }; }, deleteSession: async (id) => { deleted.push(id); } };
-    const owner = new StartTurnOwner();
+    const owner = new ProducerTurnOwner();
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => resolveSession ? true : undefined, 'session creation should begin');
     await owner.cancel();
@@ -1766,7 +1766,7 @@ suite('receipt-backed start producer turn', () => {
     let resolveCancel: (() => void) | undefined;
     const nativeCancel = new Promise<void>((resolve) => { resolveCancel = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await Promise.race([never, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { calls.push('cancel'); await nativeCancel; }, deleteSession: async () => { calls.push('delete'); } };
-    const owner = new StartTurnOwner();
+    const owner = new ProducerTurnOwner();
     owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => owner.activeRequestId === 'request-1' ? true : undefined, 'the owner should retain the active turn');
     await enteredEvents;
@@ -1787,7 +1787,7 @@ suite('receipt-backed start producer turn', () => {
     let releaseCancel: (() => void) | undefined; const cancelHeld = new Promise<void>((resolve) => { releaseCancel = resolve; });
     let enteredCancel: (() => void) | undefined; const cancelEntered = new Promise<void>((resolve) => { enteredCancel = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { await waitForAbort(options?.abortSignal); }, cancelTurn: async (_id, options) => { calls.push(`cancel:${String(options?.abortSignal?.aborted)}`); enteredCancel!(); await cancelHeld; }, deleteSession: async (_id, options) => { calls.push(`delete:${String(options?.abortSignal?.aborted)}`); } };
-    const operation = new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 100).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    const operation = new ReceiptBackedProducerCoordinator(runtime, 5, async () => undefined, 100).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await cancelEntered;
     await new Promise((resolve) => setTimeout(resolve, 10));
     releaseCancel!();
@@ -1797,7 +1797,7 @@ suite('receipt-backed start producer turn', () => {
   test('passes the configured teardown timeout and one signal to cancel and delete', async () => {
     const options: { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number }[] = [];
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, requestOptions) { await waitForAbort(requestOptions?.abortSignal); }, cancelTurn: async (_id, requestOptions) => { options.push(requestOptions ?? {}); }, deleteSession: async (_id, requestOptions) => { options.push(requestOptions ?? {}); } };
-    await new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 123).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await new ReceiptBackedProducerCoordinator(runtime, 5, async () => undefined, 123).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     assert.equal(options.length, 2);
     assert.equal(options[0].timeoutInSeconds, 0.123);
     assert.equal(options[1].timeoutInSeconds, 0.123);
@@ -1808,7 +1808,7 @@ suite('receipt-backed start producer turn', () => {
     const calls: string[] = [];
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await waitForAbort(options?.abortSignal); }, cancelTurn: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('cancel'); options?.abortSignal?.addEventListener('abort', () => { calls.push('cancel-aborted'); reject(new Error('aborted')); }, { once: true }); }), deleteSession: async () => { calls.push('delete'); } };
-    const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
+    const owner = new ProducerTurnOwner((activeRuntime) => new ReceiptBackedProducerCoordinator(activeRuntime, 100_000, async () => undefined, 5));
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await enteredEvents;
     await owner.dispose();
@@ -1821,7 +1821,7 @@ suite('receipt-backed start producer turn', () => {
     const calls: string[] = [];
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, _after, options) { entered!(); await waitForAbort(options?.abortSignal); }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('delete'); options?.abortSignal?.addEventListener('abort', () => { calls.push('delete-aborted'); reject(new Error('aborted')); }, { once: true }); }) };
-    const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
+    const owner = new ProducerTurnOwner((activeRuntime) => new ReceiptBackedProducerCoordinator(activeRuntime, 100_000, async () => undefined, 5));
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await enteredEvents;
     await owner.dispose();
@@ -1834,7 +1834,7 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
   });
   test('accepts only a correlated start receipt after matching request authority', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'call-1', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) });
     acceptExactOriginRead(reducer);
@@ -1844,17 +1844,17 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('rejects actionable events without the pinned main-thread identity', () => {
-    const missing = new StartTurnReducer('request-1');
+    const missing = new ProducerTurnReducer('request-1');
     missing.accept({ type: 'model.message', threadId: 'main', toolCalls: [] });
     assert.deepEqual(missing.result, { status: 'failed', diagnostic: 'tool_provenance' });
-    const foreign = new StartTurnReducer('request-1');
+    const foreign = new ProducerTurnReducer('request-1');
     foreign.accept({ type: 'model.message', id: 'call', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     foreign.accept({ type: 'tool.response', id: 'response', threadId: 'other', toolCallId: 'authority', content: '{}' });
     assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool_provenance' });
   });
 
   test('requires the exact public origin read schema before transition', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'authority', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) });
     reducer.accept({ type: 'model.message', id: 'origin', threadId: 'main', toolCalls: [{ id: 'origin', type: 'function', function: { name: 'codealongai_read_workspace_file', arguments: JSON.stringify({ path: 'checkout.ts', startLine: 2, endLine: 2 }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
@@ -1864,14 +1864,14 @@ suite('receipt-backed start producer turn', () => {
 
   test('allows exactly eight completed pre-transition calls and rejects the ninth', () => {
     const authorityResult = { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 4, character: 0 } } } } };
-    const call = (reducer: StartTurnReducer, id: string, name: string, args: object, result: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(result) }); };
-    const allowed = new StartTurnReducer('request-1');
+    const call = (reducer: ProducerTurnReducer, id: string, name: string, args: object, result: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(result) }); };
+    const allowed = new ProducerTurnReducer('request-1');
     call(allowed, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
     call(allowed, 'origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 4 }, { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 4, text: 'x' } });
     for (let index = 0; index < 6; index += 1) call(allowed, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
     allowed.accept({ type: 'model.message', id: 'call-start', threadId: 'main', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     assert.equal(allowed.result, undefined);
-    const ninth = new StartTurnReducer('request-1');
+    const ninth = new ProducerTurnReducer('request-1');
     call(ninth, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
     for (let index = 0; index < 8; index += 1) call(ninth, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
     ninth.accept({ type: 'model.message', id: 'call-nine', threadId: 'main', toolCalls: [{ id: 'nine', type: 'function', function: { name: 'codealongai_search_workspace', arguments: JSON.stringify({ query: 'literal' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
@@ -1879,7 +1879,7 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('rejects a second sequential workspace list before any transition', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     const call = (id: string, name: string, args: object, content: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(content) }); };
     call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } } } } });
     call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 3 }, { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 3, text: 'x' } });
@@ -1889,8 +1889,8 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('uses the smallest exclusive origin line interval for multi-line authority ranges', () => {
-    const accept = (endCharacter: number, readEndLine: number): StartTurnReducer => {
-      const reducer = new StartTurnReducer('request-1');
+    const accept = (endCharacter: number, readEndLine: number): ProducerTurnReducer => {
+      const reducer = new ProducerTurnReducer('request-1');
       reducer.accept({ type: 'model.message', id: 'authority-call', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
       reducer.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 3 }, end: { line: 5, character: endCharacter } } } } }) });
       reducer.accept({ type: 'model.message', id: 'read-call', threadId: 'main', toolCalls: [{ id: 'read', type: 'function', function: { name: 'codealongai_read_workspace_file', arguments: JSON.stringify({ path: 'checkout.ts', startLine: 2, endLine: readEndLine }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
@@ -1903,16 +1903,16 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('fails an out-of-order tool call and refuses sandbox command events', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'request_authority_required' });
-    const command = new StartTurnReducer('request-1');
+    const command = new ProducerTurnReducer('request-1');
     command.accept({ type: 'sandbox.command' });
     assert.deepEqual(command.result, { status: 'failed', diagnostic: 'unexpected_command' });
   });
 
   test('deduplicates a replayed pinned event by its stable string id', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     const authority = { type: 'model.message', id: 'replayed-call', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] };
     reducer.accept(authority); reducer.accept(authority);
     reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) });
@@ -1923,37 +1923,37 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('normalizes the pinned deferred MCP call_tool wrapper only for CodeAlongAI', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'wrapped-authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_get_walkthrough_request', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
     reducer.accept({ type: 'tool.response', id: 'wrapped-authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) });
     acceptExactOriginRead(reducer);
     reducer.accept({ type: 'model.message', id: 'wrapped-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'codealongai-mcp', tool_name: 'codealongai_start_walkthrough', input: JSON.stringify({ requestId: 'request-1' }) }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
     reducer.accept({ type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) });
     assert.equal(reducer.result?.status, 'committed');
-    const foreign = new StartTurnReducer('request-1');
+    const foreign = new ProducerTurnReducer('request-1');
     foreign.accept({ type: 'model.message', id: 'foreign', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'other', tool_name: 'codealongai_get_walkthrough_request', input: '{}' }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
     assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool_provenance' });
   });
 
   test('requires a successful authority result before bounded origin context', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     const call = (id: string, name: string, arguments_: object) => reducer.accept({ type: 'model.message', id, threadId: 'main', createdAt: 'now', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(arguments_) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' });
     call('too-early', 'codealongai_list_workspace_files', {});
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'result_required' });
-    const malformed = new StartTurnReducer('request-1');
+    const malformed = new ProducerTurnReducer('request-1');
     malformed.accept({ type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     malformed.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ isError: true }) });
     assert.deepEqual(malformed.result, { status: 'failed', diagnostic: 'tool_result_invalid' });
   });
   test('rejects a mismatched start authority receipt before any context call', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'authority', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'other-request', kind: 'question', authorizedAction: 'question', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) });
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'request_authority_invalid' });
   });
   test('preserves safe workspace error codes without retaining tool text', () => {
-    const reducer = new StartTurnReducer('request-1');
+    const reducer = new ProducerTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'authority', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     reducer.accept({ type: 'tool.response', id: 'authority-result', threadId: 'main', toolCallId: 'authority', content: JSON.stringify({ isError: true, structuredContent: { code: 'path_invalid', message: 'secret provider text' } }) });
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'path_invalid' });
@@ -1961,7 +1961,7 @@ suite('receipt-backed start producer turn', () => {
 
   test('normalizes pinned MCP error arrays without retaining their text', () => {
     const reject = (content: object): unknown => {
-      const reducer = new StartTurnReducer('request-1');
+      const reducer = new ProducerTurnReducer('request-1');
       reducer.accept({ type: 'model.message', id: 'authority', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
       reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', toolCallId: 'authority', content: JSON.stringify(content) });
       return reducer.result;
@@ -1978,12 +1978,12 @@ suite('receipt-backed start producer turn', () => {
     const never = new Promise<never>(() => undefined);
     const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' };
     const base = (overrides: Partial<TrueForgeProducerRuntime>): TrueForgeProducerRuntime => ({ ...emptyTrueForgeProducer, createSession: async () => ({ data: { id: 'session' } }), runTurn: async () => ({ data: { id: 'turn' } }), events: async function* () { yield* []; }, ...overrides });
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ createSession: async () => never }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(base({ createSession: async () => never }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
     const cleanup: string[] = [];
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ runTurn: async () => never, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(base({ runTurn: async () => never, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(cleanup, ['cancel', 'delete']);
     cleanup.length = 0;
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(base({ events: async function* (_s, _t, _after, options) { await Promise.race([never, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(base({ events: async function* (_s, _t, _after, options) { await Promise.race([never, waitForAbort(options?.abortSignal)]); }, cancelTurn: async () => { cleanup.push('cancel'); }, deleteSession: async () => { cleanup.push('delete'); } }), 5).start(input), { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(cleanup, ['cancel', 'delete']);
   });
 
@@ -1992,7 +1992,7 @@ suite('receipt-backed start producer turn', () => {
     const call = (id: string, name: string, arguments_: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'model.message', id: `call-${id}`, threadId: 'main', createdAt: 'now', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(arguments_) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } });
     const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield response('start', receipt, 1); }, listTurnEvents: async () => [call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 2), response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 3), call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 4), response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 5), call('start', 'codealongai_start_walkthrough', { requestId: 'request-1', origin: {} }, 6), { sequenceNumber: 7, event: { type: 'turn.done', state: { status: 'done' } } }] };
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
   });
 
   test('restores a persisted lower-sequence call before a live higher-sequence response', async () => {
@@ -2001,7 +2001,7 @@ suite('receipt-backed start producer turn', () => {
     const response = (id: string, content: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `response-${id}`, threadId: 'main', createdAt: 'now', toolCallId: id, content: JSON.stringify(id === 'authority' ? { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', ...content } : content) } });
     const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 2); return; } yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 3); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 4); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 5); yield response('start', receipt, 6); yield { sequenceNumber: 7, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 1)] };
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
     assert.deepEqual(subscriptions, [undefined, 2]);
   });
 
@@ -2009,7 +2009,7 @@ suite('receipt-backed start producer turn', () => {
     const never = new Promise<readonly unknown[]>(() => undefined);
     const calls: string[] = [];
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield* []; }, listTurnEvents: async () => never, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 5).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 5).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'deadline_exceeded' });
     assert.deepEqual(calls, ['cancel', 'delete']);
   });
 
@@ -2020,7 +2020,7 @@ suite('receipt-backed start producer turn', () => {
     const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
     let cancels = 0;
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 7); return; } assert.equal(cancels, 0, 'recoverable EOF must not cancel before reconciliation and resubscription'); yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 8); yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 9); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 10); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 11); yield response('start', receipt, 12); yield { sequenceNumber: 13, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [], cancelTurn: async () => { cancels += 1; } };
-    assert.equal((await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
+    assert.equal((await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
     assert.deepEqual(subscriptions, [undefined, 7]);
   });
 
@@ -2030,14 +2030,14 @@ suite('receipt-backed start producer turn', () => {
     const response = (id: string, content: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `response-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(id === 'authority' ? { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', ...content } : content) } });
     const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 7); throw new Error('interrupted'); } assert.equal(cancels, 0, 'the first interruption must not cancel before recovery'); yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 8); yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 9); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 10); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 11); yield response('start', receipt, 12); yield { sequenceNumber: 13, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [], cancelTurn: async () => { cancels += 1; } };
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
     assert.deepEqual(subscriptions, [undefined, 7]);
   });
 
   test('fails a second thrown pinned stream interruption', async () => {
     let attempts = 0;
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { attempts += 1; throw new Error('interrupted'); }, listTurnEvents: async () => [] };
-    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'producer_error' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'producer_error' });
     assert.equal(attempts, 2);
   });
 
@@ -2046,7 +2046,7 @@ suite('receipt-backed start producer turn', () => {
     let releaseTerminal: (() => void) | undefined; const terminalReleased = new Promise<void>((resolve) => { releaseTerminal = resolve; });
     let receiptPublished: (() => void) | undefined; const receiptSeen = new Promise<void>((resolve) => { receiptPublished = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { const call = (id: string, name: string, args: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'model.message', id, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }); const response = (id: string, content: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `${id}-response`, threadId: 'main', toolCallId: id, content: JSON.stringify(content) } }); yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 1); yield response('authority', { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 2); yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 3); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 4); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 5); yield response('start', { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }, 6); receiptPublished!(); await terminalReleased; yield { sequenceNumber: 7, event: { type: 'turn.done', state: { status: 'error' } } }; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
-    const coordinator = new ReceiptBackedStartCoordinator(runtime, 100_000, async (ms) => { grace.push(ms); });
+    const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100_000, async (ms) => { grace.push(ms); });
     const operation = coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await receiptSeen;
     assert.equal((await operation).status, 'committed');
@@ -2068,7 +2068,7 @@ suite('receipt-backed start producer turn', () => {
       yield response('start', { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }, 6);
       await never;
     }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
-    const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined, 20);
+    const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined, 20);
     assert.equal((await coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
     assert.deepEqual(await coordinator.settled, { status: 'committed', receipt: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } });
     assert.deepEqual(calls, ['cancel', 'delete']);
@@ -2087,7 +2087,7 @@ suite('receipt-backed start producer turn', () => {
       yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 5);
       yield response('start', { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }, 6);
     }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
-    const coordinator = new ReceiptBackedStartCoordinator(runtime, 100_000, async (_ms, signal) => { enteredGrace!(); signal?.addEventListener('abort', () => resolveGrace!(), { once: true }); await graceReleased; });
+    const coordinator = new ReceiptBackedProducerCoordinator(runtime, 100_000, async (_ms, signal) => { enteredGrace!(); signal?.addEventListener('abort', () => resolveGrace!(), { once: true }); await graceReleased; });
     const operation = coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await graceEntered;
     assert.equal((await operation).status, 'committed');
@@ -2097,7 +2097,7 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('creates a capability-minimal Daytona agent spec with a selected skill', () => {
-    const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as unknown as Record<string, unknown>;
+    const spec = producerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as unknown as Record<string, unknown>;
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
     assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).fileDownloads, false);
     assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], requireApprovalForTools: [] }]);
@@ -2105,7 +2105,7 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('creates the exact native Reply capability set', () => {
-    const spec = startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) as unknown as { mcpServers: { enableTools: string[]; requireApprovalForTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { enabled: boolean; fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean }; iterationLimit: number }; model: { params: { parallelToolCalls: boolean } }; instructions: string };
+    const spec = producerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) as unknown as { mcpServers: { enableTools: string[]; requireApprovalForTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { enabled: boolean; fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean }; iterationLimit: number }; model: { params: { parallelToolCalls: boolean } }; instructions: string };
     assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], requireApprovalForTools: [] }]);
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
     assert.equal(spec.config.sandbox.enabled, true); assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.config.iterationLimit, 9); assert.equal(spec.model.params.parallelToolCalls, false);
@@ -2122,7 +2122,7 @@ suite('receipt-backed start producer turn', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address(); assert.ok(address && typeof address === 'object');
     try {
-      await new TrueForge({ baseUrl: `http://127.0.0.1:${address.port}` }).sessions.create({ agent: { spec: startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
+      await new TrueForge({ baseUrl: `http://127.0.0.1:${address.port}` }).sessions.create({ agent: { spec: producerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
       assert.equal(received.url, '/api/v1/sessions');
       assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
@@ -2139,7 +2139,7 @@ suite('receipt-backed start producer turn', () => {
     const address = server.address(); assert.ok(address && typeof address === 'object');
     try {
       const runtime = new SdkTrueForgeProducerRuntime(`http://127.0.0.1:${address.port}`);
-      await runtime.createSession({ agent: { spec: startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
+      await runtime.createSession({ agent: { spec: producerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
       assert.equal(received.url, '/api/v1/sessions');
       assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }

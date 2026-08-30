@@ -10,7 +10,7 @@ import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
-import { StartTurnOwner } from './start-turn-owner';
+import { ProducerTurnOwner } from './start-turn-owner';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -63,8 +63,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
-  const startTurnOwner = new StartTurnOwner();
-  const questionTurnOwner = new StartTurnOwner();
+  const startTurnOwner = new ProducerTurnOwner();
+  const questionTurnOwner = new ProducerTurnOwner();
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
