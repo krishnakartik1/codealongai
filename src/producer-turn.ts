@@ -56,6 +56,14 @@ const producerTurnMessage = (input: ProducerTurnInput): string => {
   return `A CodeAlongAI user has asked to start a walkthrough. Retrieve the authorized request with ID "${input.requestId}" using CodeAlongAI MCP, create exactly that walkthrough, commit it, and stop at the matching receipt.`;
 };
 
+const commonProducerInstructions = 'Work on only the named authorized request. The selected CodeAlongAI skill is already available: do not read or load its file and do not call any command or exec tool; proceed directly with CodeAlongAI MCP. Use no other skill, command, subagent, approval, code execution, workspace mutation, provider credential, navigation, or reset. Call CodeAlongAI MCP tools sequentially. Read the authorized request and only the bounded context needed to produce it. Commit exactly the matching authorized transition and stop immediately after its matching receipt. Do not reveal source text, request snapshots, MCP payloads, credentials, or reasoning in final prose.';
+const exactAuthorizedOriginInstructions = 'Read exactly its authorized origin interval: use range.start.line as startLine and one past its last occupied line as endLine. Never widen or guess a larger interval.';
+const producerInstructions = (kind: ProducerTurnInput['kind']): string => kind === 'question'
+  ? `Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough and captured stop excerpt. Choose the smallest valid question outcome, using additional workspace reads only if the snapshot is insufficient. If choosing a generated-walkthrough outcome, include a non-empty grounded append-only graph patch from the captured context. ${commonProducerInstructions}`
+  : kind === 'replacement'
+    ? `Produce exactly one CodeAlongAI replacement transition. First read the exact authorized replacement request. ${exactAuthorizedOriginInstructions} ${commonProducerInstructions}`
+    : `Produce exactly one CodeAlongAI start transition. First read the exact authorized request. ${exactAuthorizedOriginInstructions} ${commonProducerInstructions}`;
+
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
 export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentSpec {
@@ -66,7 +74,7 @@ export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentS
     skills: [{ name: 'codealongai' }],
     mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : replacement ? [...allowedReads, replacementTool] : permittedTools, requireApprovalForTools: [], preload: true }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
-    instructions: question ? 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' : replacement ? 'Produce exactly one CodeAlongAI replacement transition. First read the exact authorized replacement request, then read exactly its authorized origin interval: use range.start.line as startLine and one past its last occupied line as endLine. Never widen or guess a larger interval. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, downloads, ask for approval, ask the user, retry, or create subagents.' : 'Produce exactly one CodeAlongAI start transition. First read the exact authorized request, then read exactly its authorized origin interval: use range.start.line as startLine and one past its last occupied line as endLine. Never widen or guess a larger interval. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, downloads, ask for approval, ask the user, retry, or create subagents.'
+    instructions: producerInstructions(input.kind)
   };
 }
 
