@@ -91,78 +91,96 @@ suite('MCP lifecycle', () => {
   test('serializes setting churn so the last valid configuration wins', async () => {
     const calls: string[] = [];
     let releaseStart: (() => void) | undefined;
-    const lifecycle = new McpLifecycle(async (port) => ({
-      start: async () => { calls.push(`start:${port}`); if (port === 4100) await new Promise<void>((resolve) => { releaseStart = resolve; }); },
-      stop: async () => { calls.push(`stop:${port}`); }
-    }));
-    const starting = lifecycle.configure({ enabled: true, port: 4100 });
+    let listenerAttempt = 0;
+    const lifecycle = new McpLifecycle(async () => {
+      const attempt = ++listenerAttempt;
+      return {
+        port: 4000 + attempt,
+        start: async () => { calls.push(`start:${attempt}`); if (attempt === 1) await new Promise<void>((resolve) => { releaseStart = resolve; }); },
+        stop: async () => { calls.push(`stop:${attempt}`); }
+      };
+    });
+    const starting = lifecycle.configure({ enabled: true });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const disabling = lifecycle.configure({ enabled: false, port: 4100 });
-    const enabling = lifecycle.configure({ enabled: true, port: 4200 });
+    const disabling = lifecycle.configure({ enabled: false });
+    const enabling = lifecycle.configure({ enabled: true });
     releaseStart!();
     await Promise.all([starting, disabling, enabling]);
     assert.equal(lifecycle.state, 'ready');
-    assert.equal(lifecycle.port, 4200);
-    assert.deepEqual(calls, ['start:4100', 'stop:4100', 'start:4200']);
+    assert.equal(lifecycle.port, 4001);
+    assert.deepEqual(calls, ['start:1']);
   });
 
-  test('preserves an active walkthrough while a real listener is disabled', async () => {
+  test('dynamically allocates real listeners across disable and re-enable without changing the walkthrough', async () => {
     const authority = new WalkthroughAuthority();
     const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
     const start = authority.captureStart(origin);
     const session = authority.start(start.id, origin);
-    const reservation = new LoopbackMcpEndpoint(authority);
-    await reservation.start(0);
-    const port = reservation.port!;
-    await reservation.stop();
-    const lifecycle = new McpLifecycle(async (configuredPort) => {
+    const lifecycle = new McpLifecycle(async () => {
       const endpoint = new LoopbackMcpEndpoint(authority);
-      return { start: () => endpoint.start(configuredPort), stop: () => endpoint.stop() };
+      return { get port() { return endpoint.port; }, start: () => endpoint.start(0), stop: () => endpoint.stop() };
     });
-    await lifecycle.configure({ enabled: true, port });
-    await lifecycle.configure({ enabled: false, port });
+    await lifecycle.configure({ enabled: true });
+    const firstPort = lifecycle.port;
+    assert.ok(firstPort && firstPort > 1023, 'the real listener should own an allocated loopback port');
+    await lifecycle.configure({ enabled: false });
+    await lifecycle.configure({ enabled: true });
+    assert.ok(lifecycle.port && lifecycle.port > 1023, 're-enabling should allocate a real loopback listener');
+    assert.equal(lifecycle.state, 'ready');
+    await lifecycle.configure({ enabled: false });
     assert.equal(lifecycle.state, 'off');
     assert.deepEqual(authority.getSession(), session);
   });
 
-  test('rejects an invalid port before stopping a ready endpoint', async () => {
+  test('allocates a listener-owned port and retries bind failures no more than three times', async () => {
     const calls: string[] = [];
-    const lifecycle = new McpLifecycle(async (port) => ({ start: async () => { calls.push(`start:${port}`); }, stop: async () => { calls.push(`stop:${port}`); } }));
-    await lifecycle.configure({ enabled: true, port: 4100 });
-    await assert.rejects(() => lifecycle.configure({ enabled: true, port: 12 }), /1024/);
+    let attempts = 0;
+    const lifecycle = new McpLifecycle(async () => {
+      const attempt = ++attempts;
+      return {
+        port: 4300 + attempt,
+        start: async () => { calls.push(`start:${attempt}`); if (attempt < 4) throw new Error('in use'); },
+        stop: async () => { calls.push(`stop:${attempt}`); }
+      };
+    });
+    await lifecycle.configure({ enabled: true });
     assert.equal(lifecycle.state, 'ready');
-    assert.equal(lifecycle.port, 4100);
-    assert.deepEqual(calls, ['start:4100']);
+    assert.equal(lifecycle.port, 4304);
+    assert.deepEqual(calls, ['start:1', 'stop:1', 'start:2', 'stop:2', 'start:3', 'stop:3', 'start:4']);
   });
 
-  test('returns off after a bind failure and can recover on a later valid setting', async () => {
+  test('returns off after exhausting allocation retries and can recover when re-enabled', async () => {
     const calls: string[] = [];
-    const lifecycle = new McpLifecycle(async (port) => ({
-      start: async () => { calls.push(`start:${port}`); if (port === 4100) throw new Error('in use'); },
-      stop: async () => { calls.push(`stop:${port}`); }
+    let shouldFail = true;
+    const lifecycle = new McpLifecycle(async () => ({
+      port: 4400,
+      start: async () => { calls.push('start'); if (shouldFail) throw new Error('in use'); },
+      stop: async () => { calls.push('stop'); }
     }));
-    await assert.rejects(() => lifecycle.configure({ enabled: true, port: 4100 }), /in use/);
+    await assert.rejects(() => lifecycle.configure({ enabled: true }), /in use/);
     assert.equal(lifecycle.state, 'off');
-    await lifecycle.configure({ enabled: true, port: 4200 });
+    shouldFail = false;
+    await lifecycle.configure({ enabled: true });
     assert.equal(lifecycle.state, 'ready');
-    assert.deepEqual(calls, ['start:4100', 'start:4200']);
+    assert.deepEqual(calls, ['start', 'stop', 'start', 'stop', 'start', 'stop', 'start', 'stop', 'start']);
   });
 
-  test('ignores a bind failure superseded by a newer saved port', async () => {
+  test('ignores a bind failure superseded by a disabled lifecycle', async () => {
     let rejectStart: ((error: Error) => void) | undefined;
-    const lifecycle = new McpLifecycle(async (port) => ({
+    const lifecycle = new McpLifecycle(async () => ({
+      port: 4500,
       start: async () => {
-        if (port === 4100) await new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+        await new Promise<void>((_resolve, reject) => { rejectStart = reject; });
       },
       stop: async () => undefined
     }));
-    const first = lifecycle.configure({ enabled: true, port: 4100 });
+    const first = lifecycle.configure({ enabled: true });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const replacement = lifecycle.configure({ enabled: true, port: 4200 });
+    const replacement = lifecycle.configure({ enabled: false });
     rejectStart!(new Error('in use'));
     await Promise.all([first, replacement]);
-    assert.equal(lifecycle.state, 'ready');
-    assert.equal(lifecycle.port, 4200);
+    assert.equal(lifecycle.state, 'off');
+    assert.equal(lifecycle.port, undefined);
   });
 });
 
@@ -187,8 +205,7 @@ suite('walkthrough start authority', () => {
       { command: 'codealongai.walkthrough.destinations', when: 'false' }
     ]);
     assert.deepEqual(manifest.contributes.configuration.properties, {
-      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
-      'codealongai.mcp.port': { type: 'number', default: 61337, scope: 'window', description: 'Loopback port for the CodeAlongAI MCP endpoint.' }
+      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' }
     });
     assert.ok(manifest.contributes.menus['comments/commentThread/context'].some((item) => item.command === 'codealongai.walkthrough.submitComment' && item.when === 'commentController == codealongai.walkthrough' && item.group === 'inline'));
     assert.ok(manifest.contributes.menus['comments/commentThread/title'].some((item) => item.command === 'codealongai.walkthrough.destinations' && item.when === 'commentThread =~ /codealongaiWalkthrough/ && commentThread =~ /hasDestinations/'));

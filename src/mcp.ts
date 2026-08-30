@@ -146,10 +146,15 @@ export class LoopbackMcpEndpoint {
     this.listener = http.createServer((request, response) => {
       void this.handleRequest(request, response, createServer);
     });
-    await new Promise<void>((resolve, reject) => {
-      this.listener?.once('error', reject);
-      this.listener?.listen(port, '127.0.0.1', resolve);
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.listener?.once('error', reject);
+        this.listener?.listen(port, '127.0.0.1', resolve);
+      });
+    } catch (error) {
+      this.listener = undefined;
+      throw error;
+    }
   }
 
   public async stop(): Promise<void> {

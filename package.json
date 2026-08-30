@@ -106,12 +106,6 @@
           "default": false,
           "scope": "window",
           "description": "Enable the local CodeAlongAI MCP endpoint."
-        },
-        "codealongai.mcp.port": {
-          "type": "number",
-          "default": 61337,
-          "scope": "window",
-          "description": "Loopback port for the CodeAlongAI MCP endpoint."
         }
       }
     }

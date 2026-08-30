@@ -1,12 +1,15 @@
 /** A listener is deliberately narrower than the walkthrough authority: lifecycle
  * changes may replace this resource, but never the active walkthrough session. */
 export interface McpListener {
+  readonly port: number | undefined;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
 
 export type McpLifecycleState = 'off' | 'starting' | 'ready' | 'stopping';
-export interface McpConfiguration { enabled: boolean; port: number; }
+export interface McpConfiguration { enabled: boolean; }
+
+const maximumAllocationRetries = 3;
 
 /**
  * Serializes configuration changes into one desired listener configuration.  The
@@ -14,24 +17,21 @@ export interface McpConfiguration { enabled: boolean; port: number; }
  */
 export class McpLifecycle {
   private current: McpListener | undefined;
-  private currentPort: number | undefined;
-  private desired: McpConfiguration = { enabled: false, port: 61337 };
+  private desired: McpConfiguration = { enabled: false };
   private desiredRevision = 0;
   private running: Promise<void> = Promise.resolve();
   private _state: McpLifecycleState = 'off';
 
-  public constructor(private readonly createListener: (port: number) => Promise<McpListener> | McpListener) {}
+  public constructor(private readonly createListener: () => Promise<McpListener> | McpListener) {}
 
   public get state(): McpLifecycleState { return this._state; }
-  public get port(): number | undefined { return this.currentPort; }
+  /** The allocated port is available only to the extension's collaborators. */
+  public get port(): number | undefined { return this.current?.port; }
 
   public configure(configuration: McpConfiguration): Promise<void> {
-    if (!Number.isInteger(configuration.port) || configuration.port < 1024 || configuration.port > 65535) {
-      return Promise.reject(new RangeError('CodeAlongAI MCP port must be an integer from 1024 through 65535.'));
-    }
     this.desired = { ...configuration };
     this.desiredRevision++;
-    if (this.current && (!configuration.enabled || this.currentPort !== configuration.port)) this._state = 'stopping';
+    if (this.current && !configuration.enabled) this._state = 'stopping';
     else if (!this.current && configuration.enabled) this._state = 'starting';
     // Keep the queue usable after a bind failure; this call still receives the
     // error from its own reconciliation.
@@ -40,7 +40,7 @@ export class McpLifecycle {
   }
 
   public async dispose(): Promise<void> {
-    this.desired = { ...this.desired, enabled: false };
+    this.desired = { enabled: false };
     this.desiredRevision++;
     if (this.current) this._state = 'stopping';
     this.running = this.running.catch(() => undefined).then(() => this.reconcile());
@@ -55,31 +55,30 @@ export class McpLifecycle {
         await this.stopCurrent();
         continue;
       }
-      if (this.current && this.currentPort === this.desired.port) { this._state = 'ready'; return; }
-      if (this.current) {
-        await this.stopCurrent();
-        continue;
-      }
-      const port = this.desired.port;
+      if (this.current) { this._state = 'ready'; return; }
       const revision = this.desiredRevision;
       this._state = 'starting';
-      const listener = await this.createListener(port);
-      try {
-        await listener.start();
-      } catch (error) {
-        this._state = 'off';
-        // A newer saved configuration supersedes this failed attempt; do not
-        // make an obsolete bind result turn off its replacement.
-        if (revision !== this.desiredRevision) continue;
-        throw error;
+      let lastError: unknown;
+      for (let retry = 0; retry <= maximumAllocationRetries; retry += 1) {
+        const listener = await this.createListener();
+        try {
+          await listener.start();
+        } catch (error) {
+          lastError = error;
+          await listener.stop().catch(() => undefined);
+          if (revision !== this.desiredRevision || !this.desired.enabled) break;
+          continue;
+        }
+        this.current = listener;
+        // Do not report a transient ready state when disable arrived during startup.
+        if (!this.desired.enabled || revision !== this.desiredRevision) break;
+        this._state = 'ready';
+        return;
       }
-      // Do not report a transient ready state when disable/port-change arrived
-      // during startup; reconcile it immediately.
-      this.current = listener;
-      this.currentPort = port;
-      if (!this.desired.enabled || this.desired.port !== port) continue;
-      this._state = 'ready';
-      return;
+      if (this.current) continue;
+      this._state = 'off';
+      if (revision !== this.desiredRevision || !this.desired.enabled) continue;
+      throw lastError;
     }
   }
 
@@ -88,7 +87,7 @@ export class McpLifecycle {
     if (!listener) return;
     this._state = 'stopping';
     await listener.stop();
-    if (this.current === listener) { this.current = undefined; this.currentPort = undefined; }
+    if (this.current === listener) this.current = undefined;
     this._state = 'off';
   }
 }

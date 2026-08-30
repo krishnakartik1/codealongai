@@ -31,13 +31,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.commentingRangeProvider = { provideCommentingRanges: () => [] };
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
-  let activePort: number | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
-  const lifecycle = new McpLifecycle(async (port) => {
+  const lifecycle = new McpLifecycle(async () => {
     const listener = new LoopbackMcpEndpoint(authority, vscodeWorkspaceSource());
     return {
-      start: async () => { await listener.start(port); endpoint = listener; activePort = listener.port; output.info(`MCP ready on configured port ${port}.`); },
-      stop: async () => { await listener.stop(); if (endpoint === listener) { endpoint = undefined; activePort = undefined; } output.info(`MCP listener stopped on configured port ${port}.`); }
+      get port() { return listener.port; },
+      start: async () => { await listener.start(0); endpoint = listener; output.info('MCP endpoint is ready.'); },
+      stop: async () => { await listener.stop(); if (endpoint === listener) endpoint = undefined; output.info('MCP endpoint stopped.'); }
     };
   });
   let endpointState: McpLifecycleState = 'off';
@@ -83,21 +83,20 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const updateEndpoint = async (): Promise<void> => {
     const config = vscode.workspace.getConfiguration('codealongai.mcp');
     const enabled = config.get<boolean>('enabled', false);
-    const port = config.get<number>('port', 61337);
     try {
-      const configured = lifecycle.configure({ enabled, port });
+      const configured = lifecycle.configure({ enabled });
       endpointState = lifecycle.state;
       void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false);
       await configured;
       endpointState = lifecycle.state;
       void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', endpointState === 'ready');
-      output.info(`MCP lifecycle is ${endpointState}; configured port ${port}.`);
+      output.info(`MCP lifecycle is ${endpointState}.`);
     } catch (error) {
       endpointState = lifecycle.state;
       void vscode.commands.executeCommand('setContext', 'codealongai.mcpReady', false);
-      const message = error instanceof RangeError ? error.message : 'CodeAlongAI could not start MCP. Check that the configured loopback port is available.';
-      output.error(`MCP lifecycle error (${error instanceof RangeError ? 'invalid_port' : 'bind_failed'}): ${String(error)}`);
-      if (!(error instanceof RangeError) && config.get<boolean>('enabled', false) === enabled && config.get<number>('port', 61337) === port) await config.update('enabled', false, vscode.ConfigurationTarget.Workspace);
+      const message = 'CodeAlongAI could not start MCP.';
+      output.error(`MCP lifecycle error (bind_failed): ${String(error)}`);
+      if (config.get<boolean>('enabled', false) === enabled) await config.update('enabled', false, vscode.ConfigurationTarget.Workspace);
       void vscode.window.showErrorMessage(message);
     }
   };
@@ -141,8 +140,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     try {
       if (current) {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
-        await commitDeterministicReplacement(activePort!, request.id, current.id, current.revision, descriptor);
-      } else await commitDeterministicOrigin(vscode.workspace.getConfiguration('codealongai.mcp').get<number>('port', 61337), request.id, descriptor);
+        await commitDeterministicReplacement(lifecycle.port!, request.id, current.id, current.revision, descriptor);
+      } else await commitDeterministicOrigin(lifecycle.port!, request.id, descriptor);
       const session = authority.getSession();
       if (!session) throw new Error('the producer did not create a walkthrough');
       const pendingQuestion = authority.getPendingQuestion();
@@ -156,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         retryReplacement = async () => {
           try {
             if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
-            await commitDeterministicReplacement(activePort!, request.id, current.id, current.revision, descriptor);
+            await commitDeterministicReplacement(lifecycle.port!, request.id, current.id, current.revision, descriptor);
             const session = authority.getSession();
             if (!session) throw new Error('the producer did not create a walkthrough');
             disposeThreads();
@@ -213,7 +212,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     questionOutcomes.set(request.id, outcome);
     try {
       const requestStatus = authority.getQuestionRequest(request.id)?.status;
-      await commitDeterministicQuestion(activePort!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome);
+      await commitDeterministicQuestion(lifecycle.port!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome);
       questionOutcomes.delete(request.id);
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
