@@ -24,16 +24,20 @@ catch { process.stderr.write('BLOCKED native-ubuntu-acceptance: configuration.\n
 
 const temporary = await mkdtemp(join(tmpdir(), 'codealongai-native-ubuntu-'));
 const profile = join(temporary, 'profile');
+const observation = join(temporary, 'observation.json');
 const sink = { write() { return true; } };
+let result = 'FAIL';
+let cleanup = [];
+let observed = { phases: [], calls: [], receiptMatched: false, terminalDone: false, cleanup: [] };
 try {
   await mkdir(join(profile, 'User'), { recursive: true });
   await writeFile(join(profile, 'User', 'settings.json'), `${JSON.stringify({ 'codealongai.mcp.enabled': true, 'codealongai.trueforge.dataPath': input.dataPath, 'codealongai.trueforge.model': input.model, 'codealongai.trueforge.reasoningEffort': input.reasoningEffort })}\n`);
   await run('npm', ['run', 'package'], { cwd: root });
   await run('unzip', ['-q', join(root, 'codealongai.vsix'), '-d', join(temporary, 'vsix')]);
-  const code = await runTests({ extensionDevelopmentPath: join(temporary, 'vsix', 'extension'), extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1' }, stdout: sink, stderr: sink });
-  process.stdout.write(JSON.stringify(safeNativeEvidence({ result: code === 0 ? 'PASS' : 'FAIL', phases: [], calls: [], receiptMatched: false, terminalDone: false, cleanup: code === 0 ? ['profile-delete'] : [] })) + '\n');
-  process.exitCode = code === 0 ? 0 : 1;
-} catch {
-  process.stderr.write(JSON.stringify(safeNativeEvidence({ result: 'FAIL', phases: [], calls: [], receiptMatched: false, terminalDone: false, cleanup: [] })) + '\n');
-  process.exitCode = 1;
-} finally { await rm(temporary, { recursive: true, force: true }); }
+  const code = await runTests({ extensionDevelopmentPath: join(temporary, 'vsix', 'extension'), extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1', CODEALONGAI_NATIVE_ACCEPTANCE_OBSERVATION: observation }, stdout: sink, stderr: sink });
+  if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0) throw new Error('incomplete observation'); result = 'PASS'; }
+} catch { result = 'FAIL'; }
+try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
+catch { result = 'FAIL'; }
+process.stdout.write(JSON.stringify(safeNativeEvidence({ result, ...observed, cleanup: [...observed.cleanup, ...cleanup] })) + '\n');
+process.exitCode = result === 'PASS' ? 0 : 1;

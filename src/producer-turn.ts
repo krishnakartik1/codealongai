@@ -16,7 +16,11 @@ export interface ProducerTurnInput {
   readonly rollbackTentativeStart?: () => void;
   readonly rollbackTentativeReplacement?: () => void;
   readonly rollbackTentativeQuestion?: () => void;
+  /** Acceptance-only, normalized event summary. It never receives IDs, text, paths, or payloads. */
+  readonly observe?: (event: ProducerTurnObservation) => void;
 }
+
+export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden'; readonly name?: string; };
 
 export type ProducerReceipt = StartReceipt | QuestionReceipt;
 export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: ProducerReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
@@ -116,6 +120,17 @@ export class ProducerTurnReducer {
   public get hasReceipt(): boolean { return this.receipt !== undefined; }
 }
 
+/** Converts live adapter events into a bounded acceptance vocabulary before any test seam can observe them. */
+function observeProducerEvent(observe: ProducerTurnInput['observe'], event: unknown): void {
+  if (!observe) return;
+  const record = object(event); if (!record) return;
+  const type = string(record.type);
+  if (type === 'model.message') { const calls = modelToolCalls(record); if (calls.length === 1) observe({ kind: 'call', name: calls[0].name }); return; }
+  if (terminalState(event) === 'done') observe({ kind: 'terminal-done' });
+  else if (terminalState(event) === 'failed') observe({ kind: 'terminal-failed' });
+  else if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') observe({ kind: 'forbidden' });
+}
+
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
 export class ReceiptBackedProducerCoordinator {
   private active: Promise<ProducerTurnResult> | undefined;
@@ -171,12 +186,12 @@ export class ReceiptBackedProducerCoordinator {
         if (!session.cancelled) this.abort.abort();
         return { status: 'failed', diagnostic: session.cancelled ? 'cancelled' : 'deadline_exceeded' };
       }
-      sessionId = idOf(session.value); this.activeSessionId = sessionId;
+      sessionId = idOf(session.value); this.activeSessionId = sessionId; input.observe?.({ kind: 'session-created' });
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
       const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `${input.kind ?? 'start'}\n${input.requestId}` }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
       if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
-      const turnId = idOf(turn.value);
+      const turnId = idOf(turn.value); input.observe?.({ kind: 'turn-created' });
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new ProducerTurnReducer(input.requestId, input.acceptReceipt, input.kind ?? 'start');
       let lastSequence = -1;
@@ -218,9 +233,10 @@ export class ReceiptBackedProducerCoordinator {
           const envelope = eventEnvelope(next.value.value.value);
           if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
           reducer.accept(envelope.event);
+          observeProducerEvent(input.observe, envelope.event);
           const result = reducer.result;
           if (result?.status === 'failed') return result;
-          if (result?.status === 'committed') { receipt = result; publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
+          if (result?.status === 'committed') { receipt = result; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
           const terminal = terminalState(envelope.event);
           if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
@@ -252,10 +268,10 @@ export class ReceiptBackedProducerCoordinator {
           for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
             const envelope = eventEnvelope(event);
             if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
-            reducer.accept(envelope.event);
+            reducer.accept(envelope.event); observeProducerEvent(input.observe, envelope.event);
             const reconciled = reducer.result;
             if (reconciled?.status === 'failed') return reconciled;
-            if (reconciled?.status === 'committed') { receipt = reconciled; publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
+            if (reconciled?.status === 'committed') { receipt = reconciled; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
             const terminal = terminalState(envelope.event);
             if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
             if (terminal === 'done' && receipt) return receipt;
@@ -277,11 +293,11 @@ export class ReceiptBackedProducerCoordinator {
       for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
         const envelope = eventEnvelope(event);
         if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); }
-        reducer.accept(envelope.event);
+        reducer.accept(envelope.event); observeProducerEvent(input.observe, envelope.event);
         const reconciled = reducer.result;
         if (reconciled?.status === 'failed') return reconciled;
         if (reconciled?.status === 'committed') {
-          publish(reconciled);
+          input.observe?.({ kind: 'receipt-matched' }); publish(reconciled);
           const grace = await beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal);
           return grace.completed ? reconciled : { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
         }
@@ -302,7 +318,7 @@ export class ReceiptBackedProducerCoordinator {
           // The pinned SDK receives this AbortSignal on its actual HTTP request.
           // Do not start deletion when cancellation did not settle in teardown.
           const cancelled = await untilTeardown(this.nativeCancel!, teardown.controller.signal);
-          if (cancelled && !teardown.controller.signal.aborted) await untilTeardown(this.runtime.deleteSession(sessionId, teardownOptions(teardown.controller.signal, this.teardownTimeoutMs)), teardown.controller.signal);
+          if (cancelled && !teardown.controller.signal.aborted) { await untilTeardown(this.runtime.deleteSession(sessionId, teardownOptions(teardown.controller.signal, this.teardownTimeoutMs)), teardown.controller.signal); input.observe?.({ kind: 'session-deleted' }); }
         } finally { clearTimeout(teardown.timer); }
       }
     }

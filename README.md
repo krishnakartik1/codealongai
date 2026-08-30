@@ -62,6 +62,9 @@ V1 proves one model-backed Ask and one Reply that adds graph stops. It excludes
 provider onboarding, non-Ubuntu/non-x64 hosts, non-Daytona sandboxes,
 multi-window coordination, workspace mutation, and any claim that the shipped
 extension is model- or network-free once an operator enables this integration.
+Marketplace publication, multi-platform packaging, dependency upgrades,
+additional sandbox providers, automatic provider-private cleanup, and
+production observability are also out of scope.
 
 ## Install the latest release
 
