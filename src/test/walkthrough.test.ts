@@ -890,17 +890,17 @@ suite('TrueForge setup sidecar', () => {
       catalogs: { modelProviders: { list: async () => { calls.push('catalog-providers'); return 'catalog'; } } },
       models: { list: async () => { calls.push('models'); return 'models'; } }, skills: { list: async () => { calls.push('skills'); return 'skills'; } },
       sessions: {
-        create: async (input) => { calls.push(['create', input]); return 'session'; }, createTurn: async (id, input) => { calls.push(['turn', id, input]); return 'turn'; },
+        create: async (input, options) => { calls.push(['create', input, options]); return 'session'; }, createTurn: async (id, input) => { calls.push(['turn', id, input]); return 'turn'; },
         subscribeToTurn: async (id, turn) => { calls.push(['events', id, turn]); return (async function* () { yield 'event'; })(); }, cancel: async (id, request, options) => { calls.push(['cancel', id, request, options]); return undefined; }, delete: async (id, options) => { calls.push(['delete', id, options]); return undefined; }
       }
     }));
     assert.deepEqual(await sdk.discoverConfiguration(), ['providers', 'skills', 'sandbox']);
     assert.equal(await sdk.discoverProviders(), 'catalog'); assert.equal(await sdk.discoverModels(), 'models'); assert.equal(await sdk.discoverSkills(), 'skills');
-    assert.equal(await sdk.createSession({ agentId: 'a' }), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' } }), 'turn');
+    assert.equal(await sdk.createSession({ agentId: 'a' }, requestOptions), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' } }), 'turn');
     const events: unknown[] = []; for await (const event of sdk.events('s', 't')) events.push(event);
     await sdk.cancelTurn('s', requestOptions); await sdk.deleteSession('s', requestOptions);
     assert.deepEqual(events, ['event']);
-    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's', undefined, requestOptions], ['delete', 's', requestOptions]]);
+    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }, requestOptions], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's', undefined, requestOptions], ['delete', 's', requestOptions]]);
   });
   test('preserves pinned SSE numeric ids and resume cursor at the producer boundary', async () => {
     const cursors: (number | undefined)[] = [];
@@ -1484,17 +1484,20 @@ suite('receipt-backed start producer turn', () => {
   });
   test('retains a cancelled creating session until it is deleted before shutdown', async () => {
     let resolveSession: ((value: { id: string }) => void) | undefined;
-    let turns = 0; const deleted: string[] = [];
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => new Promise<{ id: string }>((resolve) => { resolveSession = resolve; }), runTurn: async () => { turns += 1; return { id: 'turn' }; }, deleteSession: async (id) => { deleted.push(id); } };
+    let turns = 0; const deleted: string[] = []; let createOptions: import('../trueforge-contract').TrueForgeRequestOptions | undefined;
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async (_request, options) => { createOptions = options; return new Promise<{ id: string }>((resolve) => { resolveSession = resolve; }); }, runTurn: async () => { turns += 1; return { id: 'turn' }; }, deleteSession: async (id) => { deleted.push(id); } };
     const owner = new StartTurnOwner();
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => resolveSession ? true : undefined, 'session creation should begin');
+    await owner.cancel();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    assert.equal(createOptions?.timeoutInSeconds, 180);
+    assert.equal(createOptions?.abortSignal?.aborted, true);
     const disposing = owner.dispose();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(owner.activeRequestId, 'request-1');
     resolveSession!({ id: 'late-session' });
     await disposing;
-    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
     await eventually(() => deleted.length === 1 ? true : undefined, 'a late session must be deleted after cancellation');
     assert.deepEqual(deleted, ['late-session']);
     assert.equal(turns, 0);
@@ -1689,9 +1692,14 @@ suite('receipt-backed start producer turn', () => {
 
   test('waits one injected five-second grace after receipt without done, then cancels before deletion', async () => {
     const calls: string[] = []; const grace: number[] = [];
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield { sequenceNumber: 1, event: { type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 2, event: { type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) } }; yield { sequenceNumber: 3, event: { type: 'model.message', id: 'start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 4, event: { type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) } }; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    let releaseTerminal: (() => void) | undefined; const terminalReleased = new Promise<void>((resolve) => { releaseTerminal = resolve; });
+    let receiptPublished: (() => void) | undefined; const receiptSeen = new Promise<void>((resolve) => { receiptPublished = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield { sequenceNumber: 1, event: { type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 2, event: { type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) } }; yield { sequenceNumber: 3, event: { type: 'model.message', id: 'start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 4, event: { type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) } }; receiptPublished!(); await terminalReleased; yield { sequenceNumber: 5, event: { type: 'turn.done', state: { status: 'error' } } }; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
     const coordinator = new ReceiptBackedStartCoordinator(runtime, 100_000, async (ms) => { grace.push(ms); });
-    assert.equal((await coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
+    const operation = coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await receiptSeen;
+    assert.equal((await operation).status, 'committed');
+    releaseTerminal!();
     await coordinator.settled;
     assert.deepEqual(grace, [5_000]); assert.deepEqual(calls, ['cancel', 'delete']);
   });
