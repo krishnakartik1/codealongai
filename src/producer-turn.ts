@@ -179,6 +179,8 @@ export class ReceiptBackedProducerCoordinator {
   }
   private async run(input: ProducerTurnInput, publish: (result: ProducerTurnResult) => void): Promise<ProducerTurnResult> {
     let sessionId: string | undefined;
+    const observedEventIds = new Set<string>();
+    const observeOnce = (event: unknown): void => { const id = object(event)?.id; if (typeof id === 'string') { if (observedEventIds.has(id)) return; observedEventIds.add(id); } observeProducerEvent(input.observe, event); };
     const deadline = Date.now() + this.timeoutMs;
     try {
       const spec = producerAgentSpec(input);
@@ -248,7 +250,7 @@ export class ReceiptBackedProducerCoordinator {
           const envelope = eventEnvelope(next.value.value.value);
           if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
           reducer.accept(envelope.event);
-          observeProducerEvent(input.observe, envelope.event);
+          observeOnce(envelope.event);
           const result = reducer.result;
           if (result?.status === 'failed') return result;
           if (result?.status === 'committed') { receipt = result; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
@@ -283,7 +285,7 @@ export class ReceiptBackedProducerCoordinator {
           for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
             const envelope = eventEnvelope(event);
             if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
-            reducer.accept(envelope.event); observeProducerEvent(input.observe, envelope.event);
+            reducer.accept(envelope.event); observeOnce(envelope.event);
             const reconciled = reducer.result;
             if (reconciled?.status === 'failed') return reconciled;
             if (reconciled?.status === 'committed') { receipt = reconciled; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
@@ -308,7 +310,7 @@ export class ReceiptBackedProducerCoordinator {
       for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
         const envelope = eventEnvelope(event);
         if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); }
-        reducer.accept(envelope.event); observeProducerEvent(input.observe, envelope.event);
+        reducer.accept(envelope.event); observeOnce(envelope.event);
         const reconciled = reducer.result;
         if (reconciled?.status === 'failed') return reconciled;
         if (reconciled?.status === 'committed') {
