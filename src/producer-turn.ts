@@ -318,7 +318,10 @@ export class ReceiptBackedProducerCoordinator {
           // The pinned SDK receives this AbortSignal on its actual HTTP request.
           // Do not start deletion when cancellation did not settle in teardown.
           const cancelled = await untilTeardown(this.nativeCancel!, teardown.controller.signal);
-          if (cancelled && !teardown.controller.signal.aborted) { await untilTeardown(this.runtime.deleteSession(sessionId, teardownOptions(teardown.controller.signal, this.teardownTimeoutMs)), teardown.controller.signal); input.observe?.({ kind: 'session-deleted' }); }
+          if (cancelled === 'fulfilled' && !teardown.controller.signal.aborted) {
+            const deleted = await untilTeardown(this.runtime.deleteSession(sessionId, teardownOptions(teardown.controller.signal, this.teardownTimeoutMs)), teardown.controller.signal);
+            if (deleted === 'fulfilled') input.observe?.({ kind: 'session-deleted' });
+          }
         } finally { clearTimeout(teardown.timer); }
       }
     }
@@ -413,12 +416,14 @@ async function beforeDeadline<T>(operation: Promise<T>, deadline: number, cancel
 }
 function teardownOptions(abortSignal: AbortSignal, timeoutMs: number): TrueForgeRequestOptions { return { abortSignal, timeoutInSeconds: Math.max(0.001, timeoutMs / 1_000) }; }
 function requestOptions(abortSignal: AbortSignal, deadline: number): TrueForgeRequestOptions { return teardownOptions(abortSignal, Math.max(1, deadline - Date.now())); }
-async function untilTeardown(operation: Promise<unknown>, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return false;
-  return new Promise<boolean>((resolve) => {
-    const finish = (value: boolean): void => { signal.removeEventListener('abort', aborted); resolve(value); };
-    const aborted = (): void => finish(false);
+export type TeardownOutcome = 'fulfilled' | 'rejected' | 'aborted';
+/** Distinguishes a completed cleanup from a rejected or deadline-aborted attempt. */
+export async function untilTeardown(operation: Promise<unknown>, signal: AbortSignal): Promise<TeardownOutcome> {
+  if (signal.aborted) return 'aborted';
+  return new Promise<TeardownOutcome>((resolve) => {
+    const finish = (value: TeardownOutcome): void => { signal.removeEventListener('abort', aborted); resolve(value); };
+    const aborted = (): void => finish('aborted');
     signal.addEventListener('abort', aborted, { once: true });
-    operation.then(() => finish(true), () => finish(!signal.aborted));
+    operation.then(() => finish('fulfilled'), () => finish('rejected'));
   });
 }
