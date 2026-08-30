@@ -1689,6 +1689,22 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(reducer.result, { status: 'committed', receipt: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } });
   });
 
+  test('allows exactly eight completed pre-transition calls and rejects the ninth', () => {
+    const authorityResult = { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 4, character: 0 } } } } };
+    const call = (reducer: StartTurnReducer, id: string, name: string, args: object, result: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, toolCallId: id, content: JSON.stringify(result) }); };
+    const allowed = new StartTurnReducer('request-1');
+    call(allowed, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
+    call(allowed, 'origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 4 }, { structuredContent: {} });
+    for (let index = 0; index < 6; index += 1) call(allowed, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
+    allowed.accept({ type: 'model.message', id: 'call-start', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    assert.equal(allowed.result, undefined);
+    const ninth = new StartTurnReducer('request-1');
+    call(ninth, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
+    for (let index = 0; index < 8; index += 1) call(ninth, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
+    ninth.accept({ type: 'model.message', id: 'call-nine', toolCalls: [{ id: 'nine', type: 'function', function: { name: 'codealongai_search_workspace', arguments: JSON.stringify({ query: 'literal' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    assert.deepEqual(ninth.result, { status: 'failed', diagnostic: 'call_budget_exceeded' });
+  });
+
   test('fails an out-of-order tool call and refuses sandbox command events', () => {
     const reducer = new StartTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
@@ -1875,6 +1891,8 @@ suite('workspace context over loopback MCP', () => {
       const rejected = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: '../secret.ts' } });
       assert.equal(rejected.isError, true);
       assert.deepEqual(rejected.structuredContent, { schemaVersion: 1, code: 'path_invalid', message: 'The requested workspace file is unavailable.', retryable: false });
+      const missing = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'missing.ts' } });
+      assert.deepEqual(missing.structuredContent, { schemaVersion: 1, code: 'path_invalid', message: 'The requested workspace file is unavailable.', retryable: false });
       const invalidRange = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts', startLine: 3, endLine: 4 } });
       assert.deepEqual(invalidRange.structuredContent, { schemaVersion: 1, code: 'range_invalid', message: 'The requested line interval is invalid.', retryable: false });
       for (const arguments_ of [
