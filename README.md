@@ -18,8 +18,9 @@ npm run typecheck
 ```
 
 Open this repository in VS Code, run the `Run CodeAlongAI` launch configuration,
-enable the window setting `codealongai.mcp.enabled`, and run `CodeAlongAI:
-Configure TrueForge`. Configure the model-provider and Daytona credentials only
+and run `CodeAlongAI: Configure TrueForge`. The local loopback MCP endpoint is
+enabled by default; disable the window setting `codealongai.mcp.enabled` only
+when you explicitly need it off. Configure the model-provider and Daytona credentials only
 in the opened TrueForge UI (the Daytona key needs `sandboxes` and `snapshots`
 permissions), then configure a fully qualified `codealongai.trueforge.model`
 and compatible `codealongai.trueforge.reasoningEffort`. Choose `CodeAlongAI:
@@ -95,8 +96,10 @@ VSIX...** and select the downloaded file, or run:
 code --install-extension codealongai.vsix
 ```
 
-Then enable the `codealongai.mcp.enabled` setting, run **CodeAlongAI: Configure
-TrueForge**, and configure the model provider and Daytona only in its local UI.
+Then run **CodeAlongAI: Configure TrueForge** (the local loopback MCP endpoint
+is enabled by default and can be disabled explicitly with
+`codealongai.mcp.enabled`), and configure the model provider and Daytona only
+in its local UI.
 Set a fully qualified model and compatible reasoning effort in CodeAlongAI's
 settings, then run **CodeAlongAI: Ask about this code** from the Command
 Palette.

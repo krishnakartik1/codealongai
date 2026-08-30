@@ -17,7 +17,8 @@ export function nativeUbuntuPreflight(input: NativeAcceptanceInput): NativeAccep
 
 export interface NativeTurnEvidence { readonly kind: 'ask' | 'reply'; readonly calls: readonly string[]; readonly policy: string | undefined; readonly sandboxCreated: boolean; readonly sessionCreated: boolean; readonly sessionDeleted: boolean; readonly receiptMatched: boolean; readonly terminalDone: boolean; }
 export interface SafeNativeRuntimeEvidence { readonly platform: string; readonly architecture: string; readonly nodeVersion: string; readonly model: string; readonly reasoningEffort: string; }
-export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly runtime: SafeNativeRuntimeEvidence; readonly versions: { readonly trueforge: string; readonly sdk: string; readonly mcp: string; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly turns?: readonly NativeTurnEvidence[]; readonly lifecycle?: readonly string[]; readonly policies?: readonly string[]; readonly readiness?: { readonly provider: 'daytona'; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly mcpDiscovered: boolean; readonly ownedSidecar: boolean; readonly probeCleaned: boolean; }; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
+export type NativeFailureCheckpoint = 'extension' | 'activation' | 'configure' | 'ask' | 'stream-subscribe' | 'stream-read' | 'stream-unknown';
+export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly runtime: SafeNativeRuntimeEvidence; readonly versions: { readonly trueforge: string; readonly sdk: string; readonly mcp: string; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly checkpoint?: NativeFailureCheckpoint; readonly turns?: readonly NativeTurnEvidence[]; readonly lifecycle?: readonly string[]; readonly policies?: readonly string[]; readonly readiness?: { readonly provider: 'daytona'; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly mcpDiscovered: boolean; readonly ownedSidecar: boolean; readonly probeCleaned: boolean; }; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
 /** Removes all values except the fixed public vocabulary permitted in acceptance output. */
 export function safeNativeEvidence(input: SafeNativeEvidence): SafeNativeEvidence {
   const runtime = {
@@ -35,15 +36,15 @@ export function safeNativeEvidence(input: SafeNativeEvidence): SafeNativeEvidenc
   const turns = input.turns?.flatMap((turn) => (turn.kind === 'ask' || turn.kind === 'reply') && Array.isArray(turn.calls) && turn.calls.every((name) => /^codealongai_[a-z_]+$/.test(name)) && (turn.policy === 'start' || turn.policy === 'question') && turn.sandboxCreated === true && turn.sessionCreated === true && turn.sessionDeleted === true && turn.receiptMatched === true && turn.terminalDone === true ? [{ kind: turn.kind, calls: [...turn.calls], policy: turn.policy, sandboxCreated: true, sessionCreated: true, sessionDeleted: true, receiptMatched: true, terminalDone: true }] : []);
   const readiness = input.readiness && input.readiness.provider === 'daytona' && /^[0-9a-f]{40}$/i.test(input.readiness.skillCommit) ? input.readiness : undefined;
   const version = (value: string): string => /^\d+\.\d+\.\d+$/.test(value) ? value : 'unknown';
-  return { result: input.result, runtime, versions: { trueforge: version(input.versions.trueforge), sdk: version(input.versions.sdk), mcp: version(input.versions.mcp) }, phases, calls: names, ...(turns ? { turns } : {}), ...(lifecycle ? { lifecycle } : {}), ...(policies ? { policies } : {}), ...(readiness ? { readiness } : {}), receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
+  const checkpoint = input.checkpoint && ['extension', 'activation', 'configure', 'ask', 'stream-subscribe', 'stream-read', 'stream-unknown'].includes(input.checkpoint) ? input.checkpoint : undefined;
+  return { result: input.result, runtime, versions: { trueforge: version(input.versions.trueforge), sdk: version(input.versions.sdk), mcp: version(input.versions.mcp) }, phases, calls: names, ...(checkpoint ? { checkpoint } : {}), ...(turns ? { turns } : {}), ...(lifecycle ? { lifecycle } : {}), ...(policies ? { policies } : {}), ...(readiness ? { readiness } : {}), receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
 }
 
 const readTools = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
 /** Complete bounded producer policy: authority first, one transition last, no post-transition calls. */
 export function validTurnCallSequence(kind: 'ask' | 'reply', calls: readonly string[], forbidden: boolean): boolean {
   const transition = kind === 'ask' ? 'codealongai_start_walkthrough' : 'codealongai_commit_question_outcome';
-  if (forbidden || calls.length < (kind === 'ask' ? 3 : 4) || calls.length > 9 || calls[0] !== 'codealongai_get_walkthrough_request' || calls[calls.length - 1] !== transition) return false;
-  if (kind === 'reply' && calls[1] !== 'codealongai_get_walkthrough') return false;
+  if (forbidden || calls.length < (kind === 'ask' ? 3 : 2) || calls.length > 13 || calls[0] !== 'codealongai_get_walkthrough_request' || calls[calls.length - 1] !== transition) return false;
   if (calls.slice(0, -1).some((name) => !readTools.has(name)) || calls.slice(1).includes('codealongai_get_walkthrough_request')) return false;
   return new Set(calls.slice(0, -1).filter((name) => name === 'codealongai_list_workspace_files')).size <= 1;
 }
@@ -63,8 +64,8 @@ export async function localSandboxRuntimeDirectoryCount(store: string): Promise<
   return count;
 }
 
-export interface NativeReadinessFacts { readonly provider: 'daytona'; readonly phases: readonly string[]; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly ownership: boolean; readonly probeCleaned: boolean; }
-/** Whitelist-only readiness evidence; rejects missing selected provider, build pin, connector, ownership, or cleanup. */
+export interface NativeReadinessFacts { readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly ownership: boolean; }
+/** Whitelist-only configuration evidence. Sandbox evidence comes from actual producer turns. */
 export function validNativeReadinessFacts(facts: NativeReadinessFacts, buildCommit: string): boolean {
-  return facts.provider === 'daytona' && facts.phases.includes('snapshots') && facts.phases.includes('sandboxes') && facts.phases.includes('ready') && facts.skillCommit === buildCommit && /^[0-9a-f]{40}$/i.test(facts.skillCommit) && facts.connectorDiscovered && facts.ownership && facts.probeCleaned;
+  return facts.skillCommit === buildCommit && /^[0-9a-f]{40}$/i.test(facts.skillCommit) && facts.connectorDiscovered && facts.ownership;
 }

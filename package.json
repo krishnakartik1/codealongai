@@ -108,7 +108,7 @@
       "properties": {
         "codealongai.mcp.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "scope": "window",
           "description": "Enable the local CodeAlongAI MCP endpoint."
         },

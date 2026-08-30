@@ -5,8 +5,7 @@ import { LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
-import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type NativeAcceptanceFacts, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
-import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
+import { NativeTrueForgeRuntime, TrueForgeSidecar, type NativeAcceptanceFacts, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
@@ -56,6 +55,7 @@ export interface WalkthroughTestApi {
   readonly producerObservations: readonly ProducerTurnObservation[];
   readonly nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   readonly nativeCapabilityVersion: string | undefined;
+  readonly lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   replyTargetAt(stopId: string): object | undefined;
   /** Boolean-only assertion seam: no conversation content crosses it. */
   sourceThreadHasAnswerAt(stopId: string): boolean;
@@ -70,11 +70,16 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
+  const traceProducer = (label: string, value: unknown): void => {
+    try { output.appendLine(`${label}: ${JSON.stringify(value)}`); }
+    catch (error) { output.appendLine(`${label}: ${String(value)}; serialization_error=${String(error)}`); }
+  };
   const producerTurnOwner = new ProducerTurnOwner();
   const producerObservations: ProducerTurnObservation[] = [];
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
   let nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   let nativeCapabilityVersion: string | undefined;
+  let lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
@@ -89,7 +94,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
       reportUnexpectedSidecarExit,
-      { read: async () => context.globalState.get<{ sessionId: string; result: DaytonaProbeResult }>('codealongai.daytonaProbeResidual'), write: async (value) => { await context.globalState.update('codealongai.daytonaProbeResidual', value); } }
     ),
     configuredTrueForgeDataPath(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('dataPath'), context.globalStorageUri.fsPath)
   );
@@ -164,7 +168,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     await producerTurnOwner.settled?.catch(() => undefined);
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
-  const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'path_invalid' | 'range_invalid' | 'sidecar_crash' => {
+  const startFailurePhase = (value: unknown): string => {
     const diagnostic = value instanceof Error ? value.message : '';
     if (diagnostic === 'cancelled') return 'cancellation';
     if (diagnostic === 'deadline_exceeded') return 'timeout';
@@ -172,11 +176,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (diagnostic === 'missing_receipt') return 'missing_receipt';
     if (diagnostic === 'path_invalid' || diagnostic === 'range_invalid') return diagnostic;
     if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
-    return 'provider_error';
+    return diagnostic || 'provider_error';
   };
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
     const retry = retryStart;
-    output.error(`Start turn failed (${phase}).`);
+    output.error(`Start turn failed (${phase}${lastProducerStreamFailure ? `; stream=${lastProducerStreamFailure}` : ''}).`);
     void vscode.window.showErrorMessage('CodeAlongAI could not start the walkthrough.', 'Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output').then((action) => {
       if (action === 'Retry walkthrough') void retry?.();
       if (action === 'Discard request' && authority.getPendingStart()?.id === requestId) { authority.discardStart(); clearStartRetry(); }
@@ -226,59 +230,30 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (action === 'Keep walkthrough') authority.discardReset(requestId);
     });
   };
-  const retryDaytonaSetup = async (): Promise<DaytonaReadinessResult> => {
-    try {
-      await trueForge.configure();
-      return await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
-    } catch {
-      return { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' };
-    }
-  };
-  const reportDaytonaReadiness = (readiness: Awaited<ReturnType<DaytonaReadiness['check']>>, retrying = false, originRetry?: () => Thenable<unknown>): void => {
-    if (readiness.action === 'none') {
-      output.info(retrying ? 'Daytona readiness is ready after setup.' : 'Daytona readiness is ready.');
-      if (!retrying) void vscode.window.showInformationMessage('TrueForge setup is ready. Daytona v1 is ready as the producer sandbox.');
-      return;
-    }
-    const prefix = retrying ? 'Daytona setup still needs' : 'Daytona setup needs';
-    output.warn(`${prefix} ${readiness.phase} (${readiness.outcome}).`);
-    const selectionGeneration = ++testReadinessSelectorGeneration;
-    void dispatchReadinessSelection(() => testReadinessActionSelector ? testReadinessActionSelector(['Open TrueForge Setup', 'Retry Setup']) : vscode.window.showWarningMessage(`${prefix} ${readiness.phase}. Its API key must authorize sandboxes and snapshots.`, 'Open TrueForge Setup', 'Retry Setup'), async () => {
-      const checked = await retryDaytonaSetup();
-      if (checked.action === 'none') await originRetry?.();
-      else reportDaytonaReadiness(checked, true, originRetry);
-    }).then((action) => {
-      if (selectionGeneration === testReadinessSelectorGeneration && action === 'Open TrueForge Setup') void vscode.commands.executeCommand('codealongai.trueforge.configure');
-    });
-  };
-  const daytonaReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
+  const producerReadyForWalkthrough = async (retry?: () => Thenable<unknown>): Promise<boolean> => {
     try {
       if (!await (testEnvironment?.isUbuntuX64() ?? isUbuntuX64())) { reportProducerReadiness({ phase: 'architecture', outcome: 'failed', action: 'show-output' }, retry); return false; }
       try { await (testEnvironment?.resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined) ?? resolveNodeExecutable(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined)); }
       catch { reportProducerReadiness({ phase: 'node', outcome: 'failed', action: 'configure-node' }, retry); return false; }
       try { await trueForge.configure(); }
       catch { reportProducerReadiness({ phase: 'sidecar', outcome: 'failed', action: 'retry-trueforge' }, retry); return false; }
-      const readiness = await new DaytonaReadiness(trueForge.producer, { open: async () => trueForge.configure() }).check();
-      if (readiness.action === 'none') {
-        const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
-        const model = configuration.get<string>('model')?.trim() ?? '';
-        const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
-        const skillCommit = extensionBuildCommit();
-        if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
-        if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
-        const activeProducer = trueForge.producer;
-        if (readinessProducer !== activeProducer) { readinessProducer = activeProducer; producerReadiness = new ProducerReadiness(activeProducer); }
-        const producer = await producerReadiness!.check({
-          model,
-          reasoningEffort,
-          mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
-          skillCommit
-        });
-        if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); nativeCapabilityVersion = (await trueForge.capabilitySummary())?.version; return true; }
-        reportProducerReadiness(producer, retry);
-        return false;
-      }
-      reportDaytonaReadiness(readiness, false, retry);
+      const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+      const model = configuration.get<string>('model')?.trim() ?? '';
+      const reasoningEffort = configuration.get<string>('reasoningEffort')?.trim() ?? '';
+      const skillCommit = extensionBuildCommit();
+      if (!skillCommit) { reportProducerReadiness({ phase: 'skill', outcome: 'failed', action: 'show-output' }, retry); return false; }
+      if (!model || !reasoningEffort) { reportProducerReadiness({ phase: !model ? 'model' : 'reasoning', outcome: 'failed', action: 'open-setup' }, retry); return false; }
+      const activeProducer = trueForge.producer;
+      if (readinessProducer !== activeProducer) { readinessProducer = activeProducer; producerReadiness = new ProducerReadiness(activeProducer); }
+      const producer = await producerReadiness!.check({
+        model,
+        reasoningEffort,
+        mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
+        skillCommit
+      });
+      if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); nativeCapabilityVersion = (await trueForge.capabilitySummary())?.version; return true; }
+      reportProducerReadiness(producer, retry);
+      return false;
     } catch {
       output.error('TrueForge readiness failed safely.');
       void vscode.window.showErrorMessage('CodeAlongAI could not verify TrueForge setup before creating a walkthrough request.');
@@ -296,6 +271,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     });
   };
   const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
+    lastProducerStreamFailure = undefined;
     await updateEndpoint();
     if (!mcpReady()) {
       void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint before it can prepare a walkthrough.', 'Enable MCP').then((action) => {
@@ -317,7 +293,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (!current && startPreparation) return startPreparation;
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
       const replacement = authority.getPendingReplacement();
-      const ready = await daytonaReadyForWalkthrough(commitAuthorizedOrigin);
+      const ready = await producerReadyForWalkthrough(commitAuthorizedOrigin);
       if (current && replacement && !requireCurrentReplacement(replacement.id)) return undefined;
       if (!ready) return undefined;
       const active = authority.getSession();
@@ -333,7 +309,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const replacementTurnResult = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-          try { return await producerTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer }); }
+          try { return await producerTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer, trace: traceProducer }); }
           finally { cancellation.dispose(); }
         });
         if (replacementTurnResult.status !== 'committed') throw new Error(replacementTurnResult.diagnostic);
@@ -342,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const producer = trueForge.producer;
         const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-          try { return await producerTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer }); }
+          try { return await producerTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer, trace: traceProducer }); }
           finally { cancellation.dispose(); }
         });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -382,6 +358,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         clearStartRetry();
         await commitAuthorizedOrigin();
       };
+      const diagnostic = error instanceof Error ? error.message : '';
+      lastProducerStreamFailure = diagnostic === 'stream_subscribe' ? 'subscribe' : diagnostic === 'stream_read' ? 'read' : diagnostic === 'stream_unknown' ? 'unknown' : undefined;
       const phase = sidecarCrashedRequestId === failedRequestId ? 'sidecar_crash' : startFailurePhase(error);
       if (sidecarCrashedRequestId === failedRequestId) sidecarCrashedRequestId = undefined;
       showStartFailure(failedRequestId, phase);
@@ -399,8 +377,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     try {
       await trueForge.configure();
       await updateEndpoint();
-      if (!mcpReady()) { reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' }); return; }
-      await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.trueforge.configure'));
+      if (!mcpReady()) reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' });
     } catch {
       output.error('TrueForge setup failed safely.');
       void vscode.window.showErrorMessage('CodeAlongAI could not start TrueForge setup.');
@@ -444,7 +421,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       showPendingQuestion(pending);
       return;
     }
-    if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
+    if (!pending && !await producerReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
     // Readiness and snapshot capture both await.  Revalidate the exact native
     // Reply origin immediately before consuming its single-use authority.
     let request = authority.getPendingQuestion() ?? retryQuestionRequest;
@@ -463,7 +440,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       await producerTurnOwner.settled?.catch(() => undefined);
       const current = authority.getPendingQuestion();
       if (!current || current.id !== request.id || current.sessionId !== request.sessionId || current.sourceStopId !== request.sourceStopId) return;
-      if (!await daytonaReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
+      if (!await producerReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
       const stillCurrent = authority.getPendingQuestion();
       if (!stillCurrent || stillCurrent.id !== request.id) return;
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
@@ -472,7 +449,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {
         const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-        try { return await producerTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer }); }
+        try { return await producerTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer, trace: traceProducer }); }
         finally { cancellation.dispose(); }
       });
       if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -550,6 +527,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     get producerObservations() { return producerObservations.slice(); },
     get nativeAcceptanceFacts() { return nativeAcceptanceFacts; },
     get nativeCapabilityVersion() { return nativeCapabilityVersion; },
+    get lastProducerStreamFailure() { return lastProducerStreamFailure; },
     replyTargetAt(stopId) {
       if (!threads.has(stopId)) return undefined;
       const existing = replyTargets.get(stopId);

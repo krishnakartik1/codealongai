@@ -21,16 +21,18 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
-import { DaytonaProbeState, producerAgentSpec as readinessProducerAgentSpec, trueForgeClientOptions } from '../trueforge-sdk';
+import { DaytonaProbeState, trueForgeClientOptions } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 import { ReceiptBackedProducerCoordinator, ProducerTurnReducer, producerAgentSpec } from '../producer-turn';
 import { ProducerTurnOwner } from '../start-turn-owner';
+import { TrueForgeStreamFailure } from '../trueforge-contract';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
   readonly session: WalkthroughSession | undefined;
   readonly hasPendingWalkthroughRequest: boolean;
+  readonly lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   replyTargetAt(stopId: string): object | undefined;
 }
 
@@ -118,7 +120,7 @@ function waitForChildExit(child: import('node:child_process').ChildProcess): Pro
 }
 
 suite('Extension Development Host walkthrough', () => {
-  test('retries the captured Ask and Reply origins only after Daytona setup is ready', async () => {
+  test('runs the captured Ask and Reply origins through producer readiness', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const workspace = vscode.workspace.workspaceFolders?.[0];
@@ -131,17 +133,9 @@ suite('Extension Development Host walkthrough', () => {
 
       const askProbes = commandRuntime.probeCalls;
       const askPrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        editor.selection = new vscode.Selection(0, 0, 0, 1);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
       await vscode.commands.executeCommand('codealongai.walkthrough.ask');
       const origin = await eventually(() => api.session, 'the public Ask command should create a walkthrough session');
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.probeCalls, askProbes + 3);
+      assert.equal(commandRuntime.probeCalls, askProbes);
       assert.equal(commandRuntime.prepareCalls, askPrepares + 1);
       assert.deepEqual(origin.origin, {
       stopId: 'checkout-origin',
@@ -154,11 +148,10 @@ suite('Extension Development Host walkthrough', () => {
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
-      const blockedReadinessCases: { readonly name: string; readonly actions: readonly string[]; readonly environment?: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> }; readonly sidecar?: boolean; readonly daytona?: DaytonaProbeResult; readonly producer?: TrueForgeProducerReadinessResult }[] = [
+      const blockedReadinessCases: { readonly name: string; readonly actions: readonly string[]; readonly environment?: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> }; readonly sidecar?: boolean; readonly producer?: TrueForgeProducerReadinessResult }[] = [
         { name: 'node', actions: ['Configure Node', 'Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => true, resolveNodeExecutable: async () => { throw new Error('node unavailable'); } } },
         { name: 'architecture', actions: ['Show CodeAlongAI Output'], environment: { isUbuntuX64: async () => false, resolveNodeExecutable: async () => process.execPath } },
         { name: 'sidecar', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], sidecar: true },
-        ...(['provider', 'authentication', 'authentication-or-snapshots', 'model', 'sandboxes', 'snapshots', 'sandbox-create', 'cleanup', 'setup'] as const).map((phase) => ({ name: `daytona-${phase === 'provider' ? 'provider-project-configuration' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], daytona: { provider: 'daytona' as const, phase, outcome: phase === 'cleanup' ? 'residual' as const : 'failed' as const } })),
         ...(['model', 'alias', 'reasoning', 'authentication', 'skill', 'connector'] as const).map((phase) => ({ name: `producer-${phase === 'authentication' ? 'terminal-authentication' : phase}`, actions: ['Open TrueForge Setup', 'Retry Setup'], producer: { phase, outcome: 'failed' as const } })),
         { name: 'producer-terminal-network', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
         { name: 'producer-paused-done', actions: ['Retry TrueForge', 'Show CodeAlongAI Output'], producer: { phase: 'network' as const, outcome: 'failed' as const } },
@@ -166,7 +159,6 @@ suite('Extension Development Host walkthrough', () => {
       ];
       for (const readinessCase of blockedReadinessCases) {
         const before = api.session;
-        commandRuntime.daytonaProbe = readinessCase.daytona ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
         commandRuntime.producerReadiness = readinessCase.producer ?? { phase: 'ready', outcome: 'ready' };
         commandRuntime.healthy = !readinessCase.sidecar;
         commandRuntime.failStart = readinessCase.sidecar === true;
@@ -196,58 +188,14 @@ suite('Extension Development Host walkthrough', () => {
           setTrueForgeEnvironmentForTests(undefined);
           commandRuntime.healthy = true;
           commandRuntime.failStart = false;
-          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
           commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
         }
       }
-      const setupOpens = commandRuntime.calls.filter((call) => call.startsWith('open:')).length;
-      const setupPrepares = commandRuntime.prepareCalls;
-      const beforeSetup = api.session;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Open TrueForge Setup';
-      });
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Setup must not capture this reply.' });
-      await eventually(() => commandRuntime.calls.filter((call) => call.startsWith('open:')).length >= setupOpens + 1 ? true : undefined, 'the selected public setup action should invoke the registered Configure command');
-      await eventually(() => commandRuntime.prepareCalls === setupPrepares + 1 ? true : undefined, 'the registered Configure command should complete its public readiness check');
-      setReadinessActionSelectorForTests(undefined);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      assert.deepEqual(api.session, beforeSetup);
-      assert.equal(api.hasPendingWalkthroughRequest, false);
-
-      let resolveOldSelection: ((action: string | undefined) => void) | undefined;
-      let selections = 0;
-      const stalePrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async () => {
-        selections += 1;
-        return selections === 1 ? new Promise((resolve) => { resolveOldSelection = resolve; }) : undefined;
-      });
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => resolveOldSelection, 'the older Daytona notification should await its selection');
-      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'This stale reply must not run.' });
-      await eventually(() => selections === 2 ? true : undefined, 'the newer Daytona notification should supersede the older one');
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      resolveOldSelection!('Open TrueForge Setup');
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.prepareCalls, stalePrepares);
-      assert.deepEqual(api.session, beforeSetup);
-
       const replyProbes = commandRuntime.probeCalls;
       const replyPrepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
       await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: replyTarget, text: 'Follow this value.' });
       const branched = await eventually(() => api.session?.stops.length === 5 ? api.session : undefined, 'the native reply should grow the deterministic first branch');
-      setReadinessActionSelectorForTests(undefined);
-      assert.equal(commandRuntime.probeCalls, replyProbes + 3);
+      assert.equal(commandRuntime.probeCalls, replyProbes);
       assert.equal(commandRuntime.prepareCalls, replyPrepares + 1);
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
       assert.deepEqual(branched.stops[0].conversation.slice(-2), [{ author: 'You', bodyMarkdown: 'Follow this value.' }, { author: 'CodeAlongAI', bodyMarkdown: 'Follow the value through the subtotal function and its reducer.' }]);
@@ -281,16 +229,8 @@ suite('Extension Development Host walkthrough', () => {
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement);
 
         notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-        setReadinessActionSelectorForTests(async (actions) => {
-          assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-          editor.selection = new vscode.Selection(0, 0, 0, 1);
-          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-          return 'Retry Setup';
-        });
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         const replacement = await eventually(() => api.session?.id !== beforeReplacement.id ? api.session : undefined, 'the confirmed public Ask command should replace the walkthrough');
-        setReadinessActionSelectorForTests(undefined);
         assert.equal(replacement.stops.length, 1);
         assert.deepEqual(replacement.origin?.range, { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } });
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement + 1);
@@ -304,66 +244,36 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
-  test('Configure TrueForge completes ready setup without creating a walkthrough session', async () => {
+  test('registered Configure and Ask reach the real producer without a Daytona probe', async () => {
     const api = await activeWalkthrough();
     const before = api.session;
     await withProducerConfigured(async () => {
       await withMcpEnabled(api, async () => {
-        const checks = commandRuntime.prepareCalls;
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        const probes = commandRuntime.probeCalls;
+        const producerTurns = commandRuntime.producerTurnCalls.length;
         commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
         await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.ok(commandRuntime.prepareCalls > checks);
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => api.session, 'the registered Ask command should reach the receipt-backed producer turn');
+        assert.equal(commandRuntime.probeCalls, probes, 'Configure and Ask must not create a Daytona readiness probe');
+        assert.deepEqual(commandRuntime.producerTurnCalls.slice(producerTurns).map((call) => call.kind), ['session', 'turn', 'events']);
       });
     });
-    assert.deepEqual(api.session, before);
+    assert.notDeepEqual(api.session, before);
     assert.equal(api.hasPendingWalkthroughRequest, false);
   });
 
-  test('Configure TrueForge retries a failed Daytona readiness check through its registered command', async () => {
+  test('Configure TrueForge opens setup without a Daytona or producer readiness check', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const prepares = commandRuntime.prepareCalls;
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
-      setReadinessActionSelectorForTests(async (actions) => {
-        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        return 'Retry Setup';
-      });
-      try {
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls > prepares ? true : undefined, 'Retry Setup should rerun Configure and producer readiness');
-      } finally {
-        setReadinessActionSelectorForTests(undefined);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      }
-    }));
-  });
-
-  test('refreshes the retained readiness coordinator when the external producer is replaced', async () => {
-    const api = await activeWalkthrough();
-    await withProducerConfigured(() => withMcpEnabled(api, async () => {
-      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
-      commandRuntime.maximumConcurrentPrepares = 0;
-      const prepares = commandRuntime.prepareCalls;
-      let release: (() => void) | undefined;
-      commandRuntime.prepareWait = new Promise<void>((resolve) => { release = resolve; });
-      try {
-        const first = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls === prepares + 1 ? true : undefined, 'the first retained producer readiness check should begin');
-        const queued = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.equal(commandRuntime.prepareCalls, prepares + 1);
-        commandRuntime.replaceProducerForTests();
-        const refreshed = vscode.commands.executeCommand('codealongai.trueforge.configure');
-        await eventually(() => commandRuntime.prepareCalls === prepares + 2 ? true : undefined, 'the replacement producer should receive a fresh coordinator');
-        assert.equal(commandRuntime.maximumConcurrentPrepares, 2);
-        release!();
-        await Promise.all([first, queued, refreshed]);
-        assert.equal(commandRuntime.prepareCalls, prepares + 3);
-      } finally { commandRuntime.prepareWait = undefined; }
+      const probes = commandRuntime.probeCalls;
+      await vscode.commands.executeCommand('codealongai.trueforge.configure');
+      assert.equal(commandRuntime.prepareCalls, prepares);
+      assert.equal(commandRuntime.probeCalls, probes);
     }));
   });
 
@@ -615,7 +525,7 @@ suite('Extension Development Host walkthrough', () => {
       const nativeError = errorWindow.showErrorMessage;
       let select: ((action: string) => void) | undefined;
       const sentinel = 'PROVIDER_SECRET_SENTINEL';
-      commandRuntime.producerEventError = new Error(sentinel);
+      commandRuntime.producerEventError = new TrueForgeStreamFailure('read');
       errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => {
         assert.equal(message.includes(sentinel), false); assert.equal(actions.includes('Show CodeAlongAI Output'), true);
         return new Promise<string>((resolve) => { select = resolve; });
@@ -624,6 +534,7 @@ suite('Extension Development Host walkthrough', () => {
         const before = commandRuntime.producerTurnCalls.length;
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         await eventually(() => select ? true : undefined, 'the failure notification should offer a selection');
+        assert.equal(api.lastProducerStreamFailure, 'read');
         assert.equal(api.hasPendingWalkthroughRequest, true);
         commandRuntime.producerEventError = undefined;
         select!('Retry walkthrough');
@@ -1149,28 +1060,6 @@ suite('Daytona producer readiness', () => {
     assert.deepEqual(await unavailable.configureOrRetry(), { provider: 'daytona', phase: 'setup', outcome: 'failed', action: 'open-setup' });
   });
 
-  test('public configuration reports a Daytona permission failure without capturing a walkthrough request', async () => {
-    const api = await activeWalkthrough();
-    const before = api.session;
-    await withMcpEnabled(api, async () => {
-      const probesBefore = commandRuntime.probeCalls;
-      try {
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.deepEqual(api.session, before);
-        assert.equal(api.hasPendingWalkthroughRequest, false);
-        assert.equal(commandRuntime.probeCalls, probesBefore + 1);
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        await vscode.commands.executeCommand('codealongai.trueforge.configure');
-        assert.deepEqual(api.session, before);
-        assert.equal(api.hasPendingWalkthroughRequest, false);
-        assert.equal(commandRuntime.probeCalls, probesBefore + 2);
-      } finally {
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-      }
-    });
-  });
-
   test('proves the disposable public lifecycle and retains only its safe result', async () => {
     const calls: string[] = [];
     const sdk = new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
@@ -1340,96 +1229,7 @@ suite('producer readiness', () => {
     assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
-  test('requires the exact successful terminal turn contract from the SDK', async () => {
-    const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
-    const done = { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] };
-    const producerWithTerminal = (state: Record<string, unknown>, timer?: { waitFor<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined>; now?(): number }, lifecycle: string[] = [], events?: readonly unknown[]) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
-      settings: {
-        modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
-        skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: input.skillCommit, path: 'skills/codealongai' } }] }) },
-        mcpServers: { createOrUpdate: async () => ({}) }
-      },
-      catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: input.model, properties: { reasoningEfforts: [input.reasoningEffort] } }] }) },
-      mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield* events ?? [{ type: 'turn.done', state }]; })(), cancel: async () => { lifecycle.push('cancel'); }, delete: async () => { lifecycle.push('delete'); } }
-    }), new DaytonaProbeState(), timer);
-
-    assert.deepEqual(await producerWithTerminal(done).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
-    assert.deepEqual(await producerWithTerminal({ ...done, completedAt: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, completedAt: 0 }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, type: 'model.message', id: 1 } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, content: 'NOT READY' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, content: '' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, refusal: 'I cannot comply' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, model: 'gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, model: 'other/gpt-5.2' }), { phase: 'alias', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done }).prepareProducer({ ...input, reasoningEffort: 'high' }), { phase: 'reasoning', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, status: 'completed' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, status: 'paused' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ ...done, output: null }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model authorization 401 failed' }).prepareProducer(input), { phase: 'authentication', outcome: 'failed' });
-    assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model network timeout' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    const lifecycle: string[] = [];
-    assert.deepEqual(await producerWithTerminal(done, { waitFor: async () => undefined }, lifecycle).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(lifecycle, ['cancel', 'delete']);
-    let now = 0; const budgets: number[] = []; const deadlineLifecycle: string[] = [];
-    const timer = { now: () => now, waitFor: async <T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> => { budgets.push(timeoutMs); const next = await operation; now = budgets.length === 1 ? 4_000 : 10_000; return next; } };
-    assert.deepEqual(await producerWithTerminal(done, timer, deadlineLifecycle, [{ type: 'progress' }, { type: 'progress' }, { type: 'turn.done', state: done }]).prepareProducer(input), { phase: 'network', outcome: 'failed' });
-    assert.deepEqual(budgets, [10_000, 6_000]);
-    assert.deepEqual(deadlineLifecycle, ['cancel', 'delete']);
-  });
-
-  test('serializes the producer AgentSpec with parallel tool calls disabled in model params', async () => {
-    let wireRequest: Record<string, unknown> | undefined;
-    const client = new TrueForge({
-      baseUrl: 'http://trueforge.test/', auth: false,
-      fetch: async (_input, init) => {
-        wireRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return new Response(JSON.stringify({ data: { id: 'serialization-session' } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-    });
-
-    await client.sessions.create({ agent: { spec: readinessProducerAgentSpec({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }) } });
-
-    assert.deepEqual(wireRequest, {
-      agent: {
-        spec: {
-          model: { name: 'openai/gpt-5.2', params: { reasoning_effort: 'medium', parallel_tool_calls: false } },
-          skills: [{ name: 'codealongai' }],
-          mcp_servers: [{ name: 'codealongai-mcp' }],
-          config: { sandbox: { enabled: true, file_downloads: false } },
-          instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.'
-        }
-      }
-    });
-  });
-
-  test('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
-    const sentinel = 'terminal-error-sentinel-3c65d8';
-    const logs: string[] = [];
-    const originalError = console.error;
-    console.error = (...values: unknown[]) => { logs.push(values.map(String).join(' ')); };
-    try {
-      const result = await new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
-        settings: {
-          modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
-          skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: '1111111111111111111111111111111111111111', path: 'skills/codealongai' } }] }) },
-          mcpServers: { createOrUpdate: async () => ({}) }
-        },
-        catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
-        mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-        sessions: { create: async () => ({ data: { id: 'safe-terminal-session' } }), createTurn: async () => ({ data: { id: 'safe-terminal-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'error', message: `authentication endpoint browser fetch failed; ${sentinel}` } }; })(), cancel: async () => undefined, delete: async () => undefined }
-      })).prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' });
-      assert.deepEqual(result, { phase: 'network', outcome: 'failed' });
-      assert.doesNotMatch(JSON.stringify({ result, logs }), new RegExp(sentinel));
-    } finally { console.error = originalError; }
-  });
-
-  test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
+  test('reconciles only the named skill and connector then discovers the complete loopback catalog without a readiness turn', async () => {
     const calls: unknown[] = [];
     const catalogNames = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
     let catalog: unknown = { data: catalogNames.map((name) => ({ name })) };
@@ -1441,14 +1241,12 @@ suite('producer readiness', () => {
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
       mcpServers: { sentinel: 'catalog', async listTools() { assert.equal((this as unknown as { sentinel: string }).sentinel, 'catalog'); return catalog; } },
-      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'safe-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] } }; })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
+      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'unexpected-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'unexpected-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { throw new Error('unexpected readiness event subscription'); })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
     }));
     assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls, [
       { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '1111111111111111111111111111111111111111' } },
-      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } },
-      { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium', parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
-      ['safe-readiness-session', { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] }], 'delete:safe-readiness-session'
+      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } }
     ]);
     for (const malformed of [
       { data: [...catalogNames.map((name) => ({ name })), {}] },
@@ -1484,7 +1282,7 @@ suite('walkthrough start authority', () => {
       { command: 'codealongai.walkthrough.destinations', when: 'false' }
     ]);
     assert.deepEqual(manifest.contributes.configuration.properties, {
-      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
+      'codealongai.mcp.enabled': { type: 'boolean', default: true, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
       'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' },
       'codealongai.trueforge.dataPath': { type: 'string', scope: 'machine', description: 'Optional absolute path to an operator-configured local TrueForge store.' },
       'codealongai.trueforge.model': { type: 'string', scope: 'machine', description: 'Fully qualified TrueForge provider/model selected for CodeAlongAI.' },
@@ -1667,6 +1465,8 @@ suite('bounded workspace context', () => {
     await assert.rejects(() => available.read({ path: '../secret.ts' }), { code: 'path_outside_workspace' });
   });
 });
+
+const expectedQuestionProducerInstructions = 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then use its captured walkthrough and snapshot. Read the active walkthrough and additional bounded workspace context only if needed. For questions about what code does, how it works or is used, control or data flow, or relationships, choose generated-walkthrough with a non-empty grounded append-only graph patch. Generated walkthroughs must add 1-3 stops. Its patch must include addedStops, appendedDestinations, and recommendedNextUpdates arrays, even when empty. Each addedStops entry must be an object with id, displayName, explanationMarkdown, path, range:{start:{line,character},end:{line,character}}, and destinationIds; only recommendedNextId and backId are optional. Do not use shorthand or numeric ranges, string entries, or stray range fields. Generated stop ranges must copy an exact MCP search range, or use full-line boundaries with start.character=0 and end.character=0 on the line one past the last included line. Never guess character offsets from bounded-read text; keep every line within a successfully read interval and remember end is exclusive. Existing stop IDs must be copied exactly from the request or snapshot, never renamed or invented. Connect the exact sourceStopId to the first added stop with one appendedDestinations entry. recommendedNextUpdates applies only to a pre-existing stop lacking a recommendation, typically that exact sourceStopId, never an added stop. Put new-stop destination and recommendation links in each added stop destinationIds and recommendedNextId. The first new stop backId may be the exact sourceStopId; subsequent backIds use the exact preceding added IDs. Use explanation-only only for narrow factual questions where no additional grounded stop would help. Work on only the named authorized request. The selected CodeAlongAI skill is already available: do not read or load its file and do not call any command or exec tool; proceed directly with CodeAlongAI MCP. Use no other skill, command, subagent, approval, code execution, workspace mutation, download, provider credential, navigation, or reset; do not ask the user or retry. Call CodeAlongAI MCP tools sequentially. Read the authorized request and only the bounded context needed to produce it. Commit exactly the matching authorized transition and stop immediately after its matching receipt. Do not reveal source text, request snapshots, MCP payloads, credentials, or reasoning in final prose.';
 
 suite('receipt-backed start producer turn', () => {
   const acceptExactOriginRead = (reducer: ProducerTurnReducer): void => {
@@ -2079,11 +1879,11 @@ suite('receipt-backed start producer turn', () => {
   test('rejects actionable events without the pinned main-thread identity', () => {
     const missing = new ProducerTurnReducer('request-1');
     missing.accept({ type: 'model.message', threadId: 'main', toolCalls: [] });
-    assert.deepEqual(missing.result, { status: 'failed', diagnostic: 'tool_provenance' });
+    assert.deepEqual(missing.result, { status: 'failed', diagnostic: 'tool provenance requires a string event id and main thread; received={"type":"model.message","threadId":"main","toolCalls":[]}' });
     const foreign = new ProducerTurnReducer('request-1');
     foreign.accept({ type: 'model.message', id: 'call', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     foreign.accept({ type: 'tool.response', id: 'response', threadId: 'other', toolCallId: 'authority', content: '{}' });
-    assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool_provenance' });
+    assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool provenance requires a string event id and main thread; received={"type":"tool.response","id":"response","threadId":"other","toolCallId":"authority","content":"{}"}' });
   });
 
   test('requires the exact public origin read schema before transition', () => {
@@ -2095,20 +1895,20 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'origin_read_invalid' });
   });
 
-  test('allows exactly eight completed pre-transition calls and rejects the ninth', () => {
+  test('allows exactly twelve completed pre-transition calls and rejects the thirteenth', () => {
     const authorityResult = { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 4, character: 0 } } } } };
     const call = (reducer: ProducerTurnReducer, id: string, name: string, args: object, result: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(result) }); };
     const allowed = new ProducerTurnReducer('request-1');
     call(allowed, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
     call(allowed, 'origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 4 }, { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 4, text: 'x' } });
-    for (let index = 0; index < 6; index += 1) call(allowed, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
+    for (let index = 0; index < 10; index += 1) call(allowed, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
     allowed.accept({ type: 'model.message', id: 'call-start', threadId: 'main', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
     assert.equal(allowed.result, undefined);
-    const ninth = new ProducerTurnReducer('request-1');
-    call(ninth, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
-    for (let index = 0; index < 8; index += 1) call(ninth, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
-    ninth.accept({ type: 'model.message', id: 'call-nine', threadId: 'main', toolCalls: [{ id: 'nine', type: 'function', function: { name: 'codealongai_search_workspace', arguments: JSON.stringify({ query: 'literal' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
-    assert.deepEqual(ninth.result, { status: 'failed', diagnostic: 'call_budget_exceeded' });
+    const thirteenth = new ProducerTurnReducer('request-1');
+    call(thirteenth, 'authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, authorityResult);
+    for (let index = 0; index < 11; index += 1) call(thirteenth, `search-${index}`, 'codealongai_search_workspace', { query: 'literal' }, { structuredContent: {} });
+    thirteenth.accept({ type: 'model.message', id: 'call-thirteen', threadId: 'main', toolCalls: [{ id: 'thirteen', type: 'function', function: { name: 'codealongai_search_workspace', arguments: JSON.stringify({ query: 'literal' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    assert.deepEqual(thirteenth.result, { status: 'failed', diagnostic: 'call_budget_exceeded' });
   });
 
   test('rejects a second sequential workspace list before any transition', () => {
@@ -2165,7 +1965,7 @@ suite('receipt-backed start producer turn', () => {
     assert.equal(reducer.result?.status, 'committed');
     const foreign = new ProducerTurnReducer('request-1');
     foreign.accept({ type: 'model.message', id: 'foreign', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'call_tool', arguments: JSON.stringify({ mcp_server: 'other', tool_name: 'codealongai_get_walkthrough_request', input: '{}' }) }, toolInfo: { type: 'truefoundry-system', name: 'call_tool' } }] });
-    assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool_provenance' });
+    assert.deepEqual(foreign.result, { status: 'failed', diagnostic: 'tool provenance requires CodeAlongAI MCP tool metadata; received={"id":"authority","name":"codealongai_get_walkthrough_request","arguments":{},"provenance":false}' });
   });
 
   test('requires a successful authority result before bounded origin context', () => {
@@ -2287,7 +2087,7 @@ suite('receipt-backed start producer turn', () => {
   test('fails a second thrown pinned stream interruption', async () => {
     let attempts = 0;
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { attempts += 1; throw new Error('interrupted'); }, listTurnEvents: async () => [] };
-    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } }), { status: 'failed', diagnostic: 'producer_error' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } }), { status: 'failed', diagnostic: 'stream_unknown' });
     assert.equal(attempts, 2);
   });
 
@@ -2350,16 +2150,16 @@ suite('receipt-backed start producer turn', () => {
     const spec = producerAgentSpec({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' } }) as unknown as Record<string, unknown>;
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
     assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).fileDownloads, false);
-    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], requireApprovalForTools: [] }]);
+    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], requireApprovalForTools: [], preload: true }]);
     assert.equal(JSON.stringify(spec).includes('url'), false);
   });
 
   test('creates the exact native Reply capability set', () => {
     const spec = producerAgentSpec({ kind: 'question', requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' } }) as unknown as { mcpServers: { enableTools: string[]; requireApprovalForTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { enabled: boolean; fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean }; iterationLimit: number }; model: { params: { parallelToolCalls: boolean } }; instructions: string };
-    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], requireApprovalForTools: [] }]);
+    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], requireApprovalForTools: [], preload: true }]);
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
-    assert.equal(spec.config.sandbox.enabled, true); assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.config.iterationLimit, 9); assert.equal(spec.model.params.parallelToolCalls, false);
-    assert.equal(spec.instructions, 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.');
+    assert.equal(spec.config.sandbox.enabled, true); assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.config.iterationLimit, 14); assert.equal(spec.model.params.parallelToolCalls, false);
+    assert.equal(spec.instructions, expectedQuestionProducerInstructions);
   });
 
   test('serializes the pinned start AgentSpec without a connector URL', async () => {
@@ -2374,7 +2174,7 @@ suite('receipt-backed start producer turn', () => {
     try {
       await new TrueForge({ baseUrl: `http://127.0.0.1:${address.port}` }).sessions.create({ agent: { spec: producerAgentSpec({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' } }) } });
       assert.equal(received.url, '/api/v1/sessions');
-      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
+      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], require_approval_for_tools: [], preload: true }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 14 }, instructions: 'Produce exactly one CodeAlongAI start transition. First read the exact authorized request. Read exactly its authorized origin interval: use range.start.line as startLine and one past its last occupied line as endLine. Never widen or guess a larger interval. Work on only the named authorized request. The selected CodeAlongAI skill is already available: do not read or load its file and do not call any command or exec tool; proceed directly with CodeAlongAI MCP. Use no other skill, command, subagent, approval, code execution, workspace mutation, download, provider credential, navigation, or reset; do not ask the user or retry. Call CodeAlongAI MCP tools sequentially. Read the authorized request and only the bounded context needed to produce it. Commit exactly the matching authorized transition and stop immediately after its matching receipt. Do not reveal source text, request snapshots, MCP payloads, credentials, or reasoning in final prose.' } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
 
@@ -2391,7 +2191,7 @@ suite('receipt-backed start producer turn', () => {
       const runtime = new SdkTrueForgeProducerRuntime(`http://127.0.0.1:${address.port}`);
       await runtime.createSession({ agent: { spec: producerAgentSpec({ kind: 'question', requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' } }) } });
       assert.equal(received.url, '/api/v1/sessions');
-      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' } } });
+      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], require_approval_for_tools: [], preload: true }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 14 }, instructions: expectedQuestionProducerInstructions } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
 });

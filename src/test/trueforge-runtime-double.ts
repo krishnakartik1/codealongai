@@ -48,9 +48,9 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         if (runtime.producerEventError) throw runtime.producerEventError;
         if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
-        const question = typeof text === 'string' && text.startsWith('question\n');
-        const replacement = typeof text === 'string' && text.startsWith('replacement\n');
-        const requestId = typeof text === 'string' && (text.startsWith('start\n') || question || replacement) ? text.slice(text.indexOf('\n') + 1) : undefined;
+        const question = typeof text === 'string' && text.includes('follow-up question');
+        const replacement = typeof text === 'string' && text.includes('replace a walkthrough');
+        const requestId = typeof text === 'string' ? /^.*?ID "([^"]+)"/.exec(text)?.[1] : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
         if (question) {
           const agent = ((spec?.agent as { spec?: { skills?: { name?: string }[]; mcpServers?: { enableTools?: string[] }[]; config?: { sandbox?: { fileDownloads?: boolean }; dynamicSubAgents?: { enabled?: boolean }; askUserQuestions?: { enabled?: boolean } }; model?: { params?: { parallelToolCalls?: boolean } } } } | undefined)?.spec);

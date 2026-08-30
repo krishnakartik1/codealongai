@@ -10,10 +10,11 @@ const schemaVersion = z.literal(1);
 const pathInput = z.object({ schemaVersion, path: z.unknown().optional(), startLine: z.unknown().optional(), endLine: z.unknown().optional() }).strict();
 const position = z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict();
 const range = z.object({ start: position, end: position }).strict();
+const originDocument = z.string().min(1).describe('Workspace-relative path copied exactly from the authorized request input.origin.path; never source text.');
 const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
 const graphPatch = z.object({ addedStops: z.array(addedStop), appendedDestinations: z.array(z.object({ sourceStopId: z.string().min(1), destinationIds: z.array(z.string().min(1)) }).strict()), recommendedNextUpdates: z.array(z.object({ sourceStopId: z.string().min(1), targetStopId: z.string().min(1) }).strict()) }).strict();
 const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal('explanation-only'), answerMarkdown: z.string() }).strict(), z.object({ kind: z.literal('destination-offer'), answerMarkdown: z.string(), destinationIds: z.array(z.string().min(1)) }).strict(), z.object({ kind: z.literal('generated-walkthrough'), answerMarkdown: z.string(), patch: graphPatch }).strict(), z.object({ kind: z.literal('explicit-unsupported'), answerMarkdown: z.string() }).strict()]);
-const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range }).strict();
+const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
@@ -84,11 +85,11 @@ export class LoopbackMcpEndpoint {
     }, async (input: { schemaVersion: 1; query: string; cursor?: string }) => this.workspaceResult(async () => {
       const after = decodeCursor(input.cursor, 'search', input.query);
       const matches = await this.workspace.search(input.query, after);
-      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`);
+      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`, 20);
     }));
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
-      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
@@ -265,12 +266,12 @@ export class LoopbackMcpEndpoint {
   }
 }
 
-function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item)): { paths?: T[]; matches?: T[]; nextCursor?: string } {
+function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item), pageSize = 200): { paths?: T[]; matches?: T[]; nextCursor?: string } {
   const after = decodeCursor(cursor, tool, query);
   const start = after === undefined ? 0 : items.findIndex((item) => key(item) > after);
-  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + 200);
+  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + pageSize);
   const response = tool === 'list' ? { paths: page } : { matches: page };
-  if (page.length === 200 && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
+  if (page.length === pageSize && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
   return response;
 }
 

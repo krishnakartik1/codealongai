@@ -57,8 +57,8 @@ export class WorkspaceReader {
     if (file.failure) throw new WorkspaceError(file.failure);
     const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
-    const actualEnd = endLine ?? lines.length;
-    if (actualStart > lines.length || actualEnd > lines.length) throw new WorkspaceError('range_invalid');
+    const actualEnd = Math.min(endLine ?? lines.length, lines.length);
+    if (actualStart > lines.length) throw new WorkspaceError('range_invalid');
     return { path: file.path, startLine: actualStart, endLine: actualEnd, text: lines.slice(actualStart, actualEnd).join('\n'), dirty: file.dirty, ...(file.documentVersion === undefined ? {} : { documentVersion: file.documentVersion }) };
   }
 

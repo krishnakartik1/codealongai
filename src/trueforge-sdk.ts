@@ -1,5 +1,5 @@
 import { TrueForge, type TrueForgeApi } from '@truefoundry/trueforge-sdk';
-import type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeTurnRequest, TrueForgeRequestOptions } from './trueforge-contract';
+import { TrueForgeStreamFailure, type TrueForgeProducerReadinessInput, type TrueForgeProducerReadinessResult, type TrueForgeProducerRuntime, type TrueForgeTurnRequest, type TrueForgeRequestOptions } from './trueforge-contract';
 import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
@@ -18,11 +18,15 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public createSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown> { return this.createSdkSession(sessionRequest, options); }
   public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.createSdkTurn(turnInput); }
   public async *events(sessionId: string, turnId: string, afterSequenceNumber?: number, options?: TrueForgeRequestOptions): AsyncIterable<unknown> {
-    const stream = await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber, options);
-    const withMetadata = (stream as unknown as { withMetadata?: () => AsyncIterable<{ data: unknown; id?: string }> }).withMetadata;
-    const metadata = typeof withMetadata === 'function' ? withMetadata.call(stream) : undefined;
-    if (metadata) { for await (const item of metadata) { const sequence = Number(item.id); yield Number.isSafeInteger(sequence) && sequence >= 0 ? { sequenceNumber: sequence, event: item.data } : item.data; } return; }
-    for await (const event of stream) yield event;
+    let stream: AsyncIterable<unknown>;
+    try { stream = await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber, options); }
+    catch { throw new TrueForgeStreamFailure('subscribe'); }
+    try {
+      const withMetadata = (stream as unknown as { withMetadata?: () => AsyncIterable<{ data: unknown; id?: string }> }).withMetadata;
+      const metadata = typeof withMetadata === 'function' ? withMetadata.call(stream) : undefined;
+      if (metadata) { for await (const item of metadata) { const sequence = Number(item.id); yield Number.isSafeInteger(sequence) && sequence >= 0 ? { sequenceNumber: sequence, event: item.data } : item.data; } return; }
+      for await (const event of stream) yield event;
+    } catch (error) { if (error instanceof TrueForgeStreamFailure) throw error; throw new TrueForgeStreamFailure('read'); }
   }
   public async listTurnEvents(sessionId: string, turnId: string, options?: TrueForgeRequestOptions): Promise<readonly unknown[]> { if (!this.client.sessions.listTurnEvents) return []; const page = await this.client.sessions.listTurnEvents(sessionId, turnId, { order: 'asc', limit: 100 }, options); return page.data; }
   public async cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.cancelSdkSession(sessionId, options); }
@@ -52,18 +56,6 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       if (!hasExactCatalog(tools)) return { phase: 'mcp-discovery', outcome: 'failed' };
       this.connectorDiscovered = true; this.mcpDiscovered = true;
     } catch { return { phase: 'mcp-discovery', outcome: 'failed' }; }
-    let sessionId: string | undefined;
-    try {
-      const session = await this.createSession({ agent: { spec: configuration.agentSpec() } });
-      sessionId = responseId(session);
-      if (!sessionId) return { phase: 'model', outcome: 'failed' };
-      const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
-      const turnId = responseId(turn);
-      if (!turnId) return { phase: 'network', outcome: 'failed' };
-      const terminal = await terminalReadiness(this, sessionId, turnId, this.terminalTimer);
-      if (terminal !== 'ready') return { phase: terminal, outcome: 'failed' };
-    } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
-    finally { if (sessionId) await this.deleteSession(sessionId).catch(() => undefined); }
     return { phase: 'ready', outcome: 'ready' };
   }
   private async probeDaytonaOwned(): Promise<DaytonaProbeResult> {
@@ -169,10 +161,7 @@ class ProducerReadinessConfiguration {
   public get hasQualifiedModel(): boolean { return isFullyQualifiedModel(this.model); }
   public skillManifest(): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: this.skillCommit }; }
   public connectorManifest(): Record<string, unknown> { return { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: this.input.mcpUrl }; }
-  public agentSpec(): TrueForgeApi.AgentSpec { return { model: { name: this.model, params: { reasoningEffort: this.reasoningEffort, parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
 }
-/** A credential-free, request-free public operation that verifies the configured provider can run the selected AgentSpec. */
-export function producerAgentSpec(input: TrueForgeProducerReadinessInput): TrueForgeApi.AgentSpec { return new ProducerReadinessConfiguration(input).agentSpec(); }
 const CODEALONGAI_CATALOG = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
 function hasExactCatalog(value: unknown): boolean { const tools = sdkCollectionItems(value); if (tools.length !== CODEALONGAI_CATALOG.length) return false; const names: string[] = []; for (const tool of tools) { const name = asRecord(tool)?.name; if (typeof name !== 'string') return false; names.push(name); } return new Set(names).size === CODEALONGAI_CATALOG.length && JSON.stringify(names.sort()) === JSON.stringify([...CODEALONGAI_CATALOG].sort()); }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
