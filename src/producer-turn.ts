@@ -3,13 +3,17 @@ import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './truefo
 import type { QuestionReceipt } from './walkthrough';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
+export interface ProducerConfiguration {
+  readonly model: string;
+  readonly reasoningEffort: string;
+  readonly mcpUrl: string;
+}
+
 export interface ProducerTurnInput {
   /** Native Reply and replacement use the same short-lived receipt coordinator as Ask. */
   readonly kind?: 'start' | 'question' | 'replacement';
   readonly requestId: string;
-  readonly model: string;
-  readonly reasoningEffort: string;
-  readonly mcpUrl: string;
+  readonly configuration: ProducerConfiguration;
   /** Production supplies the extension-owned receipt validator; fixture-only
    * coordinators may omit it. */
   readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean;
@@ -39,7 +43,7 @@ export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentS
   const question = input.kind === 'question';
   const replacement = input.kind === 'replacement';
   return {
-    model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
+    model: { name: input.configuration.model, params: { reasoningEffort: input.configuration.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
     mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : replacement ? [...allowedReads, replacementTool] : permittedTools, requireApprovalForTools: [] }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
@@ -216,6 +220,13 @@ export class ReceiptBackedProducerCoordinator {
       let receipt: Extract<ProducerTurnResult, { status: 'committed' }> | undefined;
       let receiptGrace: Promise<{ completed: true; value: void } | { completed: false; cancelled: boolean }> | undefined;
       let reconciliationCutoff: number | undefined;
+      const commitReceipt = (result: Extract<ProducerTurnResult, { status: 'committed' }>): void => {
+        if (receipt) return;
+        receipt = result;
+        input.observe?.({ kind: 'receipt-matched' });
+        publish(receipt);
+        receiptGrace = beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal);
+      };
       // A native stream can close between a persisted call and response. Subscribe
       // once more to the same turn; the reducer's sequence set makes that safe.
       for (let subscription = 0; subscription < 2; subscription += 1) {
@@ -253,7 +264,7 @@ export class ReceiptBackedProducerCoordinator {
           observeOnce(envelope.event);
           const result = reducer.result;
           if (result?.status === 'failed') return result;
-          if (result?.status === 'committed') { receipt = result; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
+          if (result?.status === 'committed') commitReceipt(result);
           const terminal = terminalState(envelope.event);
           if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
@@ -271,7 +282,7 @@ export class ReceiptBackedProducerCoordinator {
             void iterator.return?.().catch(() => undefined);
           }
         }
-        const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') { receipt = result; publish(receipt); }
+        const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') commitReceipt(result);
         // The stream may have ended between persisted events. Reconcile once
         // before the one permitted cursor-resubscription.
         if (subscription === 0) {
@@ -288,7 +299,7 @@ export class ReceiptBackedProducerCoordinator {
             reducer.accept(envelope.event); observeOnce(envelope.event);
             const reconciled = reducer.result;
             if (reconciled?.status === 'failed') return reconciled;
-            if (reconciled?.status === 'committed') { receipt = reconciled; input.observe?.({ kind: 'receipt-matched' }); publish(receipt); receiptGrace ??= beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal); }
+            if (reconciled?.status === 'committed') commitReceipt(reconciled);
             const terminal = terminalState(envelope.event);
             if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
             if (terminal === 'done' && receipt) return receipt;
@@ -314,9 +325,9 @@ export class ReceiptBackedProducerCoordinator {
         const reconciled = reducer.result;
         if (reconciled?.status === 'failed') return reconciled;
         if (reconciled?.status === 'committed') {
-          input.observe?.({ kind: 'receipt-matched' }); publish(reconciled);
-          const grace = await beforeDeadline(this.waitForGrace(5_000, this.abort.signal), deadline, this.cancelledSignal);
-          return grace.completed ? reconciled : { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
+          commitReceipt(reconciled);
+          const grace = await receiptGrace!;
+          return grace.completed ? receipt! : { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
         }
       }
       return { status: 'failed', diagnostic: 'missing_receipt' };
