@@ -894,7 +894,7 @@ suite('producer readiness', () => {
   test('requires the exact successful terminal turn contract from the SDK', async () => {
     const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
     const done = { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] };
-    const producerWithTerminal = (state: Record<string, unknown>, timer?: { waitFor<T>(operation: Promise<T>): Promise<T | undefined> }, lifecycle: string[] = []) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+    const producerWithTerminal = (state: Record<string, unknown>, timer?: { waitFor<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined>; now?(): number }, lifecycle: string[] = [], events?: readonly unknown[]) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
         skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: input.skillCommit, path: 'skills/codealongai' } }] }) },
@@ -902,7 +902,7 @@ suite('producer readiness', () => {
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: input.model, properties: { reasoningEfforts: [input.reasoningEffort] } }] }) },
       mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state }; })(), cancel: async () => { lifecycle.push('cancel'); }, delete: async () => { lifecycle.push('delete'); } }
+      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield* events ?? [{ type: 'turn.done', state }]; })(), cancel: async () => { lifecycle.push('cancel'); }, delete: async () => { lifecycle.push('delete'); } }
     }), new DaytonaProbeState(), timer);
 
     assert.deepEqual(await producerWithTerminal(done).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
@@ -927,6 +927,11 @@ suite('producer readiness', () => {
     const lifecycle: string[] = [];
     assert.deepEqual(await producerWithTerminal(done, { waitFor: async () => undefined }, lifecycle).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(lifecycle, ['cancel', 'delete']);
+    let now = 0; const budgets: number[] = []; const deadlineLifecycle: string[] = [];
+    const timer = { now: () => now, waitFor: async <T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> => { budgets.push(timeoutMs); const next = await operation; now = budgets.length === 1 ? 4_000 : 10_000; return next; } };
+    assert.deepEqual(await producerWithTerminal(done, timer, deadlineLifecycle, [{ type: 'progress' }, { type: 'progress' }, { type: 'turn.done', state: done }]).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(budgets, [10_000, 6_000]);
+    assert.deepEqual(deadlineLifecycle, ['cancel', 'delete']);
   });
 
   test('serializes the producer AgentSpec with parallel tool calls disabled in model params', async () => {
