@@ -21,3 +21,13 @@ export function safeNativeEvidence(input: Omit<SafeNativeEvidence, 'versions'>):
   const cleanup = input.cleanup.filter((value) => /^(owned-sidecar|session-delete|probe-delete|profile-delete)$/.test(value));
   return { result: input.result, versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases, calls: names, receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
 }
+
+const readTools = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
+/** Complete bounded producer policy: authority first, one transition last, no post-transition calls. */
+export function validTurnCallSequence(kind: 'ask' | 'reply', calls: readonly string[], forbidden: boolean): boolean {
+  const transition = kind === 'ask' ? 'codealongai_start_walkthrough' : 'codealongai_commit_question_outcome';
+  if (forbidden || calls.length < (kind === 'ask' ? 3 : 4) || calls.length > 9 || calls[0] !== 'codealongai_get_walkthrough_request' || calls[calls.length - 1] !== transition) return false;
+  if (kind === 'reply' && calls[1] !== 'codealongai_get_walkthrough') return false;
+  if (calls.slice(0, -1).some((name) => !readTools.has(name)) || calls.slice(1).includes('codealongai_get_walkthrough_request')) return false;
+  return new Set(calls.slice(0, -1).filter((name) => name === 'codealongai_list_workspace_files')).size <= 1;
+}
