@@ -21,15 +21,18 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public prepareWait: Promise<void> | undefined;
   public daytonaProbe: DaytonaProbeResult = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   public producerReadiness: TrueForgeProducerReadinessResult = { phase: 'ready', outcome: 'ready' };
+  public readonly producerTurnCalls: { readonly producer: TrueForgeProducerRuntime; readonly kind: 'session' | 'turn' | 'events' }[] = [];
   private producerIdentity: TrueForgeProducerRuntime | undefined;
   public get producer(): TrueForgeProducerRuntime {
+    const runtime = this;
     let spec: Record<string, unknown> | undefined;
     let turn: Record<string, unknown> | undefined;
-    return this.producerIdentity ??= {
+    const producer: TrueForgeProducerRuntime = {
       ...emptyTrueForgeProducer,
-      createSession: async (request) => { spec = request as Record<string, unknown>; return { data: { id: 'test-session' } }; },
-      runTurn: async (input) => { turn = input.request as Record<string, unknown>; return { data: { id: 'test-turn' } }; },
+      createSession: async (request) => { runtime.producerTurnCalls.push({ producer, kind: 'session' }); spec = request as Record<string, unknown>; return { data: { id: 'test-session' } }; },
+      runTurn: async (input) => { runtime.producerTurnCalls.push({ producer, kind: 'turn' }); turn = input.request as Record<string, unknown>; return { data: { id: 'test-turn' } }; },
       events: async function* () {
+        runtime.producerTurnCalls.push({ producer, kind: 'events' });
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
         const requestId = typeof text === 'string' ? text.match(/request ID ([^.]*)\./)?.[1] : undefined;
         const mcpUrl = ((((spec?.agent as Record<string, unknown> | undefined)?.spec as Record<string, unknown> | undefined)?.mcpServers as readonly { url?: unknown }[] | undefined)?.[0])?.url;
@@ -43,6 +46,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
       },
       probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } }
     };
+    return this.producerIdentity ??= producer;
   }
   public replaceProducerForTests(): void { this.producerIdentity = undefined; }
   public async start(options: TrueForgeStartOptions): Promise<void> { this.calls.push(`start:${options.port}`); if (this.failStart) throw new Error('configured test sidecar failure'); }

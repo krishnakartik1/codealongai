@@ -336,6 +336,39 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('routes public Ask through the replacement producer after a sidecar identity swap', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const previousWarning = notificationWindow.showWarningMessage;
+      notificationWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      try {
+        if (api.session) await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+        await eventually(() => api.session === undefined ? true : undefined, 'the prior walkthrough should reset before the producer swap');
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
+        const producerA = commandRuntime.producer;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => api.session, 'producer A should establish the initial start coordinator');
+        await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+        await eventually(() => api.session === undefined ? true : undefined, 'the first walkthrough should reset');
+        commandRuntime.replaceProducerForTests();
+        const producerB = commandRuntime.producer;
+        const before = commandRuntime.producerTurnCalls.length;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const session = await eventually(() => api.session, 'the replacement producer receipt should commit a walkthrough');
+        const replacementCalls = commandRuntime.producerTurnCalls.slice(before);
+        assert.equal(session.origin.document, 'checkout.ts');
+        assert.deepEqual(replacementCalls.map((call) => call.kind), ['session', 'turn', 'events']);
+        assert.equal(replacementCalls.every((call) => call.producer === producerB), true);
+        assert.equal(replacementCalls.some((call) => call.producer === producerA), false);
+      } finally { notificationWindow.showWarningMessage = previousWarning; }
+    }));
+  });
+
 });
 
 suite('MCP lifecycle', () => {
