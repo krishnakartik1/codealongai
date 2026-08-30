@@ -15,7 +15,9 @@ metadata.codealongai = { ...(metadata.codealongai ?? {}), buildCommit: requested
 try {
   await writeFile(packageUrl, `${JSON.stringify(metadata, null, 2)}\n`);
   await run('npm', ['run', 'build'], { cwd: new URL('..', import.meta.url).pathname });
-  await run('./node_modules/.bin/vsce', ['package', '--out', 'codealongai.vsix'], { cwd: new URL('..', import.meta.url).pathname });
+  // vsce's dependency walk omits this package root when all runtime modules
+  // are hoisted; package the built extension tree explicitly instead.
+  await run('./node_modules/.bin/vsce', ['package', '--no-dependencies', '--out', 'codealongai.vsix'], { cwd: new URL('..', import.meta.url).pathname });
 } finally {
   await writeFile(packageUrl, original);
 }

@@ -20,7 +20,7 @@ export interface ProducerTurnInput {
   readonly observe?: (event: ProducerTurnObservation) => void;
 }
 
-export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'sandbox-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden'; readonly name?: string; };
+export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'sandbox-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden' | 'agent-spec'; readonly name?: string; };
 
 export type ProducerReceipt = StartReceipt | QuestionReceipt;
 export type ProducerTurnResult = { readonly status: 'committed'; readonly receipt: ProducerReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
@@ -172,7 +172,11 @@ export class ReceiptBackedProducerCoordinator {
     let sessionId: string | undefined;
     const deadline = Date.now() + this.timeoutMs;
     try {
-      const creating = this.runtime.createSession({ agent: { spec: producerAgentSpec(input) } }, teardownOptions(this.abort.signal, this.timeoutMs));
+      const spec = producerAgentSpec(input);
+      // The acceptance observer sees only which minimal policy was installed,
+      // never the AgentSpec, model, URL, request, or instructions.
+      input.observe?.({ kind: 'agent-spec', name: input.kind ?? 'start' });
+      const creating = this.runtime.createSession({ agent: { spec } }, teardownOptions(this.abort.signal, this.timeoutMs));
       const session = await beforeDeadline(creating, deadline, this.cancelledSignal);
       if (!session.completed) {
         if (session.cancelled) {

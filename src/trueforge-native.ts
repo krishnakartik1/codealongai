@@ -66,6 +66,10 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   }
   public hasExited(): boolean { return this.childExited || this.child === undefined || childHasExited(this.child); }
   public async ownsRunningChild(): Promise<boolean> { return !this.hasExited() && this.record !== undefined && ownsRecordedChild(this.record); }
+  public async acceptanceFacts(): Promise<import('./trueforge-contract').NativeAcceptanceFacts | undefined> {
+    const facts = this.producerRuntime?.acceptanceFacts?.();
+    return facts ? { ...facts, ownedSidecar: await this.ownsRunningChild() } : undefined;
+  }
   private async acquireOwnership(dataPath: string, ownershipRecord: OwnershipRecord): Promise<void> { const lockPath = path.join(dataPath, 'codealongai-trueforge.lock'); try { await this.openOwnership(lockPath, ownershipRecord); } catch { if (!await recoverStaleOwnership(lockPath)) throw new Error('Another CodeAlongAI window owns TrueForge setup.'); await this.openOwnership(lockPath, ownershipRecord); } this.ownershipLaunchId = ownershipRecord.launchId; }
   private async openOwnership(lockPath: string, ownershipRecord: OwnershipRecord): Promise<void> { await createOwnershipLock(lockPath, ownershipRecord); this.ownershipPath = lockPath; }
   private async writeOwnership(record: OwnershipRecord): Promise<void> { const ownershipPath = this.ownershipPath; if (!ownershipPath) throw new Error('TrueForge ownership is unavailable.'); await writeOwnership(ownershipPath, record); }

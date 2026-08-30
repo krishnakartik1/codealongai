@@ -1,7 +1,7 @@
 import * as net from 'node:net';
 import type { TrueForgeRuntime } from './trueforge-contract';
 
-export type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessPhase, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions, TrueForgeTurnRequest } from './trueforge-contract';
+export type { NativeAcceptanceFacts, TrueForgeProducerReadinessInput, TrueForgeProducerReadinessPhase, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions, TrueForgeTurnRequest } from './trueforge-contract';
 export { NativeTrueForgeRuntime, releaseOwnershipIfCurrent, trueForgeCapabilitySummary, type TrueForgeCapabilitySummary } from './trueforge-native';
 export { recoverStaleOwnership } from './trueforge-ownership';
 export { SdkTrueForgeProducerRuntime, type TrueForgeSdkClient, type TrueForgeSdkClientFactory } from './trueforge-sdk';
@@ -22,6 +22,8 @@ export class TrueForgeSidecar {
   public constructor(private readonly runtime: TrueForgeRuntime, private readonly dataPath: string, private readonly allocatePort: () => Promise<number> = reserveLoopbackPort) {}
   public get url(): string | undefined { return this.port === undefined ? undefined : loopbackUrl(this.port); }
   public get producer() { return this.runtime.producer; }
+  /** Acceptance is opt-in and receives only facts the real runtime has already observed. */
+  public acceptanceFacts(): Promise<import('./trueforge-contract').NativeAcceptanceFacts | undefined> { return this.runtime.acceptanceFacts?.() ?? Promise.resolve(undefined); }
   public async configure(): Promise<void> { if (this.disposed) throw new Error('The TrueForge sidecar is disposed.'); const operation = this.queue.catch(() => undefined).then(() => this.configureOwned()); this.queue = operation; return operation; }
   private async configureOwned(): Promise<void> {
     if (this.started && this.port !== undefined && !this.runtime.hasExited() && await this.runtime.ownsRunningChild() && await this.runtime.health(this.port) && await this.runtime.verifyCapability(this.port)) { await this.runtime.open(loopbackUrl(this.port)); return; }

@@ -5,6 +5,11 @@ import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
 export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readonly client: TrueForgeSdkClient;
+  private readonly acceptancePhases = new Set<'provider' | 'snapshots' | 'sandboxes' | 'ready'>();
+  private skillCommit: string | undefined;
+  private connectorDiscovered = false;
+  private mcpDiscovered = false;
+  private probeCleaned = false;
   public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge(trueForgeClientOptions(url)) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState(), private readonly terminalTimer: TerminalTimer = systemTerminalTimer) { this.client = createClient(baseUrl); }
   public discoverConfiguration(): Promise<unknown> { return this.readConfiguration(); }
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
@@ -23,6 +28,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public async cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.cancelSdkSession(sessionId, options); }
   public async deleteSession(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.deleteSdkSession(sessionId, options); }
   public probeDaytona(): Promise<DaytonaProbeResult> { const operation = this.probeState.queue.catch(() => undefined).then(async () => { await this.probeState.hydrate(); return this.probeDaytonaOwned(); }); this.probeState.queue = operation.then(() => undefined, () => undefined); return operation; }
+  public acceptanceFacts(): import('./trueforge-contract').NativeAcceptanceFacts { return { provider: 'daytona', phases: [...this.acceptancePhases], skillCommit: this.skillCommit, connectorDiscovered: this.connectorDiscovered, mcpDiscovered: this.mcpDiscovered, ownedSidecar: false, probeCleaned: this.probeCleaned }; }
   public async prepareProducer(input: TrueForgeProducerReadinessInput): Promise<TrueForgeProducerReadinessResult> {
     const configuration = new ProducerReadinessConfiguration(input);
     if (!configuration.hasQualifiedModel) return { phase: 'alias', outcome: 'failed' };
@@ -36,6 +42,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       await this.upsertCodeAlongAiSkill(configuration.skillManifest());
       const skills = await this.readConfiguredSkills();
       if (!hasCodeAlongAiSkill(skills, configuration.skillCommit)) return { phase: 'skill', outcome: 'failed' };
+      this.skillCommit = configuration.skillCommit;
     } catch { return { phase: 'skill', outcome: 'failed' }; }
     try {
       await this.upsertCodeAlongAiConnector(configuration.connectorManifest());
@@ -43,6 +50,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     try {
       const tools = await this.listCodeAlongAiMcpTools();
       if (!hasExactCatalog(tools)) return { phase: 'mcp-discovery', outcome: 'failed' };
+      this.connectorDiscovered = true; this.mcpDiscovered = true;
     } catch { return { phase: 'mcp-discovery', outcome: 'failed' }; }
     let sessionId: string | undefined;
     try {
@@ -74,12 +82,14 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     try { provider = await this.readConfiguredSandboxProvider(); }
     catch (error) { return failed(configurationPhase(error)); }
     if (!isDaytona(provider)) return failed('provider');
+    this.acceptancePhases.add('provider');
     const manifest = providerManifest(provider);
     if (!manifest) return failed('provider');
     let refreshed: unknown;
     try { refreshed = await this.refreshConfiguredSandboxProvider(manifest); }
     catch (error) { return failed(snapshotPhase(error)); }
     if (sandboxStatus(refreshed) !== 'ready') return failed('snapshots');
+    this.acceptancePhases.add('snapshots');
     let model: string | undefined;
     try { model = firstModelName(await this.readConfiguredModels()); }
     catch { return failed('model'); }
@@ -99,11 +109,13 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
         const sandbox = turnId ? await observedSandboxCreation(this, sessionId, turnId) : 'absent';
         if (sandbox === 'permission-denied') result = failed('sandboxes');
         else if (sandbox !== 'created') result = failed('sandbox-create');
+        else this.acceptancePhases.add('sandboxes');
       } catch (error) { result = failed(sandboxPhase(error)); }
     }
     if (!sessionId) return result ?? failed('sandbox-create');
-    try { await this.deleteSession(sessionId); }
+    try { await this.deleteSession(sessionId); this.probeCleaned = true; }
     catch { this.probeState.residualSessionId = sessionId; this.probeState.residualResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; await this.probeState.persist(); return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
+    if (!result) this.acceptancePhases.add('ready');
     return result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   }
   private createSdkSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown> { return this.client.sessions.create(sessionRequest as never, options); }

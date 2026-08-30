@@ -17,6 +17,9 @@ test('native acceptance preflight distinguishes skips, external blocks, and read
 test('native evidence retains only the public redacted vocabulary', () => {
   assert.deepEqual(safeNativeEvidence({ result: 'PASS', versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases: ['ready', 'secret'], calls: ['codealongai_get_walkthrough_request', 'payload'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar', '/private/path'] }), { result: 'PASS', versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases: ['ready'], calls: ['codealongai_get_walkthrough_request'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar'] });
 });
+test('native evidence drops unverified policy and readiness values', () => {
+  assert.deepEqual(safeNativeEvidence({ result: 'PASS', versions: { trueforge: 'x', sdk: 'x', mcp: 'x' }, phases: ['provider', 'snapshots', 'sandboxes', 'ready'], calls: [], policies: ['question', 'prompt'], readiness: { provider: 'daytona', skillCommit: 'not-a-commit', connectorDiscovered: true, mcpDiscovered: true, ownedSidecar: true, probeCleaned: true }, receiptMatched: true, terminalDone: true, cleanup: [] }), { result: 'PASS', versions: { trueforge: 'unknown', sdk: 'unknown', mcp: 'unknown' }, phases: ['provider', 'snapshots', 'sandboxes', 'ready'], calls: [], policies: ['question'], receiptMatched: true, terminalDone: true, cleanup: [] });
+});
 test('cleanup observation distinguishes fulfilled deletion from rejection and timeout', async () => {
   const rejected = await untilTeardown(Promise.reject(new Error('provider cleanup rejected')), new AbortController().signal);
   assert.equal(rejected, 'rejected');

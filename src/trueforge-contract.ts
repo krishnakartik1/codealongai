@@ -16,7 +16,20 @@ export interface TrueForgeRuntime {
   ownsRunningChild(): Promise<boolean>;
   open(url: string): Promise<void>;
   stop(): Promise<void>;
+  /** Optional, whitelist-only acceptance facts from the owned native boundary. */
+  acceptanceFacts?(): Promise<NativeAcceptanceFacts | undefined>;
   readonly producer: TrueForgeProducerRuntime;
+}
+
+/** No identifiers, URLs, paths, payloads, prompts, or credentials cross this seam. */
+export interface NativeAcceptanceFacts {
+  readonly provider: 'daytona';
+  readonly phases: readonly ('provider' | 'snapshots' | 'sandboxes' | 'ready')[];
+  readonly skillCommit: string | undefined;
+  readonly connectorDiscovered: boolean;
+  readonly mcpDiscovered: boolean;
+  readonly ownedSidecar: boolean;
+  readonly probeCleaned: boolean;
 }
 
 export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; readonly options?: TrueForgeRequestOptions; }
@@ -50,4 +63,6 @@ export interface TrueForgeProducerRuntime {
   probeDaytona(): Promise<DaytonaProbeResult>;
   /** Reconciles only CodeAlongAI-owned producer configuration and proves its MCP catalog. */
   prepareProducer(input: TrueForgeProducerReadinessInput): Promise<TrueForgeProducerReadinessResult>;
+  /** Optional safe summary of facts already observed at this adapter boundary. */
+  acceptanceFacts?(): NativeAcceptanceFacts;
 }

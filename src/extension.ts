@@ -5,7 +5,7 @@ import { LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
-import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
+import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type NativeAcceptanceFacts, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
 import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
@@ -54,7 +54,10 @@ export interface WalkthroughTestApi {
   /** Observation-only test seam; setup cannot create walkthrough authority. */
   readonly hasPendingWalkthroughRequest: boolean;
   readonly producerObservations: readonly ProducerTurnObservation[];
+  readonly nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   replyTargetAt(stopId: string): object | undefined;
+  /** Boolean-only assertion seam: no conversation content crosses it. */
+  sourceThreadHasAnswerAt(stopId: string): boolean;
 }
 
 /** Production activation uses the registered contract-faithful test runtime only in Extension Host tests. */
@@ -69,6 +72,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const questionTurnOwner = new ProducerTurnOwner();
   const producerObservations: ProducerTurnObservation[] = [];
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
+  let nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
@@ -270,7 +274,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
           mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
           skillCommit
         });
-        if (producer.action === 'none') return true;
+        if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); return true; }
         reportProducerReadiness(producer, retry);
         return false;
       }
@@ -544,6 +548,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     get session() { return authority.getSession(); },
     get hasPendingWalkthroughRequest() { return authority.getPendingStart() !== undefined || authority.getPendingReplacement() !== undefined || authority.getPendingQuestion() !== undefined; },
     get producerObservations() { return producerObservations.slice(); },
+    get nativeAcceptanceFacts() { return nativeAcceptanceFacts; },
     replyTargetAt(stopId) {
       if (!threads.has(stopId)) return undefined;
       const existing = replyTargets.get(stopId);
@@ -552,7 +557,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       replyTargets.set(stopId, target);
       replyTargetStopIds.set(target, stopId);
       return target;
-    }
+    },
+    sourceThreadHasAnswerAt(stopId) { return (threads.get(stopId)?.comments.length ?? 0) > 2; }
   };
 }
 
