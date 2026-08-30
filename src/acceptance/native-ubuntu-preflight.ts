@@ -44,7 +44,7 @@ const readTools = new Set(['codealongai_get_walkthrough_request', 'codealongai_g
 /** Complete bounded producer policy: authority first, one transition last, no post-transition calls. */
 export function validTurnCallSequence(kind: 'ask' | 'reply', calls: readonly string[], forbidden: boolean): boolean {
   const transition = kind === 'ask' ? 'codealongai_start_walkthrough' : 'codealongai_commit_question_outcome';
-  if (forbidden || calls.length < (kind === 'ask' ? 3 : 2) || calls.length > 9 || calls[0] !== 'codealongai_get_walkthrough_request' || calls[calls.length - 1] !== transition) return false;
+  if (forbidden || calls.length < (kind === 'ask' ? 3 : 2) || calls.length > 13 || calls[0] !== 'codealongai_get_walkthrough_request' || calls[calls.length - 1] !== transition) return false;
   if (calls.slice(0, -1).some((name) => !readTools.has(name)) || calls.slice(1).includes('codealongai_get_walkthrough_request')) return false;
   return new Set(calls.slice(0, -1).filter((name) => name === 'codealongai_list_workspace_files')).size <= 1;
 }
