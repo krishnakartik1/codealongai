@@ -45,7 +45,8 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         if (runtime.producerEventError) throw runtime.producerEventError;
         if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
-        const requestId = typeof text === 'string' && text.startsWith('start\n') ? text.slice('start\n'.length) : undefined;
+        const question = typeof text === 'string' && text.startsWith('question\n');
+        const requestId = typeof text === 'string' && (text.startsWith('start\n') || question) ? text.slice(text.indexOf('\n') + 1) : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
         const port = runtime.mcpPort;
         const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
@@ -57,6 +58,23 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
           yield call('authority', 'codealongai_get_walkthrough_request', { schemaVersion: 1, requestId }, '2026-01-01T00:00:00.000Z');
           const authority = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
           yield response('authority', authority, '2026-01-01T00:00:01.000Z');
+          if (question) {
+            yield call('walkthrough', 'codealongai_get_walkthrough', {}, '2026-01-01T00:00:02.000Z');
+            const walkthrough = await client.callTool({ name: 'codealongai_get_walkthrough', arguments: {} });
+            yield response('walkthrough', walkthrough, '2026-01-01T00:00:03.000Z');
+            const snapshot = walkthrough.structuredContent as { sessionId?: string; revision?: number } | undefined;
+            const request = authority.structuredContent as { input?: { sourceStopId?: string } } | undefined;
+            if (!snapshot?.sessionId || typeof snapshot.revision !== 'number' || !request?.input?.sourceStopId) return;
+            const source = request.input.sourceStopId;
+            const knownStops = (walkthrough.structuredContent as { stops?: { id: string }[] }).stops?.map((stop) => stop.id) ?? [];
+            const outcome = knownStops.includes('initial-value') ? { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' } : knownStops.includes('pricing-function') ? { kind: 'generated-walkthrough', answerMarkdown: 'The reducer begins with its initial value.', patch: { addedStops: [{ id: 'initial-value', displayName: 'Initial value', explanationMarkdown: 'The reduction starts from its initial value.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 42 } }, destinationIds: [], backId: 'pricing-reducer-revisit' }], appendedDestinations: [{ sourceStopId: 'pricing-reducer-revisit', destinationIds: ['initial-value'] }], recommendedNextUpdates: [] } } : { kind: 'generated-walkthrough', answerMarkdown: 'Follow the value through the subtotal function and its reducer.', patch: { addedStops: [{ id: 'pricing-function', displayName: 'Definition', explanationMarkdown: 'This defines the subtotal calculation.', path: 'pricing.ts', range: { start: { line: 0, character: 16 }, end: { line: 0, character: 51 } }, destinationIds: ['pricing-reducer'], recommendedNextId: 'pricing-reducer', backId: 'checkout-origin' }, { id: 'pricing-reducer', displayName: 'Reducer', explanationMarkdown: 'The reducer subtracts each price.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: ['pricing-reducer-revisit'], recommendedNextId: 'pricing-reducer-revisit', backId: 'pricing-function' }, { id: 'pricing-reducer-revisit', displayName: 'Reducer', explanationMarkdown: 'Revisit the same reduction expression.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: [], backId: 'pricing-reducer' }, { id: 'checkout-cart', displayName: 'Cart input', explanationMarkdown: 'The cart supplies the prices.', path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } }, destinationIds: ['pricing-function'], recommendedNextId: 'pricing-function', backId: 'checkout-origin' }], appendedDestinations: [{ sourceStopId: 'checkout-origin', destinationIds: ['pricing-function', 'checkout-cart'] }], recommendedNextUpdates: [{ sourceStopId: 'checkout-origin', targetStopId: 'pricing-function' }] } };
+            const commit = { schemaVersion: 1, requestId, expectedSessionId: snapshot.sessionId, expectedRevision: snapshot.revision, outcome };
+            yield call('question', 'codealongai_commit_question_outcome', commit, '2026-01-01T00:00:04.000Z');
+            const committed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: commit });
+            yield response('question', committed, '2026-01-01T00:00:05.000Z');
+            yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
+            return;
+          }
           const origin = (authority.structuredContent as { input?: { origin?: { path?: string; range?: unknown } } } | undefined)?.input?.origin;
           if (!origin?.path || !origin.range) return;
           const interval = origin.range as { start: { line: number }; end: { line: number; character: number } };

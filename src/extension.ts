@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
-import { commitDeterministicQuestion, commitDeterministicReplacement, LoopbackMcpEndpoint } from './mcp';
-import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
+import { commitDeterministicReplacement, LoopbackMcpEndpoint } from './mcp';
+import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
 import { DaytonaReadiness, NativeTrueForgeRuntime, TrueForgeSidecar, type TrueForgeProducerRuntime, type TrueForgeRuntime } from './trueforge';
@@ -64,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
   const startTurnOwner = new StartTurnOwner();
+  const questionTurnOwner = new StartTurnOwner();
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
@@ -98,7 +99,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const threadStopIds = new Map<vscode.CommentThread, string>();
   const replyTargets = new Map<string, object>();
   const replyTargetStopIds = new WeakMap<object, string>();
-  const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
   let startPreparation: Promise<{ endpointState: string; session: WalkthroughSession } | undefined> | undefined;
   let retryReplacement: (() => Promise<void>) | undefined;
@@ -130,7 +130,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const discardQuestion = (requestId: string): void => {
     if (authority.getPendingQuestion()?.id === requestId) authority.discardQuestion(requestId);
-    questionOutcomes.delete(requestId);
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
@@ -400,12 +399,10 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     retryQuestionRequest = request;
     retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
-    const outcome = questionOutcomes.get(request.id) ?? deterministicQuestionOutcome(session);
-    questionOutcomes.set(request.id, outcome);
     try {
-      const requestStatus = authority.getQuestionRequest(request.id)?.status;
-      await commitDeterministicQuestion(lifecycle.port!, { requestId: request.id, sessionId: requestStatus === 'consumed' ? request.sessionId : session.id, revision: requestStatus === 'consumed' ? request.revision : session.revision }, outcome);
-      questionOutcomes.delete(request.id);
+      const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+      const result = await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` });
+      if (result.status !== 'committed') throw new Error(result.diagnostic);
       if (retryQuestionRequest?.id === request.id) { retryQuestion = undefined; retryQuestionRequest = undefined; }
       const committed = authority.getSession()!;
       const source = committed.stops.find((stop) => stop.id === sourceStopId)!;
@@ -461,7 +458,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
-  disposeExtension = async () => { clearStartRetry(); await startTurnOwner.dispose(); authority.discardStart(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
+  disposeExtension = async () => { clearStartRetry(); await Promise.all([startTurnOwner.dispose(), questionTurnOwner.dispose()]); authority.discardStart(); authority.discardQuestion(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
   context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();
@@ -568,19 +565,6 @@ async function captureQuestionSnapshot(session: NonNullable<ReturnType<Walkthrou
   const visibleEditors = vscode.window.visibleTextEditors.map((editor) => vscode.workspace.asRelativePath(editor.document.uri, false));
   const activeVisibleEditorIndex = vscode.window.activeTextEditor ? vscode.window.visibleTextEditors.indexOf(vscode.window.activeTextEditor) : undefined;
   return { stopExcerpts: documents.filter((excerpt): excerpt is Exclude<typeof excerpt, undefined> => excerpt !== undefined), editorState: { visibleEditors, ...(activeVisibleEditorIndex === undefined || activeVisibleEditorIndex < 0 ? {} : { activeVisibleEditorIndex }) } };
-}
-
-export function deterministicQuestionOutcome(session: NonNullable<ReturnType<WalkthroughAuthority['getSession']>>): QuestionOutcome {
-  if (session.stops.some((stop) => stop.id === 'initial-value')) return { kind: 'explanation-only', answerMarkdown: 'This follow-up stays attached to the current walkthrough stop.' };
-  if (session.stops.some((stop) => stop.id === 'pricing-function')) return { kind: 'generated-walkthrough', answerMarkdown: 'The reducer begins with its initial value.', patch: { addedStops: [
-    { id: 'initial-value', displayName: 'Initial value', explanationMarkdown: 'The reduction starts from its initial value.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 42 } }, destinationIds: [], backId: 'pricing-reducer-revisit' }
-  ], appendedDestinations: [{ sourceStopId: 'pricing-reducer-revisit', destinationIds: ['initial-value'] }], recommendedNextUpdates: [] } };
-  return { kind: 'generated-walkthrough', answerMarkdown: 'Follow the value through the subtotal function and its reducer.', patch: { addedStops: [
-    { id: 'pricing-function', displayName: 'Definition', explanationMarkdown: 'This defines the subtotal calculation.', path: 'pricing.ts', range: { start: { line: 0, character: 16 }, end: { line: 0, character: 51 } }, destinationIds: ['pricing-reducer'], recommendedNextId: 'pricing-reducer', backId: 'checkout-origin' },
-    { id: 'pricing-reducer', displayName: 'Reducer', explanationMarkdown: 'The reducer subtracts each price.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: ['pricing-reducer-revisit'], recommendedNextId: 'pricing-reducer-revisit', backId: 'pricing-function' },
-    { id: 'pricing-reducer-revisit', displayName: 'Reducer', explanationMarkdown: 'Revisit the same reduction expression.', path: 'pricing.ts', range: { start: { line: 1, character: 41 }, end: { line: 1, character: 54 } }, destinationIds: [], backId: 'pricing-reducer' },
-    { id: 'checkout-cart', displayName: 'Cart input', explanationMarkdown: 'The cart supplies the prices.', path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } }, destinationIds: ['pricing-function'], recommendedNextId: 'pricing-function', backId: 'checkout-origin' }
-  ], appendedDestinations: [{ sourceStopId: 'checkout-origin', destinationIds: ['pricing-function', 'checkout-cart'] }], recommendedNextUpdates: [{ sourceStopId: 'checkout-origin', targetStopId: 'pricing-function' }] } };
 }
 
 function vscodeWorkspaceSource(): WorkspaceSource {

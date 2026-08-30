@@ -3,6 +3,8 @@ import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './truefo
 
 /** The short-lived, receipt-only authority boundary for one start request. */
 export interface StartTurnInput {
+  /** Native Reply uses the same short-lived receipt coordinator as Ask. */
+  readonly kind?: 'start' | 'question';
   readonly requestId: string;
   readonly model: string;
   readonly reasoningEffort: string;
@@ -18,17 +20,19 @@ export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: s
 
 const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
 const startTool = 'codealongai_start_walkthrough';
+const questionTool = 'codealongai_commit_question_outcome';
 const permittedTools = [...allowedReads, startTool];
 
 /** Build an inline, capability-minimal native AgentSpec. It deliberately has no
  * shell, approval, user-question, download, retry, or subagent capability. */
 export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.AgentSpec {
+  const question = input.kind === 'question';
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', enableTools: permittedTools, requireApprovalForTools: [] }],
+    mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : permittedTools, requireApprovalForTools: [] }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
-    instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
+    instructions: question ? 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' : 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
 }
 
@@ -39,9 +43,11 @@ export class StartTurnReducer {
   private readonly deferredResults = new Map<string, unknown>();
   private callsUsed = 0;
   private origin: { path: string; startLine: number; endLine: number } | undefined;
+  private activeWalkthroughRead = false;
+  private activeSession: { id: string; revision: number } | undefined;
   private receipt: StartReceipt | undefined;
   private failure: string | undefined;
-  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: StartReceipt) => boolean) {}
+  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: StartReceipt) => boolean, private readonly kind: 'start' | 'question' = 'start') {}
   public accept(event: unknown): void {
     if (this.receipt || this.failure) return;
     const record = object(event); if (!record) return;
@@ -58,16 +64,18 @@ export class StartTurnReducer {
   private acceptCall(call: ProducerCall): void {
     if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
     const { id, name, arguments: args } = call;
-    if (name !== startTool && ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
+    const transitionTool = this.kind === 'question' ? questionTool : startTool;
+    if (name !== transitionTool && ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
     if (this.callsUsed === 1 && (name !== 'codealongai_get_walkthrough_request' || args.requestId !== this.requestId)) { this.failure = 'request_authority_required'; return; }
     if (this.callsUsed > 1 && name === 'codealongai_get_walkthrough_request') { this.failure = 'request_authority_required'; return; }
     if (name === 'codealongai_list_workspace_files' && this.listed) { this.failure = 'workspace_list_repeated'; return; }
     if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
-    if (name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
-    if (name !== startTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
-    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || !this.originRead)) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
+    if (this.kind === 'start' && name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
+    if (name !== transitionTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
+    if (this.kind === 'question' && name !== transitionTool && this.callsUsed === 2 && name !== 'codealongai_get_walkthrough') { this.failure = 'active_walkthrough_required'; return; }
+    if (name === transitionTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (this.kind === 'start' ? !this.originRead : !this.activeWalkthroughRead) || (this.kind === 'question' && (args.expectedSessionId !== this.activeSession?.id || args.expectedRevision !== this.activeSession?.revision)))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : 'transition_invalid'; return; }
     if (name === 'codealongai_list_workspace_files') this.listed = true;
-    if (name === startTool) this.transitioned = true;
+    if (name === transitionTool) this.transitioned = true;
     this.pending = { id, name };
     const deferred = this.deferredResults.get(id);
     if (deferred !== undefined) { this.deferredResults.delete(id); this.acceptResult(id, deferred); }
@@ -77,12 +85,13 @@ export class StartTurnReducer {
     if (this.pending.id !== id) { this.failure = 'result_correlation'; return; }
     const pending = this.pending; this.pending = undefined;
     const result = object(content); if (!result || result.isError === true || Array.isArray(result.error)) { this.failure = safeToolError(result); return; }
-    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = this.kind === 'question' ? authorizedQuestion(result, this.requestId) : authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    if (this.kind === 'question' && pending.name === 'codealongai_get_walkthrough') { const active = activeWalkthrough(result, this.origin); if (!active) { this.failure = 'active_walkthrough_invalid'; return; } this.activeSession = active; this.activeWalkthroughRead = true; }
     if (pending.name === 'codealongai_read_workspace_file') {
       if (!this.origin || !exactOriginRead(result, this.origin)) { this.failure = 'origin_read_invalid'; return; }
       this.originRead = true;
     }
-    if (pending.name !== startTool) return;
+    if (pending.name !== (this.kind === 'question' ? questionTool : startTool)) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
     if (this.acceptReceipt && !this.acceptReceipt(receipt)) { this.failure = 'receipt_invalid'; return; }
@@ -152,11 +161,11 @@ export class ReceiptBackedStartCoordinator {
       sessionId = idOf(session.value); this.activeSessionId = sessionId;
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
-      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `start\n${input.requestId}` }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
+      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `${input.kind ?? 'start'}\n${input.requestId}` }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
       if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
-      const reducer = new StartTurnReducer(input.requestId, input.acceptReceipt);
+      const reducer = new StartTurnReducer(input.requestId, input.acceptReceipt, input.kind ?? 'start');
       let lastSequence = -1;
       const seenSequences = new Set<number>();
       let receipt: Extract<StartTurnResult, { status: 'committed' }> | undefined;
@@ -270,7 +279,7 @@ export class ReceiptBackedStartCoordinator {
       // The MCP command may have committed just before a lost response,
       // cancellation, or malformed receipt. The authority itself decides
       // whether this request still owns a tentative session.
-      input.rollbackTentativeStart?.();
+      if (input.kind !== 'question') input.rollbackTentativeStart?.();
       this.activeSessionId = undefined;
       if (sessionId) {
         // A session is never deleted while its one native cancellation is in
@@ -323,6 +332,17 @@ function authorizedOrigin(value: unknown, requestId: string): { path: string; st
   const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = finite(start?.line); const endLine = finite(end?.line);
   const startCharacter = finite(start?.character); const endCharacter = finite(end?.character);
   return request?.schemaVersion === 1 && request?.requestId === requestId && request?.kind === 'start' && request?.authorizedAction === 'start' && request?.status === 'pending' && path !== undefined && startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined ? { path, startLine, endLine: endCharacter === 0 ? endLine : endLine + 1 } : undefined;
+}
+/** Question authority is intentionally narrower than a start origin: the
+ * producer may only use the immutable request identity and must subsequently
+ * prove it read the currently active session before committing. */
+function authorizedQuestion(value: unknown, requestId: string): { path: string; startLine: number; endLine: number } | undefined {
+  const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input);
+  return request?.schemaVersion === 1 && request?.requestId === requestId && request?.kind === 'question' && request?.authorizedAction === 'question' && request?.status === 'pending' && typeof input?.sessionId === 'string' && typeof input?.sourceStopId === 'string' ? { path: input.sessionId, startLine: 0, endLine: 0 } : undefined;
+}
+function activeWalkthrough(value: Record<string, unknown>, question: { path: string; startLine: number; endLine: number } | undefined): { id: string; revision: number } | undefined {
+  const snapshot = object(value.structuredContent) ?? value;
+  return snapshot?.schemaVersion === 1 && snapshot?.status === 'active' && typeof snapshot.sessionId === 'string' && snapshot.sessionId === question?.path && typeof snapshot.revision === 'number' ? { id: snapshot.sessionId, revision: snapshot.revision } : undefined;
 }
 function exactOriginRead(value: Record<string, unknown>, origin: { path: string; startLine: number; endLine: number }): boolean {
   const result = object(value.structuredContent) ?? value;
