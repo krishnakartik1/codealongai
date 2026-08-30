@@ -64,10 +64,7 @@ export class StartTurnReducer {
     if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
     if (name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
     if (name !== startTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
-    // A real start request carries its origin descriptor; those calls must be
-    // grounded by the exact authorized read. Older malformed event fixtures
-    // remain non-committing at the MCP boundary and are only correlation tests.
-    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (args.origin !== undefined && !this.originRead))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
+    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || !this.originRead)) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
     if (name === 'codealongai_list_workspace_files') this.listed = true;
     if (name === startTool) this.transitioned = true;
     this.pending = { id, name };
