@@ -1,8 +1,7 @@
 import type { TrueForgeProducerRuntime } from './trueforge-contract';
 import { ReceiptBackedProducerCoordinator, type ProducerTurnInput, type ProducerTurnResult } from './producer-turn';
 
-/** One window-owned producer operation. It deliberately survives adapter swaps
- * until the active turn is cleaned up, and never queues a second learner ask. */
+/** One window-owned producer turn. It never queues a second learner request. */
 export class ProducerTurnOwner {
   private active: { readonly requestId: string; readonly coordinator: ReceiptBackedProducerCoordinator; readonly operation: Promise<ProducerTurnResult> } | undefined;
   public constructor(private readonly createCoordinator: (runtime: TrueForgeProducerRuntime) => ReceiptBackedProducerCoordinator = (runtime) => new ReceiptBackedProducerCoordinator(runtime)) {}
@@ -12,6 +11,13 @@ export class ProducerTurnOwner {
     const operation = coordinator.start(input);
     this.active = { requestId: input.requestId, coordinator, operation };
     const cleanup = coordinator.settled ?? operation;
+    // A matching receipt is the walkthrough commit boundary. It ends this
+    // window's active producer turn even while the completed session receives
+    // best-effort cleanup. Failures and cancellation keep the lease through
+    // that cleanup, so they cannot overlap retry or adapter replacement work.
+    void operation.then((result) => {
+      if (result.status === 'committed' && this.active?.operation === operation) this.active = undefined;
+    }).catch(() => undefined);
     void cleanup.finally(() => { if (this.active?.operation === operation) this.active = undefined; });
     return operation;
   }

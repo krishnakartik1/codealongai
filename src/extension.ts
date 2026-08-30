@@ -70,8 +70,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
-  const startTurnOwner = new ProducerTurnOwner();
-  const questionTurnOwner = new ProducerTurnOwner();
+  const producerTurnOwner = new ProducerTurnOwner();
   const producerObservations: ProducerTurnObservation[] = [];
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
   let nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
@@ -79,12 +78,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
-    const activeRequestId = startTurnOwner.activeRequestId;
+    const activeRequestId = producerTurnOwner.activeRequestId;
     if (activeRequestId) {
       sidecarCrashedRequestId = activeRequestId;
-      void startTurnOwner.cancel();
+      void producerTurnOwner.cancel();
     }
-    if (questionTurnOwner.activeRequestId) void questionTurnOwner.cancel();
   };
   const trueForge = new TrueForgeSidecar(
     testRuntimeFactory?.(reportUnexpectedSidecarExit) ?? new NativeTrueForgeRuntime(
@@ -141,7 +139,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
   };
   const discardQuestion = (requestId: string): void => {
-    if (authority.getPendingQuestion()?.id === requestId) { authority.discardQuestion(requestId); void questionTurnOwner.cancel(); }
+    if (authority.getPendingQuestion()?.id === requestId) { authority.discardQuestion(requestId); void producerTurnOwner.cancel(); }
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
   const revokeActiveProducerWork = (): void => {
@@ -150,8 +148,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     authority.discardQuestion();
     retryQuestion = undefined;
     retryQuestionRequest = undefined;
-    void startTurnOwner.cancel();
-    void questionTurnOwner.cancel();
+    void producerTurnOwner.cancel();
   };
   const requireCurrentReplacement = (requestId: string): boolean => {
     const pending = authority.getPendingReplacement();
@@ -164,7 +161,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const cancelActiveProducerWork = async (): Promise<void> => {
     revokeActiveProducerWork();
-    await Promise.all([startTurnOwner.settled?.catch(() => undefined), questionTurnOwner.settled?.catch(() => undefined)]);
+    await producerTurnOwner.settled?.catch(() => undefined);
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
   const startFailurePhase = (value: unknown): 'cancellation' | 'timeout' | 'provider_error' | 'malformed_output' | 'unexpected_command' | 'missing_receipt' | 'path_invalid' | 'range_invalid' | 'sidecar_crash' => {
@@ -335,8 +332,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const replacementTurnResult = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
-          const cancellation = token.onCancellationRequested(() => { void startTurnOwner.cancel(); });
-          try { return await startTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer }); }
+          const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
+          try { return await producerTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer }); }
           finally { cancellation.dispose(); }
         });
         if (replacementTurnResult.status !== 'committed') throw new Error(replacementTurnResult.diagnostic);
@@ -344,8 +341,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const producer = trueForge.producer;
         const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
-          const cancellation = token.onCancellationRequested(() => { void startTurnOwner.cancel(); });
-          try { return await startTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer }); }
+          const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
+          try { return await producerTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer }); }
           finally { cancellation.dispose(); }
         });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -364,7 +361,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         if (!requireCurrentReplacement(request.id)) return undefined;
         retryReplacement = async () => {
           try {
-            await startTurnOwner.settled?.catch(() => undefined);
+            await producerTurnOwner.settled?.catch(() => undefined);
             if (!requireCurrentReplacement(request.id)) return;
             await commitAuthorizedOrigin();
           } catch { showReplacementFailure(request.id); }
@@ -380,7 +377,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         // The old producer can still be cancelling when the user selects
         // Retry. Keep its exact request leased through cleanup, then start
         // exactly that immutable request rather than capturing a new Ask.
-        await startTurnOwner.settled?.catch(() => undefined);
+        await producerTurnOwner.settled?.catch(() => undefined);
         if (authority.getSession() || authority.getPendingStart()?.id !== failedRequestId) return;
         clearStartRetry();
         await commitAuthorizedOrigin();
@@ -463,7 +460,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     }
     retryQuestionRequest = request;
     retryQuestion = async () => {
-      await questionTurnOwner.settled?.catch(() => undefined);
+      await producerTurnOwner.settled?.catch(() => undefined);
       const current = authority.getPendingQuestion();
       if (!current || current.id !== request.id || current.sessionId !== request.sessionId || current.sourceStopId !== request.sourceStopId) return;
       if (!await daytonaReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
@@ -474,8 +471,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     try {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {
-        const cancellation = token.onCancellationRequested(() => { void questionTurnOwner.cancel(); });
-        try { return await questionTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer }); }
+        const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
+        try { return await producerTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer }); }
         finally { cancellation.dispose(); }
       });
       if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -536,7 +533,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
-  disposeExtension = async () => { clearStartRetry(); await Promise.all([startTurnOwner.dispose(), questionTurnOwner.dispose()]); authority.discardStart(); authority.discardQuestion(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
+  disposeExtension = async () => { clearStartRetry(); await producerTurnOwner.dispose(); authority.discardStart(); authority.discardQuestion(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
   context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();

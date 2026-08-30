@@ -463,6 +463,32 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('does not start a Reply producer turn while a replacement turn is active', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const nativeWarning = notificationWindow.showWarningMessage;
+      let release: (() => void) | undefined;
+      notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      try {
+        await clearWalkthroughForStartTest(api);
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const session = await eventually(() => api.session, 'Ask should create a walkthrough before replacement.');
+        const target = await eventually(() => api.replyTargetAt(session.attentionStopId), 'the active walkthrough should accept a Reply.');
+        commandRuntime.producerEventWait = new Promise<void>((resolve) => { release = resolve; });
+        const callsBeforeReplacement = commandRuntime.producerTurnCalls.length;
+        const replacement = vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => commandRuntime.producerTurnCalls.length === callsBeforeReplacement + 3 ? true : undefined, 'the replacement producer turn should be active.');
+        await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: target, text: 'Do not overlap this replacement.' });
+        assert.equal(commandRuntime.producerTurnCalls.length, callsBeforeReplacement + 3, 'Reply must not start or queue a second producer turn.');
+        release!(); await replacement;
+      } finally { release?.(); commandRuntime.producerEventWait = undefined; notificationWindow.showWarningMessage = nativeWarning; }
+    }));
+  });
+
   test('Reset clears an obsolete failed-question retry before a later public question', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {

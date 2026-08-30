@@ -45,5 +45,5 @@ try {
 } catch { result = 'FAIL'; }
 try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
 catch { result = 'FAIL'; }
-process.stdout.write(JSON.stringify(safeNativeEvidence({ result, versions: { trueforge: nativeAcceptanceInput.trueforgeVersion ?? 'unknown', sdk: nativeAcceptanceInput.sdkVersion ?? 'unknown', mcp: nativeAcceptanceInput.mcpServerVersion ?? 'unknown' }, ...observed, cleanup: [...observed.cleanup, ...cleanup] })) + '\n');
+process.stdout.write(JSON.stringify(safeNativeEvidence({ result, runtime: { platform: nativeAcceptanceInput.ubuntuX64 ? 'ubuntu' : 'unknown', architecture: process.arch, nodeVersion: nativeAcceptanceInput.nodeVersion, model: nativeAcceptanceInput.model ?? '', reasoningEffort: nativeAcceptanceInput.reasoningEffort ?? '' }, versions: { trueforge: nativeAcceptanceInput.trueforgeVersion ?? 'unknown', sdk: nativeAcceptanceInput.sdkVersion ?? 'unknown', mcp: nativeAcceptanceInput.mcpServerVersion ?? 'unknown' }, ...observed, cleanup: [...observed.cleanup, ...cleanup] })) + '\n');
 process.exitCode = result === 'PASS' ? 0 : 1;
