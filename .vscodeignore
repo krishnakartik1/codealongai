@@ -18,3 +18,5 @@ codealongai.vsix
 tsconfig.json
 out/test
 out/**/*.map
+out/acceptance
+scripts/native-ubuntu-acceptance.mjs

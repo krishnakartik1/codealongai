@@ -82,7 +82,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       reportUnexpectedSidecarExit,
       { read: async () => context.globalState.get<{ sessionId: string; result: DaytonaProbeResult }>('codealongai.daytonaProbeResidual'), write: async (value) => { await context.globalState.update('codealongai.daytonaProbeResidual', value); } }
     ),
-    context.globalStorageUri.fsPath
+    configuredTrueForgeDataPath(vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('dataPath'), context.globalStorageUri.fsPath)
   );
   let producerReadiness: ProducerReadiness | undefined;
   let readinessProducer: TrueForgeProducerRuntime | undefined;
@@ -552,6 +552,12 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
 }
 
 export function deactivate(): Thenable<void> { return disposeExtension(); }
+
+function configuredTrueForgeDataPath(configured: string | undefined, fallback: string): string {
+  if (!configured) return fallback;
+  if (!path.isAbsolute(configured)) throw new Error('TrueForge dataPath must be absolute.');
+  return configured;
+}
 
 const commentFor = (comment: { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }): vscode.Comment => ({ body: comment.bodyMarkdown, mode: vscode.CommentMode.Preview, author: { name: comment.author } });
 export const threadComments = (stop: Pick<WalkthroughStop, 'explanation' | 'conversation'>): readonly { author: 'You' | 'CodeAlongAI'; bodyMarkdown: string }[] => {

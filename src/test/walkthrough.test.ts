@@ -1444,6 +1444,7 @@ suite('walkthrough start authority', () => {
     assert.deepEqual(manifest.contributes.configuration.properties, {
       'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
       'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' },
+      'codealongai.trueforge.dataPath': { type: 'string', scope: 'machine', description: 'Optional absolute path to an operator-configured local TrueForge store.' },
       'codealongai.trueforge.model': { type: 'string', scope: 'machine', description: 'Fully qualified TrueForge provider/model selected for CodeAlongAI.' },
       'codealongai.trueforge.reasoningEffort': { type: 'string', scope: 'machine', description: 'Reasoning effort supported by the selected TrueForge model.' }
     });
