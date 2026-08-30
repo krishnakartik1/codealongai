@@ -1851,11 +1851,12 @@ suite('receipt-backed start producer turn', () => {
       reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', toolCallId: 'authority', content: JSON.stringify(content) });
       return reducer.result;
     };
-    assert.deepEqual(reject({ error: [{ structuredContent: { code: 'path_invalid', message: 'sentinel-path' } }] }), { status: 'failed', diagnostic: 'path_invalid' });
-    assert.deepEqual(reject({ error: [{ structuredContent: { code: 'range_invalid', message: 'sentinel-range' } }] }), { status: 'failed', diagnostic: 'range_invalid' });
-    const generic = reject({ error: [{ type: 'text', text: 'sentinel-generic' }] });
-    assert.deepEqual(generic, { status: 'failed', diagnostic: 'tool_result_invalid' });
-    assert.equal(JSON.stringify(generic).includes('sentinel'), false);
+    assert.deepEqual(reject({ error: [{ type: 'text', text: '{"schemaVersion":1,"code":"path_invalid","message":"sentinel-path"}' }] }), { status: 'failed', diagnostic: 'path_invalid' });
+    assert.deepEqual(reject({ error: [{ type: 'text', text: '{"schemaVersion":1,"code":"range_invalid","message":"sentinel-range"}' }] }), { status: 'failed', diagnostic: 'range_invalid' });
+    const mixed = reject({ error: [{ type: 'text', text: 'prefix {"schemaVersion":1,"code":"path_invalid"} suffix sentinel-mixed' }] });
+    assert.deepEqual(mixed, { status: 'failed', diagnostic: 'tool_result_invalid' });
+    assert.deepEqual(reject({ error: [{ type: 'text', text: '{"schemaVersion":1,"code":"generic_error","message":"sentinel-generic"}' }] }), { status: 'failed', diagnostic: 'tool_result_invalid' });
+    assert.equal(JSON.stringify(mixed).includes('sentinel'), false);
   });
 
   test('applies one absolute deadline to stalled create, turn, and stream operations', async () => {

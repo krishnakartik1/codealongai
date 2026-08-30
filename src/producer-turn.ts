@@ -330,7 +330,7 @@ function exactOriginRead(value: Record<string, unknown>, origin: { path: string;
 }
 function safeToolError(value: Record<string, unknown> | undefined): string {
   const errors = Array.isArray(value?.error) ? value.error : [];
-  const structured = errors.map(object).map((error) => object(error?.structuredContent) ?? error).find((error) => string(error?.code) === 'path_invalid' || string(error?.code) === 'range_invalid') ?? object(value?.structuredContent) ?? value;
+  const structured = errors.map(object).map((error) => error?.type === 'text' ? jsonObject(error.text) : undefined).find((error) => string(error?.code) === 'path_invalid' || string(error?.code) === 'range_invalid') ?? object(value?.structuredContent) ?? value;
   const code = string(structured?.code);
   return code === 'path_invalid' || code === 'range_invalid' ? code : 'tool_result_invalid';
 }
