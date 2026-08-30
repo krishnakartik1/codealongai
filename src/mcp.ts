@@ -232,7 +232,7 @@ export class LoopbackMcpEndpoint {
       return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
     } catch (error) {
       const code = error instanceof WorkspaceError ? error.code : 'internal_error';
-      return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
+      return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : code === 'range_invalid' ? 'The requested line interval is invalid.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
     }
   }
 

@@ -17,7 +17,7 @@ export interface WorkspaceSource {
   readonly readFile: (path: string) => Promise<WorkspaceFile>;
 }
 
-export type WorkspaceErrorCode = 'workspace_unavailable' | 'path_invalid' | 'path_outside_workspace' | 'file_unsupported' | 'file_too_large';
+export type WorkspaceErrorCode = 'workspace_unavailable' | 'path_invalid' | 'range_invalid' | 'path_outside_workspace' | 'file_unsupported' | 'file_too_large';
 
 export class WorkspaceError extends Error {
   public constructor(public readonly code: WorkspaceErrorCode) { super(code); }
@@ -54,7 +54,7 @@ export class WorkspaceReader {
     const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
     const actualEnd = endLine ?? lines.length;
-    if (actualEnd > lines.length) throw new WorkspaceError('path_invalid');
+    if (actualStart > lines.length || actualEnd > lines.length) throw new WorkspaceError('range_invalid');
     return { path: file.path, startLine: actualStart, endLine: actualEnd, text: lines.slice(actualStart, actualEnd).join('\n'), dirty: file.dirty, ...(file.documentVersion === undefined ? {} : { documentVersion: file.documentVersion }) };
   }
 

@@ -1,0 +1,130 @@
+import type { TrueForgeProducerRuntime } from './trueforge-contract';
+
+/** The short-lived, receipt-only authority boundary for one start request. */
+export interface StartTurnInput {
+  readonly requestId: string;
+  readonly model: string;
+  readonly reasoningEffort: string;
+  readonly mcpUrl: string;
+}
+
+export type StartTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
+export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: string; readonly sessionId: string; readonly revision: number; readonly attentionStopId: string; }
+
+const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
+const startTool = 'codealongai_start_walkthrough';
+
+/** Build an inline, capability-minimal native AgentSpec. It deliberately has no
+ * shell, approval, user-question, download, retry, or subagent capability. */
+export function startProducerAgentSpec(input: StartTurnInput): unknown {
+  return {
+    model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
+    skills: [{ name: 'codealongai' }],
+    mcpServers: [{ name: 'codealongai-mcp', url: input.mcpUrl }],
+    config: { sandbox: { enabled: true, provider: 'daytona', fileDownloads: false }, retries: 0, approvals: false, dynamicSubagents: false, askUser: false },
+    instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
+  };
+}
+
+/** Normalizes native and system tool events without trusting their prose. */
+export class StartTurnReducer {
+  private readonly seenSequences = new Set<number>();
+  private readonly calls = new Map<string, string>();
+  private readonly earlyResults = new Map<string, unknown>();
+  private callsUsed = 0;
+  private origin: { path: string; startLine: number; endLine: number } | undefined;
+  private receipt: StartReceipt | undefined;
+  private failure: string | undefined;
+  public constructor(private readonly requestId: string) {}
+  public accept(event: unknown): void {
+    if (this.receipt || this.failure) return;
+    const record = object(event); if (!record) return;
+    const sequence = number(record.sequence ?? record.seq);
+    if (sequence !== undefined) { if (this.seenSequences.has(sequence)) return; this.seenSequences.add(sequence); }
+    const type = string(record.type);
+    if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
+    const call = toolCall(record); if (call) { this.acceptCall(call.id, call.name, call.arguments); return; }
+    const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
+  }
+  public get result(): StartTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
+  public fail(diagnostic: string): void { if (!this.receipt) this.failure = diagnostic; }
+  private acceptCall(id: string, name: string, args: Record<string, unknown>): void {
+    if (!id || !name || ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
+    if (this.callsUsed === 1 && (name !== 'codealongai_get_walkthrough_request' || args.requestId !== this.requestId)) { this.failure = 'request_authority_required'; return; }
+    if (name === 'codealongai_list_workspace_files' && [...this.calls.values()].includes(name)) { this.failure = 'workspace_list_repeated'; return; }
+    if (name === 'codealongai_search_workspace' && typeof args.query !== 'string') { this.failure = 'search_invalid'; return; }
+    if (name === 'codealongai_read_workspace_file' && this.origin && (args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
+    if (name !== startTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
+    if (name === startTool && (args.requestId !== this.requestId || [...this.calls.values()].includes(startTool))) { this.failure = 'transition_invalid'; return; }
+    this.calls.set(id, name);
+    const early = this.earlyResults.get(id); if (early !== undefined) { this.earlyResults.delete(id); this.acceptResult(id, early); }
+  }
+  private acceptResult(id: string, content: unknown): void {
+    if (!this.calls.has(id)) { this.earlyResults.set(id, content); return; }
+    if (this.calls.get(id) === 'codealongai_get_walkthrough_request') this.origin = authorizedOrigin(content);
+    if (this.calls.get(id) !== startTool) return;
+    const receipt = receiptFrom(content);
+    if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
+    this.receipt = receipt;
+  }
+}
+
+/** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
+export class ReceiptBackedStartCoordinator {
+  private active: Promise<StartTurnResult> | undefined;
+  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000) {}
+  public start(input: StartTurnInput): Promise<StartTurnResult> {
+    if (this.active) return this.active;
+    const operation = this.run(input); this.active = operation;
+    void operation.finally(() => { if (this.active === operation) this.active = undefined; });
+    return operation;
+  }
+  private async run(input: StartTurnInput): Promise<StartTurnResult> {
+    let sessionId: string | undefined;
+    try {
+      sessionId = idOf(await this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } }));
+      if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
+      const turnId = idOf(await this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start walkthrough request ${input.requestId}.` }], unchained: true } }));
+      if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
+      const reducer = new StartTurnReducer(input.requestId);
+      const deadline = Date.now() + this.timeoutMs;
+      // A native stream can close between a persisted call and response. Subscribe
+      // once more to the same turn; the reducer's sequence set makes that safe.
+      for (let subscription = 0; subscription < 2; subscription += 1) {
+        const iterator = this.runtime.events(sessionId, turnId)[Symbol.asyncIterator]();
+        while (true) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+          const next = await nextWithin(iterator, remaining);
+          if (!next) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+          if (next.done) break;
+          reducer.accept(next.value);
+          const result = reducer.result; if (result) return result;
+        }
+        const result = reducer.result; if (result) return result;
+      }
+      return { status: 'failed', diagnostic: 'missing_receipt' };
+    } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
+    finally { if (sessionId) { await this.runtime.cancelTurn(sessionId).catch(() => undefined); await this.runtime.deleteSession(sessionId).catch(() => undefined); } }
+  }
+}
+
+function object(value: unknown): Record<string, unknown> | undefined { return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined; }
+function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
+function number(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
+function idOf(value: unknown): string | undefined { const item = object(value); return string(object(item?.data)?.id) ?? string(item?.id); }
+function toolCall(value: Record<string, unknown>): { id: string; name: string; arguments: Record<string, unknown> } | undefined {
+  const data = object(value.data) ?? value; const type = string(value.type); const name = string(data.name ?? data.toolName); const id = string(data.callId ?? data.toolCallId ?? data.id);
+  if ((type !== 'tool.call' && type !== 'truefoundry-system:call_tool' && type !== 'mcp.call') || !id || !name) return undefined;
+  return { id, name, arguments: object(data.arguments ?? data.input) ?? {} };
+}
+function toolResult(value: Record<string, unknown>): { id: string; content: unknown } | undefined {
+  const data = object(value.data) ?? value; const type = string(value.type); const id = string(data.callId ?? data.toolCallId ?? data.id);
+  return (type === 'tool.response' || type === 'tool.result' || type === 'mcp.result') && id ? { id, content: data.structuredContent ?? data.content ?? data.result } : undefined;
+}
+function receiptFrom(value: unknown): StartReceipt | undefined { const item = object(value); const candidate = object(item?.structuredContent) ?? item; return candidate?.schemaVersion === 1 && typeof candidate.requestId === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.revision === 'number' && typeof candidate.attentionStopId === 'string' ? candidate as unknown as StartReceipt : undefined; }
+function authorizedOrigin(value: unknown): { path: string; startLine: number; endLine: number } | undefined {
+  const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = number(start?.line); const endLine = number(end?.line);
+  return path !== undefined && startLine !== undefined && endLine !== undefined ? { path, startLine, endLine: endLine + 1 } : undefined;
+}
+async function nextWithin<T>(iterator: AsyncIterator<T>, timeoutMs: number): Promise<IteratorResult<T> | undefined> { return Promise.race([iterator.next(), new Promise<undefined>((resolve) => setTimeout(resolve, timeoutMs))]); }

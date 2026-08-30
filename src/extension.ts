@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
-import { commitDeterministicOrigin, commitDeterministicQuestion, commitDeterministicReplacement, LoopbackMcpEndpoint } from './mcp';
+import { commitDeterministicQuestion, commitDeterministicReplacement, LoopbackMcpEndpoint } from './mcp';
 import { deriveOrigin, projectDestinations, type NavigationDirection, type OriginDescriptor, type QuestionOutcome, type QuestionRequest, type WalkthroughSession, type WalkthroughStop, WalkthroughAuthority } from './walkthrough';
 import { normalizeWorkspacePath, type WorkspaceSource } from './workspace';
 import { McpLifecycle, type McpLifecycleState } from './lifecycle';
@@ -10,6 +10,7 @@ import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
+import { ReceiptBackedStartCoordinator } from './producer-turn';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -83,6 +84,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const replyTargetStopIds = new WeakMap<object, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
+  let startCoordinator: ReceiptBackedStartCoordinator | undefined;
   let retryReplacement: (() => Promise<void>) | undefined;
   let retryReset: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
@@ -252,7 +254,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (current) {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
         await commitDeterministicReplacement(lifecycle.port!, request.id, current.id, current.revision, descriptor);
-      } else await commitDeterministicOrigin(lifecycle.port!, request.id, descriptor);
+      } else {
+        const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
+        const producer = trueForge.producer;
+        if (!startCoordinator || readinessProducer !== producer) { startCoordinator = new ReceiptBackedStartCoordinator(producer); }
+        const result = await startCoordinator.start({ requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` });
+        if (result.status !== 'committed') throw new Error(result.diagnostic);
+      }
       const session = authority.getSession();
       if (!session) throw new Error('the producer did not create a walkthrough');
       const pendingQuestion = authority.getPendingQuestion();

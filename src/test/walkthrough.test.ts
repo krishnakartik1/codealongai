@@ -23,6 +23,7 @@ import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
 import { DaytonaProbeState, producerAgentSpec } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
+import { StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -1172,6 +1173,10 @@ suite('walkthrough replacement and reset authority', () => {
 });
 
 suite('bounded workspace context', () => {
+  test('rejects an out-of-bounds line interval distinctly from a bad path', async () => {
+    const reader = new WorkspaceReader(memorySource([{ path: 'safe.ts', text: 'safe', dirty: false }]));
+    await assert.rejects(() => reader.read({ path: 'safe.ts', startLine: 2, endLine: 3 }), { code: 'range_invalid' });
+  });
   test('reads an unsaved buffer by normalized relative path and selected lines', async () => {
     const reader = new WorkspaceReader(memorySource([{ path: 'src\\cart.ts', text: 'first\nsecond\nthird', dirty: true, documentVersion: 7 }]));
     assert.deepEqual(await reader.read({ path: 'src/cart.ts', startLine: 1, endLine: 3 }), { path: 'src/cart.ts', startLine: 1, endLine: 3, text: 'second\nthird', dirty: true, documentVersion: 7 });
@@ -1193,6 +1198,33 @@ suite('bounded workspace context', () => {
     await assert.rejects(() => reader.list(), { code: 'workspace_unavailable' });
     const available = new WorkspaceReader(memorySource([{ path: 'safe.ts', text: 'safe', dirty: false }]));
     await assert.rejects(() => available.read({ path: '../secret.ts' }), { code: 'path_outside_workspace' });
+  });
+});
+
+suite('receipt-backed start producer turn', () => {
+  test('accepts only a correlated start receipt after matching request authority', () => {
+    const reducer = new StartTurnReducer('request-1');
+    reducer.accept({ type: 'truefoundry-system:call_tool', sequence: 1, data: { callId: 'authority', name: 'codealongai_get_walkthrough_request', arguments: { requestId: 'request-1' } } });
+    reducer.accept({ type: 'truefoundry-system:call_tool', sequence: 2, data: { callId: 'start', name: 'codealongai_start_walkthrough', arguments: { requestId: 'request-1' } } });
+    reducer.accept({ type: 'tool.response', sequence: 3, data: { callId: 'other', structuredContent: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } } });
+    assert.equal(reducer.result, undefined);
+    reducer.accept({ type: 'tool.response', sequence: 4, data: { callId: 'start', structuredContent: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } } });
+    assert.deepEqual(reducer.result, { status: 'committed', receipt: { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' } });
+  });
+
+  test('fails an out-of-order tool call and refuses sandbox command events', () => {
+    const reducer = new StartTurnReducer('request-1');
+    reducer.accept({ type: 'truefoundry-system:call_tool', data: { callId: 'start', name: 'codealongai_start_walkthrough', arguments: { requestId: 'request-1' } } });
+    assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'request_authority_required' });
+    const command = new StartTurnReducer('request-1');
+    command.accept({ type: 'sandbox.command' });
+    assert.deepEqual(command.result, { status: 'failed', diagnostic: 'unexpected_command' });
+  });
+
+  test('creates a capability-minimal Daytona agent spec with a selected skill', () => {
+    const spec = startProducerAgentSpec({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' }) as Record<string, unknown>;
+    assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
+    assert.equal(((spec.config as Record<string, unknown>).sandbox as Record<string, unknown>).provider, 'daytona');
   });
 });
 
