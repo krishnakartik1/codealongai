@@ -24,7 +24,7 @@ export interface ProducerTurnInput {
   readonly observe?: (event: ProducerTurnObservation) => void;
 }
 
-export interface ProducerAgentSpecSummary { readonly kind: 'start' | 'question' | 'replacement'; readonly model: string; readonly reasoningEffort: string; readonly skill: 'codealongai'; readonly connector: 'codealongai-mcp'; readonly sandbox: 'daytona'; readonly parallelToolCalls: false; readonly downloads: false; readonly subagents: false; readonly userQuestions: false; readonly iterationLimit: 9; }
+export interface ProducerAgentSpecSummary { readonly kind: 'start' | 'question' | 'replacement'; readonly model: string; readonly reasoningEffort: string; readonly skill: 'codealongai'; readonly connector: 'codealongai-mcp'; readonly preload: true; readonly sandbox: 'daytona'; readonly parallelToolCalls: false; readonly downloads: false; readonly subagents: false; readonly userQuestions: false; readonly iterationLimit: 9; }
 export type ProducerTurnObservation = { readonly kind: 'session-created' | 'turn-created' | 'sandbox-created' | 'call' | 'receipt-matched' | 'terminal-done' | 'terminal-failed' | 'session-deleted' | 'forbidden' | 'agent-spec'; readonly name?: string; readonly spec?: ProducerAgentSpecSummary; };
 
 export type ProducerReceipt = StartReceipt | QuestionReceipt;
@@ -45,7 +45,7 @@ export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentS
   return {
     model: { name: input.configuration.model, params: { reasoningEffort: input.configuration.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : replacement ? [...allowedReads, replacementTool] : permittedTools, requireApprovalForTools: [] }],
+    mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : replacement ? [...allowedReads, replacementTool] : permittedTools, requireApprovalForTools: [], preload: true }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
     instructions: question ? 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' : replacement ? 'Produce exactly one CodeAlongAI replacement transition. First read the exact authorized replacement request, then its exact new origin before one matching replacement transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' : 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
@@ -53,10 +53,10 @@ export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentS
 
 /** Derives a whitelist-only policy record from the exact request handed to createSession. */
 export function producerSessionRequestSummary(request: unknown, kind: 'start' | 'question' | 'replacement'): ProducerAgentSpecSummary | undefined {
-  const spec = (request as { agent?: { spec?: { model?: { name?: unknown; params?: { reasoningEffort?: unknown; parallelToolCalls?: unknown } }; skills?: { name?: unknown }[]; mcpServers?: { name?: unknown }[]; config?: { sandbox?: { enabled?: unknown; fileDownloads?: unknown }; dynamicSubAgents?: { enabled?: unknown }; askUserQuestions?: { enabled?: unknown }; iterationLimit?: unknown } } } }).agent?.spec;
+  const spec = (request as { agent?: { spec?: { model?: { name?: unknown; params?: { reasoningEffort?: unknown; parallelToolCalls?: unknown } }; skills?: { name?: unknown }[]; mcpServers?: { name?: unknown; preload?: unknown }[]; config?: { sandbox?: { enabled?: unknown; fileDownloads?: unknown }; dynamicSubAgents?: { enabled?: unknown }; askUserQuestions?: { enabled?: unknown }; iterationLimit?: unknown } } } }).agent?.spec;
   const model = spec?.model?.name; const reasoningEffort = spec?.model?.params?.reasoningEffort;
-  if (typeof model !== 'string' || typeof reasoningEffort !== 'string' || spec?.skills?.length !== 1 || spec.skills[0]?.name !== 'codealongai' || spec.mcpServers?.length !== 1 || spec.mcpServers[0]?.name !== 'codealongai-mcp' || spec.model?.params?.parallelToolCalls !== false || spec.config?.sandbox?.enabled !== true || spec.config.sandbox.fileDownloads !== false || spec.config.dynamicSubAgents?.enabled !== false || spec.config.askUserQuestions?.enabled !== false || spec.config.iterationLimit !== 9) return undefined;
-  return { kind, model, reasoningEffort, skill: 'codealongai', connector: 'codealongai-mcp', sandbox: 'daytona', parallelToolCalls: false, downloads: false, subagents: false, userQuestions: false, iterationLimit: 9 };
+  if (typeof model !== 'string' || typeof reasoningEffort !== 'string' || spec?.skills?.length !== 1 || spec.skills[0]?.name !== 'codealongai' || spec.mcpServers?.length !== 1 || spec.mcpServers[0]?.name !== 'codealongai-mcp' || spec.mcpServers[0]?.preload !== true || spec.model?.params?.parallelToolCalls !== false || spec.config?.sandbox?.enabled !== true || spec.config.sandbox.fileDownloads !== false || spec.config.dynamicSubAgents?.enabled !== false || spec.config.askUserQuestions?.enabled !== false || spec.config.iterationLimit !== 9) return undefined;
+  return { kind, model, reasoningEffort, skill: 'codealongai', connector: 'codealongai-mcp', preload: true, sandbox: 'daytona', parallelToolCalls: false, downloads: false, subagents: false, userQuestions: false, iterationLimit: 9 };
 }
 
 /** Normalizes native and system tool events without trusting their prose. */
