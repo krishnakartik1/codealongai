@@ -11,7 +11,8 @@ export class StartTurnOwner {
     const coordinator = this.createCoordinator(runtime);
     const operation = coordinator.start(input);
     this.active = { requestId: input.requestId, coordinator, operation };
-    void operation.finally(() => { if (this.active?.operation === operation) this.active = undefined; });
+    const cleanup = coordinator.settled ?? operation;
+    void cleanup.finally(() => { if (this.active?.operation === operation) this.active = undefined; });
     return operation;
   }
   public get requestId(): string | undefined { return this.active?.requestId; }
@@ -24,6 +25,6 @@ export class StartTurnOwner {
   public async dispose(): Promise<void> {
     const active = this.active;
     active?.coordinator.cancel();
-    await active?.operation;
+    await (active?.coordinator.settled ?? active?.operation);
   }
 }

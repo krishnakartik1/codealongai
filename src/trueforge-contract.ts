@@ -38,7 +38,7 @@ export interface TrueForgeProducerRuntime {
   discoverProviders(): Promise<unknown>;
   discoverModels(): Promise<unknown>;
   discoverSkills(): Promise<unknown>;
-  createSession(sessionRequest: unknown): Promise<unknown>;
+  createSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown>;
   runTurn(input: TrueForgeTurnRequest): Promise<unknown>;
   /** Live events resume exclusively after this persisted SSE sequence number. */
   events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown>;

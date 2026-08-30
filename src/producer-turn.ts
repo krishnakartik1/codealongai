@@ -85,6 +85,8 @@ export class StartTurnReducer {
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
 export class ReceiptBackedStartCoordinator {
   private active: Promise<StartTurnResult> | undefined;
+  private cleanup: Promise<StartTurnResult> | undefined;
+  private publish: ((result: StartTurnResult) => void) | undefined;
   private activeSessionId: string | undefined;
   private cancelled = false;
   private cancelWaiter: (() => void) | undefined;
@@ -95,31 +97,40 @@ export class ReceiptBackedStartCoordinator {
   public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number, signal?: AbortSignal) => Promise<void> = gracePeriod, private readonly teardownTimeoutMs = 5_000) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
-    const operation = this.run(input); this.active = operation;
-    void operation.finally(() => { if (this.active === operation) this.active = undefined; });
-    return operation;
+    let publish!: (result: StartTurnResult) => void;
+    const visible = new Promise<StartTurnResult>((resolve) => { publish = resolve; });
+    this.publish = publish;
+    const cleanup = this.run(input, publish);
+    this.active = visible; this.cleanup = cleanup;
+    void cleanup.then(publish, () => publish({ status: 'failed', diagnostic: 'producer_error' })).finally(() => {
+      if (this.cleanup === cleanup) { this.active = undefined; this.cleanup = undefined; this.publish = undefined; }
+    });
+    return visible;
   }
+  /** Completion of the bounded ownership/cleanup lease, not user-visible success. */
+  public get settled(): Promise<StartTurnResult> | undefined { return this.cleanup; }
   /** Wake every producer wait immediately. Cleanup remains owned by run(). */
   public cancel(): void {
     if (this.cancelled) return;
     this.cancelled = true;
+    this.publish?.({ status: 'failed', diagnostic: 'cancelled' });
     this.cancelWaiter?.();
     this.abort.abort();
     if (this.activeSessionId) this.beginTeardown(this.activeSessionId);
   }
-  private async run(input: StartTurnInput): Promise<StartTurnResult> {
+  private async run(input: StartTurnInput, publish: (result: StartTurnResult) => void): Promise<StartTurnResult> {
     let sessionId: string | undefined;
     const deadline = Date.now() + this.timeoutMs;
     try {
-      const creating = this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } });
+      const creating = this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } }, teardownOptions(this.abort.signal, this.timeoutMs));
       const session = await beforeDeadline(creating, deadline, this.cancelledSignal);
       if (!session.completed) {
         if (session.cancelled) {
           // Cancellation may not detach a session creation: retain ownership
           // until it materializes (or the same absolute deadline expires).
-          const cancelledCreation = await beforeDeadline(creating, deadline);
-          if (cancelledCreation.completed) {
-            sessionId = idOf(cancelledCreation.value);
+          const cancelledCreation = await beforeDeadline(creating.then((value) => ({ value }), () => undefined), Date.now() + this.teardownTimeoutMs);
+          if (cancelledCreation.completed && cancelledCreation.value) {
+            sessionId = idOf(cancelledCreation.value.value);
             this.activeSessionId = sessionId;
           }
         }
@@ -134,6 +145,7 @@ export class ReceiptBackedStartCoordinator {
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId);
       let lastSequence = -1;
+      const seenSequences = new Set<number>();
       let receipt: Extract<StartTurnResult, { status: 'committed' }> | undefined;
       // A native stream can close between a persisted call and response. Subscribe
       // once more to the same turn; the reducer's sequence set makes that safe.
@@ -150,33 +162,34 @@ export class ReceiptBackedStartCoordinator {
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           if (next.value.done) break;
           const envelope = eventEnvelope(next.value.value);
-          if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
+          if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
           reducer.accept(envelope.event);
           const result = reducer.result;
           if (result?.status === 'failed') return result;
-          if (result?.status === 'committed') receipt = result;
+          if (result?.status === 'committed') { receipt = result; publish(receipt); }
           const terminal = terminalState(envelope.event);
-          if (terminal === 'failed') return { status: 'failed', diagnostic: 'terminal_error' };
+          if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
         }
-        const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') receipt = result;
+        const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') { receipt = result; publish(receipt); }
         // The stream may have ended between persisted events. Reconcile once
         // before the one permitted cursor-resubscription.
         if (subscription === 0) {
-          const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId).catch(() => []), deadline, this.cancelledSignal);
+          const reconciliationDeadline = Math.min(deadline, Date.now() + 5_000);
+          const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId).catch(() => []), reconciliationDeadline, this.cancelledSignal);
           if (!persisted.completed) return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'deadline_exceeded' };
           // Persisted history is authoritative for causality, not merely a
           // cursor continuation: it can contain a call missed before a live
           // response with a higher sequence. Stable event ids make replay safe.
           for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
             const envelope = eventEnvelope(event);
-            if (envelope.sequence !== undefined) lastSequence = Math.max(lastSequence, envelope.sequence);
+            if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
             reducer.accept(envelope.event);
             const reconciled = reducer.result;
             if (reconciled?.status === 'failed') return reconciled;
-            if (reconciled?.status === 'committed') receipt = reconciled;
+            if (reconciled?.status === 'committed') { receipt = reconciled; publish(receipt); }
             const terminal = terminalState(envelope.event);
-            if (terminal === 'failed') return { status: 'failed', diagnostic: 'terminal_error' };
+            if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
             if (terminal === 'done' && receipt) return receipt;
           }
         }
@@ -186,6 +199,20 @@ export class ReceiptBackedStartCoordinator {
         if (!grace.completed) return { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
         if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
         return receipt;
+      }
+      // A terminal/no-receipt stream can lag its persisted call/response pair.
+      // Keep this reconciliation lease short and separate from the request's
+      // three-minute operation deadline.
+      const reconciliationDeadline = Math.min(deadline, Date.now() + 5_000);
+      const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId).catch(() => []), reconciliationDeadline, this.cancelledSignal);
+      if (!persisted.completed) return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'missing_receipt' };
+      for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
+        const envelope = eventEnvelope(event);
+        if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); }
+        reducer.accept(envelope.event);
+        const reconciled = reducer.result;
+        if (reconciled?.status === 'failed') return reconciled;
+        if (reconciled?.status === 'committed') { publish(reconciled); return reconciled; }
       }
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }

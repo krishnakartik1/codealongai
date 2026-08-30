@@ -10,9 +10,15 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
   public discoverSkills(): Promise<unknown> { return this.readSkills(); }
-  public createSession(sessionRequest: unknown): Promise<unknown> { return this.createSdkSession(sessionRequest); }
+  public createSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown> { return this.createSdkSession(sessionRequest, options); }
   public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.createSdkTurn(turnInput); }
-  public async *events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown> { for await (const event of await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber)) yield event; }
+  public async *events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown> {
+    const stream = await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber);
+    const withMetadata = (stream as unknown as { withMetadata?: () => AsyncIterable<{ data: unknown; id?: string }> }).withMetadata;
+    const metadata = typeof withMetadata === 'function' ? withMetadata.call(stream) : undefined;
+    if (metadata) { for await (const item of metadata) { const sequence = Number(item.id); yield Number.isSafeInteger(sequence) && sequence >= 0 ? { sequenceNumber: sequence, event: item.data } : item.data; } return; }
+    for await (const event of stream) yield event;
+  }
   public async listTurnEvents(sessionId: string, turnId: string): Promise<readonly unknown[]> { if (!this.client.sessions.listTurnEvents) return []; const page = await this.client.sessions.listTurnEvents(sessionId, turnId, { order: 'asc', limit: 100 }); return page.data; }
   public async cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.cancelSdkSession(sessionId, options); }
   public async deleteSession(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.deleteSdkSession(sessionId, options); }
@@ -100,7 +106,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
     catch { this.probeState.residualSessionId = sessionId; this.probeState.residualResult = result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' }; await this.probeState.persist(); return { provider: 'daytona', phase: 'cleanup', outcome: 'residual' }; }
     return result ?? { provider: 'daytona', phase: 'ready', outcome: 'ready' };
   }
-  private createSdkSession(sessionRequest: unknown): Promise<unknown> { return this.client.sessions.create(sessionRequest as never); }
+  private createSdkSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown> { return this.client.sessions.create(sessionRequest as never, options); }
   private createSdkTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.client.sessions.createTurn(turnInput.sessionId, turnInput.request as never); }
   private subscribeSdkTurn(sessionId: string, turnId: string, afterSequenceNumber?: number): Promise<AsyncIterable<unknown>> { return this.client.sessions.subscribeToTurn(sessionId, turnId, afterSequenceNumber === undefined ? undefined : { afterSequenceNumber }); }
   private async cancelSdkSession(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.client.sessions.cancel(sessionId, undefined, options); }
@@ -206,6 +212,6 @@ export interface TrueForgeSdkClient {
   settings: { modelProviders: { list(): Promise<unknown> }; skills: { list(): Promise<unknown>; createOrUpdate?(request: unknown): Promise<unknown> }; sandboxProviders: { get(): Promise<unknown>; createOrUpdate(request: unknown): Promise<unknown> }; mcpServers?: { createOrUpdate(request: unknown): Promise<unknown> } };
   catalogs: { modelProviders: { list(): Promise<unknown> } }; models: { list(): Promise<unknown> }; skills: { list(): Promise<unknown> };
   mcpServers?: { listTools(name: string): Promise<unknown> };
-  sessions: { create(sessionRequest: unknown): Promise<unknown>; createTurn(sessionId: string, turnRequest: unknown): Promise<unknown>; subscribeToTurn(sessionId: string, turnId: string, request?: { afterSequenceNumber?: number }): Promise<AsyncIterable<unknown>>; listTurnEvents?(sessionId: string, turnId: string, request?: { order?: string; limit?: number }): Promise<{ data: readonly unknown[] }>; cancel(sessionId: string, request?: unknown, options?: TrueForgeRequestOptions): Promise<unknown>; delete(sessionId: string, options?: TrueForgeRequestOptions): Promise<unknown>; };
+  sessions: { create(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown>; createTurn(sessionId: string, turnRequest: unknown): Promise<unknown>; subscribeToTurn(sessionId: string, turnId: string, request?: { afterSequenceNumber?: number }): Promise<AsyncIterable<unknown>>; listTurnEvents?(sessionId: string, turnId: string, request?: { order?: string; limit?: number }): Promise<{ data: readonly unknown[] }>; cancel(sessionId: string, request?: unknown, options?: TrueForgeRequestOptions): Promise<unknown>; delete(sessionId: string, options?: TrueForgeRequestOptions): Promise<unknown>; };
 }
 export type TrueForgeSdkClientFactory = (baseUrl: string) => TrueForgeSdkClient;
