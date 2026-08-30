@@ -308,8 +308,10 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     // while it runs; duplicate learner asks share that one preparation.
     if (!current && startPreparation) return startPreparation;
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
-      if (!await daytonaReadyForWalkthrough(commitAuthorizedOrigin)) return undefined;
       const replacement = authority.getPendingReplacement();
+      const ready = await daytonaReadyForWalkthrough(commitAuthorizedOrigin);
+      if (current && replacement && !requireCurrentReplacement(replacement.id)) return undefined;
+      if (!ready) return undefined;
       const active = authority.getSession();
       if (current && (!active || active.id !== current.id || active.revision !== current.revision)) {
         if (replacement) requireCurrentReplacement(replacement.id);

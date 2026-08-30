@@ -496,7 +496,7 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
-  test('drops a selected replacement retry that becomes stale during deferred readiness', async () => {
+  test('drops a selected replacement retry that becomes stale while deferred readiness fails', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
       const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
@@ -504,7 +504,7 @@ suite('Extension Development Host walkthrough', () => {
       const quickPickWindow = vscode.window as unknown as { showQuickPick: typeof vscode.window.showQuickPick };
       const nativeWarning = notificationWindow.showWarningMessage; const nativeError = errorWindow.showErrorMessage; const nativeQuickPick = quickPickWindow.showQuickPick;
       const warnings: string[] = [];
-      let chooseRetry: ((action: string) => void) | undefined; let releaseReadiness: ((action: string | undefined) => void) | undefined;
+      let chooseRetry: ((action: string) => void) | undefined; let releaseReadiness: (() => void) | undefined;
       notificationWindow.showWarningMessage = (async (message: string) => { warnings.push(message); return message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined; }) as typeof vscode.window.showWarningMessage;
       errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => message === 'CodeAlongAI could not replace the walkthrough. Your current walkthrough is unchanged.' ? new Promise<string>((resolve) => { chooseRetry = resolve; }) : Promise.resolve(undefined)) as unknown as typeof vscode.window.showErrorMessage;
       quickPickWindow.showQuickPick = (async () => ({ stopId: 'checkout-origin' })) as unknown as typeof vscode.window.showQuickPick;
@@ -519,16 +519,19 @@ suite('Extension Development Host walkthrough', () => {
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         await eventually(() => chooseRetry, 'the failed replacement should offer Retry replacement');
         commandRuntime.producerEventError = undefined;
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'sandboxes', outcome: 'failed' };
-        setReadinessActionSelectorForTests(async () => new Promise((resolve) => { releaseReadiness = resolve; }));
+        const preparesBeforeRetry = commandRuntime.prepareCalls;
+        commandRuntime.producerReadiness = { phase: 'model', outcome: 'failed' };
+        commandRuntime.prepareWait = new Promise<void>((resolve) => { releaseReadiness = resolve; });
+        setReadinessActionSelectorForTests(async () => undefined);
         chooseRetry!('Retry replacement');
-        await eventually(() => releaseReadiness, 'selected Retry replacement should enter readiness');
+        await eventually(() => commandRuntime.prepareCalls === preparesBeforeRetry + 1 ? true : undefined, 'selected Retry replacement should enter deferred readiness');
         await vscode.commands.executeCommand('codealongai.walkthrough.destinations');
-        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
-        releaseReadiness!('Retry Setup');
+        releaseReadiness!();
         await eventually(() => warnings.some((message) => message.startsWith('That replacement is no longer current.')) ? true : undefined, 'stale deferred readiness should require a fresh confirmation');
         assert.equal(api.hasPendingWalkthroughRequest, false);
-      } finally { commandRuntime.producerEventError = undefined; commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' }; setReadinessActionSelectorForTests(undefined); notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; quickPickWindow.showQuickPick = nativeQuickPick; }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        assert.equal(commandRuntime.prepareCalls, preparesBeforeRetry + 1, 'dismissing failed readiness must not invoke it again');
+      } finally { releaseReadiness?.(); commandRuntime.producerEventError = undefined; commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' }; commandRuntime.prepareWait = undefined; setReadinessActionSelectorForTests(undefined); notificationWindow.showWarningMessage = nativeWarning; errorWindow.showErrorMessage = nativeError; quickPickWindow.showQuickPick = nativeQuickPick; }
     }));
   });
 
