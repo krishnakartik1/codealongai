@@ -86,7 +86,7 @@ export async function recoverStaleOwnership(lockPath: string): Promise<boolean> 
 
 export async function ownsRecordedChild(record: OwnershipRecord): Promise<boolean> { return record.childPid !== undefined && await verifyChild(record.childPid, record) === true; }
 /** Parent-process acceptance check: returns only whether the configured store has released CodeAlongAI ownership. */
-export async function ownershipReleased(dataPath: string): Promise<boolean> { try { await readdir(path.join(dataPath, 'codealongai-trueforge.lock')); return false; } catch { return true; } }
+export async function ownershipReleased(dataPath: string): Promise<boolean> { try { await readdir(path.join(dataPath, 'codealongai-trueforge.lock')); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true; throw error; } }
 
 function ownershipPath(lockPath: string): string { return path.join(lockPath, ownershipFilename); }
 
