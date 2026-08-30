@@ -2381,6 +2381,21 @@ suite('question-generated walkthrough graph', () => {
       const changed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { ...input, outcome: { ...outcome, answerMarkdown: 'Changed.' } } }); assert.equal(changed.isError, true); assert.ok(reads > beforeRetryReads);
     } finally { await transport.close(); await endpoint.stop(); }
   });
+  test('validates generated anchors sequentially and reports the first failing anchor', async () => {
+    const authority = new WalkthroughAuthority(); const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Ask', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+    authority.start(authority.captureStart(origin).id, origin); const question = authority.captureQuestion('origin', 'Add'); const calls: string[] = []; let active = 0; let maximum = 0;
+    let releaseFirst!: () => void; let releaseSecond!: () => void; const first = new Promise<void>((resolve) => { releaseFirst = resolve; }); const second = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let firstStarted!: () => void; let secondStarted!: () => void; const firstSeen = new Promise<void>((resolve) => { firstStarted = resolve; }); const secondSeen = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const source: WorkspaceSource = { workspaceFolderCount: () => 1, listFiles: async () => ['first.ts', 'second.ts'], readFile: async (path) => { calls.push(path); active += 1; maximum = Math.max(maximum, active); if (path === 'first.ts') { firstStarted(); await first; active -= 1; return { path, text: 'x', dirty: false }; } secondStarted(); await second; active -= 1; return { path, dirty: false, failure: 'file_unsupported' }; } };
+    const endpoint = new LoopbackMcpEndpoint(authority, source); await endpoint.start(0); const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`)); const client = new Client({ name: 'sequential anchors', version: '1' }, { versionNegotiation: { mode: 'auto' } }); await client.connect(transport);
+    const outcome: QuestionOutcome = { kind: 'generated-walkthrough', answerMarkdown: 'Add.', patch: { addedStops: [{ id: 'first', displayName: 'First', explanationMarkdown: 'First', path: 'first.ts', range: origin.range, destinationIds: [], backId: 'origin' }, { id: 'second', displayName: 'Second', explanationMarkdown: 'Second', path: 'second.ts', range: origin.range, destinationIds: [], backId: 'origin' }], appendedDestinations: [{ sourceStopId: 'origin', destinationIds: ['first', 'second'] }], recommendedNextUpdates: [] } };
+    try {
+      const session = authority.getSession()!; const operation = client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: question.id, expectedSessionId: session.id, expectedRevision: session.revision, outcome } });
+      await firstSeen; assert.deepEqual(calls, ['first.ts']); assert.equal(maximum, 1);
+      releaseFirst(); await secondSeen; assert.deepEqual(calls, ['first.ts', 'second.ts']); assert.equal(maximum, 1);
+      releaseSecond(); const result = await operation; assert.equal(result.isError, true); assert.deepEqual(calls, ['first.ts', 'second.ts']);
+    } finally { releaseFirst?.(); releaseSecond?.(); await transport.close(); await endpoint.stop(); }
+  });
   test('commits an injected generated graph atomically over the real loopback boundary', async () => {
     const authority = new WalkthroughAuthority();
     const origin = { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'Ask away', document: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } } };
