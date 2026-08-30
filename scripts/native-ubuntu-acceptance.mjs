@@ -39,5 +39,5 @@ try {
 } catch { result = 'FAIL'; }
 try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
 catch { result = 'FAIL'; }
-process.stdout.write(JSON.stringify(safeNativeEvidence({ result, ...observed, cleanup: [...observed.cleanup, ...cleanup] })) + '\n');
+process.stdout.write(JSON.stringify(safeNativeEvidence({ result, versions: { trueforge: input.trueforgeVersion ?? 'unknown', sdk: input.sdkVersion ?? 'unknown', mcp: input.mcpServerVersion ?? 'unknown' }, ...observed, cleanup: [...observed.cleanup, ...cleanup] })) + '\n');
 process.exitCode = result === 'PASS' ? 0 : 1;

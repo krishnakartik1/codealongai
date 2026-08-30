@@ -13,13 +13,14 @@ export function nativeUbuntuPreflight(input: NativeAcceptanceInput): NativeAccep
   return { status: 'ready' };
 }
 
-export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly versions: { readonly trueforge: '0.1.4'; readonly sdk: '0.1.3'; readonly mcp: '2.0.0'; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
+export interface SafeNativeEvidence { readonly result: 'PASS' | 'FAIL'; readonly versions: { readonly trueforge: string; readonly sdk: string; readonly mcp: string; }; readonly phases: readonly string[]; readonly calls: readonly string[]; readonly receiptMatched: boolean; readonly terminalDone: boolean; readonly cleanup: readonly string[]; }
 /** Removes all values except the fixed public vocabulary permitted in acceptance output. */
-export function safeNativeEvidence(input: Omit<SafeNativeEvidence, 'versions'>): SafeNativeEvidence {
+export function safeNativeEvidence(input: SafeNativeEvidence): SafeNativeEvidence {
   const names = input.calls.filter((name) => /^codealongai_[a-z_]+$/.test(name));
   const phases = input.phases.filter((phase) => /^(provider|snapshots|sandboxes|ready|model|reasoning|skill|connector|mcp-discovery)$/.test(phase));
   const cleanup = input.cleanup.filter((value) => /^(owned-sidecar|session-delete|probe-delete|profile-delete)$/.test(value));
-  return { result: input.result, versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases, calls: names, receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
+  const version = (value: string): string => /^\d+\.\d+\.\d+$/.test(value) ? value : 'unknown';
+  return { result: input.result, versions: { trueforge: version(input.versions.trueforge), sdk: version(input.versions.sdk), mcp: version(input.versions.mcp) }, phases, calls: names, receiptMatched: input.receiptMatched, terminalDone: input.terminalDone, cleanup };
 }
 
 const readTools = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);

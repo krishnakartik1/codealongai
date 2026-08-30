@@ -11,7 +11,7 @@ test('native acceptance preflight distinguishes skips, external blocks, and read
   assert.deepEqual(nativeUbuntuPreflight(ready), { status: 'ready' });
 });
 test('native evidence retains only the public redacted vocabulary', () => {
-  assert.deepEqual(safeNativeEvidence({ result: 'PASS', phases: ['ready', 'secret'], calls: ['codealongai_get_walkthrough_request', 'payload'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar', '/private/path'] }), { result: 'PASS', versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases: ['ready'], calls: ['codealongai_get_walkthrough_request'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar'] });
+  assert.deepEqual(safeNativeEvidence({ result: 'PASS', versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases: ['ready', 'secret'], calls: ['codealongai_get_walkthrough_request', 'payload'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar', '/private/path'] }), { result: 'PASS', versions: { trueforge: '0.1.4', sdk: '0.1.3', mcp: '2.0.0' }, phases: ['ready'], calls: ['codealongai_get_walkthrough_request'], receiptMatched: true, terminalDone: true, cleanup: ['owned-sidecar'] });
 });
 test('cleanup observation distinguishes fulfilled deletion from rejection and timeout', async () => {
   const rejected = await untilTeardown(Promise.reject(new Error('provider cleanup rejected')), new AbortController().signal);
