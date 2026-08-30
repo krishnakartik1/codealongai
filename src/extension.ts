@@ -400,7 +400,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
     const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
     retryQuestionRequest = request;
-    retryQuestion = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply); };
+    retryQuestion = async () => {
+      await questionTurnOwner.settled?.catch(() => undefined);
+      const current = authority.getPendingQuestion();
+      if (!current || current.id !== request.id || current.sessionId !== request.sessionId || current.sourceStopId !== request.sourceStopId) return;
+      if (!await daytonaReadyForWalkthrough(async () => { await retryQuestion?.(); })) return;
+      const stillCurrent = authority.getPendingQuestion();
+      if (!stillCurrent || stillCurrent.id !== request.id) return;
+      await vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply);
+    };
     try {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {

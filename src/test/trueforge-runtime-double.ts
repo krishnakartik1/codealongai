@@ -48,6 +48,11 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         const question = typeof text === 'string' && text.startsWith('question\n');
         const requestId = typeof text === 'string' && (text.startsWith('start\n') || question) ? text.slice(text.indexOf('\n') + 1) : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
+        if (question) {
+          const agent = ((spec?.agent as { spec?: { skills?: { name?: string }[]; mcpServers?: { enableTools?: string[] }[]; config?: { sandbox?: { fileDownloads?: boolean }; dynamicSubAgents?: { enabled?: boolean }; askUserQuestions?: { enabled?: boolean } }; model?: { params?: { parallelToolCalls?: boolean } } } } | undefined)?.spec);
+          const tools = agent?.mcpServers?.[0]?.enableTools ?? [];
+          if (agent?.skills?.[0]?.name !== 'codealongai' || !tools.includes('codealongai_commit_question_outcome') || tools.includes('codealongai_start_walkthrough') || agent.config?.sandbox?.fileDownloads !== false || agent.config?.dynamicSubAgents?.enabled !== false || agent.config?.askUserQuestions?.enabled !== false || agent.model?.params?.parallelToolCalls !== false) throw new Error('question_agent_spec_invalid');
+        }
         const port = runtime.mcpPort;
         const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
         const client = new Client({ name: 'TrueForge runtime double', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });

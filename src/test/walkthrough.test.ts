@@ -1990,6 +1990,14 @@ suite('receipt-backed start producer turn', () => {
     assert.equal(JSON.stringify(spec).includes('url'), false);
   });
 
+  test('creates the exact native Reply capability set', () => {
+    const spec = startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) as unknown as { mcpServers: { enableTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean } }; model: { params: { parallelToolCalls: boolean } } };
+    assert.ok(spec.mcpServers[0].enableTools.includes('codealongai_commit_question_outcome'));
+    assert.equal(spec.mcpServers[0].enableTools.includes('codealongai_start_walkthrough'), false);
+    assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
+    assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.model.params.parallelToolCalls, false);
+  });
+
   test('serializes the pinned start AgentSpec without a connector URL', async () => {
     let received: { url?: string; body?: Record<string, unknown> } = {};
     const server = http.createServer((request, response) => {
