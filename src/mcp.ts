@@ -126,7 +126,7 @@ export class LoopbackMcpEndpoint {
     }, async (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
-        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor(stop.path, stop.range)));
+        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor(stop.path, stop.range.start.line, stop.range.start.character, stop.range.end.line, stop.range.end.character)));
         // Validation can suspend. The same HTTP attempt must still own the
         // transition at the point we stage its receipt-backed candidate.
         if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
