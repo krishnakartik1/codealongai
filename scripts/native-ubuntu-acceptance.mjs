@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { runTests } from '@vscode/test-electron';
 import { nativeUbuntuPreflight, safeNativeEvidence } from '../out/acceptance/native-ubuntu-preflight.js';
+import { ownershipReleased } from '../out/trueforge-ownership.js';
 
 const run = promisify(execFile);
 const root = resolve(new URL('..', import.meta.url).pathname);
@@ -38,7 +39,7 @@ try {
   const extensionPath = join(temporary, 'vsix', 'extension'); const packagedRequire = createRequire(join(extensionPath, 'package.json'));
   for (const [name, version] of [['@truefoundry/trueforge', '0.1.4'], ['@truefoundry/trueforge-sdk', '0.1.3'], ['@modelcontextprotocol/server', '2.0.0'], ['@modelcontextprotocol/node', '2.0.0'], ['zod', '4.5.4']]) { const manifest = JSON.parse(await readFile(packagedRequire.resolve(`${name}/package.json`), 'utf8')); if (manifest.version !== version) throw new Error('packaged dependency mismatch'); }
   const code = await runTests({ extensionDevelopmentPath: extensionPath, extensionTestsPath: join(root, 'out', 'acceptance', 'native-ubuntu.runner.js'), launchArgs: [join(root, 'demo-workspace'), `--user-data-dir=${profile}`, '--disable-extensions'], extensionTestsEnv: { ...process.env, CODEALONGAI_NATIVE_ACCEPTANCE: '1', CODEALONGAI_NATIVE_ACCEPTANCE_BUILD_COMMIT: buildCommit, CODEALONGAI_NATIVE_ACCEPTANCE_OBSERVATION: observation }, stdout: sink, stderr: sink });
-  if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0 || observed.turns?.length !== 2) throw new Error('incomplete observation'); result = 'PASS'; }
+  if (code === 0) { observed = JSON.parse(await readFile(observation, 'utf8')); const deadline = Date.now() + 5_000; while (!await ownershipReleased(input.dataPath) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25)); if (!await ownershipReleased(input.dataPath)) throw new Error('owned sidecar was not released after Extension Host exit'); if (!observed.terminalDone || !observed.receiptMatched || observed.phases.length === 0 || observed.calls.length === 0 || observed.turns?.length !== 2) throw new Error('incomplete observation'); observed.cleanup = [...(observed.cleanup ?? []), 'owned-sidecar']; result = 'PASS'; }
 } catch { result = 'FAIL'; }
 try { await rm(temporary, { recursive: true, force: true }); cleanup = ['profile-delete']; }
 catch { result = 'FAIL'; }
