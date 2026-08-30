@@ -31,6 +31,7 @@ export function startProducerAgentSpec(input: StartTurnInput): TrueForgeApi.Agen
 export class StartTurnReducer {
   private readonly seenEvents = new Set<string>();
   private pending: { id: string; name: string } | undefined;
+  private readonly deferredResults = new Map<string, unknown>();
   private callsUsed = 0;
   private origin: { path: string; startLine: number; endLine: number } | undefined;
   private receipt: StartReceipt | undefined;
@@ -62,9 +63,12 @@ export class StartTurnReducer {
     if (name === 'codealongai_list_workspace_files') this.listed = true;
     if (name === startTool) this.transitioned = true;
     this.pending = { id, name };
+    const deferred = this.deferredResults.get(id);
+    if (deferred !== undefined) { this.deferredResults.delete(id); this.acceptResult(id, deferred); }
   }
   private acceptResult(id: string, content: unknown): void {
-    if (!this.pending || this.pending.id !== id) { this.failure = 'result_correlation'; return; }
+    if (!this.pending) { this.deferredResults.set(id, content); return; }
+    if (this.pending.id !== id) { this.failure = 'result_correlation'; return; }
     const pending = this.pending; this.pending = undefined;
     const result = object(content); if (!result || result.isError === true) { this.failure = 'tool_result_invalid'; return; }
     if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
@@ -75,6 +79,7 @@ export class StartTurnReducer {
   }
   private listed = false;
   private transitioned = false;
+  public get hasReceipt(): boolean { return this.receipt !== undefined; }
 }
 
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
@@ -107,6 +112,7 @@ export class ReceiptBackedStartCoordinator {
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId);
       let lastSequence = -1;
+      let receipt: Extract<StartTurnResult, { status: 'committed' }> | undefined;
       // A native stream can close between a persisted call and response. Subscribe
       // once more to the same turn; the reducer's sequence set makes that safe.
       for (let subscription = 0; subscription < 2; subscription += 1) {
@@ -120,9 +126,14 @@ export class ReceiptBackedStartCoordinator {
           const envelope = eventEnvelope(next.value.value);
           if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
           reducer.accept(envelope.event);
-          const result = reducer.result; if (result) return result;
+          const result = reducer.result;
+          if (result?.status === 'failed') return result;
+          if (result?.status === 'committed') receipt = result;
+          const terminal = terminalState(envelope.event);
+          if (terminal === 'failed') return { status: 'failed', diagnostic: 'terminal_error' };
+          if (terminal === 'done' && receipt) return receipt;
         }
-        const result = reducer.result; if (result) return result;
+        const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') receipt = result;
         // The stream may have ended between persisted events. Reconcile once
         // before the one permitted cursor-resubscription.
         if (subscription === 0) {
@@ -130,10 +141,16 @@ export class ReceiptBackedStartCoordinator {
             const envelope = eventEnvelope(event);
             if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
             reducer.accept(envelope.event);
-            const reconciled = reducer.result; if (reconciled) return reconciled;
+            const reconciled = reducer.result;
+            if (reconciled?.status === 'failed') return reconciled;
+            if (reconciled?.status === 'committed') receipt = reconciled;
+            const terminal = terminalState(envelope.event);
+            if (terminal === 'failed') return { status: 'failed', diagnostic: 'terminal_error' };
+            if (terminal === 'done' && receipt) return receipt;
           }
         }
       }
+      if (receipt) { await gracePeriod(Math.min(5_000, Math.max(0, deadline - Date.now()))); return receipt; }
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
     finally {
@@ -177,6 +194,8 @@ function authorizedOrigin(value: unknown): { path: string; startLine: number; en
 }
 function finite(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
 function eventEnvelope(value: unknown): { sequence: number | undefined; event: unknown } { const record = object(value); const sequence = finite(record?.sequenceNumber ?? record?.sequence_number ?? record?.sequence); return { sequence, event: object(record?.event) ?? value }; }
+function terminalState(value: unknown): 'done' | 'failed' | undefined { const record = object(value); if (record?.type !== 'turn.done') return undefined; const state = object(record.state); return state?.status === 'done' ? 'done' : 'failed'; }
+async function gracePeriod(milliseconds: number): Promise<void> { if (milliseconds <= 0) return; await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)); }
 function jsonValue(value: string): unknown { try { return JSON.parse(value); } catch { return undefined; } }
 function jsonObject(value: unknown): Record<string, unknown> | undefined { return typeof value === 'string' ? object(jsonValue(value)) : object(value); }
 async function beforeDeadline<T>(operation: Promise<T>, deadline: number): Promise<{ completed: true; value: T } | { completed: false }> {

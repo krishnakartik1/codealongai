@@ -43,6 +43,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         await commitDeterministicOrigin(port, requestId, { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } } });
         yield { type: 'model.message', id: 'call-start', threadId: 'main', createdAt: '2026-01-01T00:00:02.000Z', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ schemaVersion: 1, requestId }) }, toolInfo: { type: 'mcp', name: 'codealongai_start_walkthrough', serverId: 'test', serverName: 'codealongai-mcp' } }] };
         yield { type: 'tool.response', id: 'response-start', threadId: 'main', createdAt: '2026-01-01T00:00:03.000Z', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId, sessionId: 'test-session', revision: 1, attentionStopId: 'checkout-origin' }) };
+        yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
       },
       probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } }
     };
