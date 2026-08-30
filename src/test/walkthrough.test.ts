@@ -26,11 +26,13 @@ import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 import { ReceiptBackedProducerCoordinator, ProducerTurnReducer, producerAgentSpec } from '../producer-turn';
 import { ProducerTurnOwner } from '../start-turn-owner';
+import { TrueForgeStreamFailure } from '../trueforge-contract';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
   readonly session: WalkthroughSession | undefined;
   readonly hasPendingWalkthroughRequest: boolean;
+  readonly lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   replyTargetAt(stopId: string): object | undefined;
 }
 
@@ -523,7 +525,7 @@ suite('Extension Development Host walkthrough', () => {
       const nativeError = errorWindow.showErrorMessage;
       let select: ((action: string) => void) | undefined;
       const sentinel = 'PROVIDER_SECRET_SENTINEL';
-      commandRuntime.producerEventError = new Error(sentinel);
+      commandRuntime.producerEventError = new TrueForgeStreamFailure('read');
       errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => {
         assert.equal(message.includes(sentinel), false); assert.equal(actions.includes('Show CodeAlongAI Output'), true);
         return new Promise<string>((resolve) => { select = resolve; });
@@ -532,6 +534,7 @@ suite('Extension Development Host walkthrough', () => {
         const before = commandRuntime.producerTurnCalls.length;
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         await eventually(() => select ? true : undefined, 'the failure notification should offer a selection');
+        assert.equal(api.lastProducerStreamFailure, 'read');
         assert.equal(api.hasPendingWalkthroughRequest, true);
         commandRuntime.producerEventError = undefined;
         select!('Retry walkthrough');
@@ -2082,7 +2085,7 @@ suite('receipt-backed start producer turn', () => {
   test('fails a second thrown pinned stream interruption', async () => {
     let attempts = 0;
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { attempts += 1; throw new Error('interrupted'); }, listTurnEvents: async () => [] };
-    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } }), { status: 'failed', diagnostic: 'producer_error' });
+    assert.deepEqual(await new ReceiptBackedProducerCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', configuration: { model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' } }), { status: 'failed', diagnostic: 'stream_unknown' });
     assert.equal(attempts, 2);
   });
 

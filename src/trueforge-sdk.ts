@@ -1,5 +1,5 @@
 import { TrueForge, type TrueForgeApi } from '@truefoundry/trueforge-sdk';
-import type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeTurnRequest, TrueForgeRequestOptions } from './trueforge-contract';
+import { TrueForgeStreamFailure, type TrueForgeProducerReadinessInput, type TrueForgeProducerReadinessResult, type TrueForgeProducerRuntime, type TrueForgeTurnRequest, type TrueForgeRequestOptions } from './trueforge-contract';
 import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
@@ -18,11 +18,15 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public createSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown> { return this.createSdkSession(sessionRequest, options); }
   public runTurn(turnInput: TrueForgeTurnRequest): Promise<unknown> { return this.createSdkTurn(turnInput); }
   public async *events(sessionId: string, turnId: string, afterSequenceNumber?: number, options?: TrueForgeRequestOptions): AsyncIterable<unknown> {
-    const stream = await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber, options);
-    const withMetadata = (stream as unknown as { withMetadata?: () => AsyncIterable<{ data: unknown; id?: string }> }).withMetadata;
-    const metadata = typeof withMetadata === 'function' ? withMetadata.call(stream) : undefined;
-    if (metadata) { for await (const item of metadata) { const sequence = Number(item.id); yield Number.isSafeInteger(sequence) && sequence >= 0 ? { sequenceNumber: sequence, event: item.data } : item.data; } return; }
-    for await (const event of stream) yield event;
+    let stream: AsyncIterable<unknown>;
+    try { stream = await this.subscribeSdkTurn(sessionId, turnId, afterSequenceNumber, options); }
+    catch { throw new TrueForgeStreamFailure('subscribe'); }
+    try {
+      const withMetadata = (stream as unknown as { withMetadata?: () => AsyncIterable<{ data: unknown; id?: string }> }).withMetadata;
+      const metadata = typeof withMetadata === 'function' ? withMetadata.call(stream) : undefined;
+      if (metadata) { for await (const item of metadata) { const sequence = Number(item.id); yield Number.isSafeInteger(sequence) && sequence >= 0 ? { sequenceNumber: sequence, event: item.data } : item.data; } return; }
+      for await (const event of stream) yield event;
+    } catch (error) { if (error instanceof TrueForgeStreamFailure) throw error; throw new TrueForgeStreamFailure('read'); }
   }
   public async listTurnEvents(sessionId: string, turnId: string, options?: TrueForgeRequestOptions): Promise<readonly unknown[]> { if (!this.client.sessions.listTurnEvents) return []; const page = await this.client.sessions.listTurnEvents(sessionId, turnId, { order: 'asc', limit: 100 }, options); return page.data; }
   public async cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void> { await this.cancelSdkSession(sessionId, options); }

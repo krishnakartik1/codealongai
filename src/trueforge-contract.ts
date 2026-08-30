@@ -37,6 +37,9 @@ export interface NativeAcceptanceFacts {
 
 export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; readonly options?: TrueForgeRequestOptions; }
 export interface TrueForgeRequestOptions { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number; }
+export type TrueForgeStreamFailureCategory = 'subscribe' | 'read' | 'unknown';
+/** Sanitized stream-boundary classification; never carries provider diagnostics. */
+export class TrueForgeStreamFailure extends Error { public constructor(readonly category: TrueForgeStreamFailureCategory) { super(category); } }
 
 /** Safe, credentials-free producer configuration supplied by the extension. */
 export interface TrueForgeProducerReadinessInput {

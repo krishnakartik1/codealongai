@@ -55,6 +55,7 @@ export interface WalkthroughTestApi {
   readonly producerObservations: readonly ProducerTurnObservation[];
   readonly nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   readonly nativeCapabilityVersion: string | undefined;
+  readonly lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   replyTargetAt(stopId: string): object | undefined;
   /** Boolean-only assertion seam: no conversation content crosses it. */
   sourceThreadHasAnswerAt(stopId: string): boolean;
@@ -74,6 +75,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
   let nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
   let nativeCapabilityVersion: string | undefined;
+  let lastProducerStreamFailure: 'subscribe' | 'read' | 'unknown' | undefined;
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
@@ -174,7 +176,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   };
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
     const retry = retryStart;
-    output.error(`Start turn failed (${phase}).`);
+    output.error(`Start turn failed (${phase}${lastProducerStreamFailure ? `; stream=${lastProducerStreamFailure}` : ''}).`);
     void vscode.window.showErrorMessage('CodeAlongAI could not start the walkthrough.', 'Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output').then((action) => {
       if (action === 'Retry walkthrough') void retry?.();
       if (action === 'Discard request' && authority.getPendingStart()?.id === requestId) { authority.discardStart(); clearStartRetry(); }
@@ -265,6 +267,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     });
   };
   const askWalkthroughCommand = vscode.commands.registerCommand('codealongai.walkthrough.ask', async () => {
+    lastProducerStreamFailure = undefined;
     await updateEndpoint();
     if (!mcpReady()) {
       void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint before it can prepare a walkthrough.', 'Enable MCP').then((action) => {
@@ -351,6 +354,8 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         clearStartRetry();
         await commitAuthorizedOrigin();
       };
+      const diagnostic = error instanceof Error ? error.message : '';
+      lastProducerStreamFailure = diagnostic === 'stream_subscribe' ? 'subscribe' : diagnostic === 'stream_read' ? 'read' : diagnostic === 'stream_unknown' ? 'unknown' : undefined;
       const phase = sidecarCrashedRequestId === failedRequestId ? 'sidecar_crash' : startFailurePhase(error);
       if (sidecarCrashedRequestId === failedRequestId) sidecarCrashedRequestId = undefined;
       showStartFailure(failedRequestId, phase);
@@ -518,6 +523,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     get producerObservations() { return producerObservations.slice(); },
     get nativeAcceptanceFacts() { return nativeAcceptanceFacts; },
     get nativeCapabilityVersion() { return nativeCapabilityVersion; },
+    get lastProducerStreamFailure() { return lastProducerStreamFailure; },
     replyTargetAt(stopId) {
       if (!threads.has(stopId)) return undefined;
       const existing = replyTargets.get(stopId);

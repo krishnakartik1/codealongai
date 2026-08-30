@@ -1,5 +1,5 @@
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
-import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './trueforge-contract';
+import { TrueForgeStreamFailure, type TrueForgeProducerRuntime, type TrueForgeRequestOptions } from './trueforge-contract';
 import type { QuestionReceipt } from './walkthrough';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
@@ -241,13 +241,13 @@ export class ReceiptBackedProducerCoordinator {
           if (remaining <= 0) { this.abort.abort(); return { status: 'failed', diagnostic: 'deadline_exceeded' }; }
           const eventDeadline = receipt ? deadline : reconciliationCutoff ?? deadline;
           const interrupted = { interrupted: true } as const;
-          const nextEvent = beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })).catch(() => interrupted);
+          const nextEvent = beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })).catch((error) => ({ ...interrupted, category: error instanceof TrueForgeStreamFailure ? error.category : 'unknown' as const }));
           const next = await (receiptGrace ? Promise.race([nextEvent, receiptGrace.then((value) => ({ kind: 'grace' as const, value }))]) : nextEvent);
           if ('interrupted' in next) {
             if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
             if (Date.now() >= deadline) { this.abort.abort(); return { status: 'failed', diagnostic: 'deadline_exceeded' }; }
             if (subscription === 0) { recoverableEof = true; break; }
-            return { status: 'failed', diagnostic: 'producer_error' };
+            return { status: 'failed', diagnostic: `stream_${next.category}` };
           }
           if (next.kind === 'grace') {
             if (!next.value.completed) { if (!next.value.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
