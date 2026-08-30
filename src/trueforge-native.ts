@@ -56,8 +56,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
           return;
         }
         if (!await ownsRecordedChild(record)) throw new Error('TrueForge ownership cannot safely stop the running sidecar.');
-        child.kill('SIGTERM');
-        if (!await waitForExit(child, terminationGraceMs) && !childHasExited(child) && await ownsRecordedChild(record)) { child.kill('SIGKILL'); await waitForExit(child, terminationGraceMs); }
+        await terminateOwnedSidecar(child, () => ownsRecordedChild(record));
         if (!childHasExited(child)) throw new Error('TrueForge sidecar did not stop; ownership remains retained.');
       }
       this.child = undefined; this.port = undefined; this.record = undefined; this.producerRuntime = undefined;
@@ -96,6 +95,17 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
 
 /** Narrow filesystem seam: cleanup removes only the lock record it published. */
 export { releaseOwnershipIfCurrent } from './trueforge-ownership';
+
+/** Native shutdown boundary: TERM, one exact five-second grace, then KILL only while ownership remains valid. */
+export async function terminateOwnedSidecar(child: Pick<ChildProcess, 'kill' | 'exitCode' | 'signalCode' | 'once' | 'removeListener'>, owns: () => Promise<boolean>, wait: (child: Pick<ChildProcess, 'exitCode' | 'signalCode' | 'once' | 'removeListener'>, timeoutMs: number) => Promise<boolean> = (candidate, timeout) => waitForExit(candidate as ChildProcess, timeout)): Promise<'term' | 'kill' | 'refused'> {
+  if (!await owns()) return 'refused';
+  child.kill('SIGTERM');
+  if (await wait(child, terminationGraceMs) || childHasExited(child)) return 'term';
+  if (!await owns()) return 'refused';
+  child.kill('SIGKILL');
+  await wait(child, terminationGraceMs);
+  return 'kill';
+}
 
 function requestStatus(url: string, accepts: (status: number | undefined, body: string) => boolean): Promise<boolean> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve(accepts(response.statusCode, body))); }); request.once('error', () => resolve(false)); request.setTimeout(1_000, () => { request.destroy(); resolve(false); }); }); }
 function requestBody(url: string): Promise<{ status: number | undefined; body: string }> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve({ status: response.statusCode, body })); }); request.once('error', () => resolve({ status: undefined, body: '' })); request.setTimeout(1_000, () => { request.destroy(); resolve({ status: undefined, body: '' }); }); }); }

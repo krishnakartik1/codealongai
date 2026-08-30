@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { untilTeardown } from '../producer-turn';
 import { trueForgeCapabilitySummary } from '../trueforge-native';
+import { terminateOwnedSidecar } from '../trueforge-native';
 
 const ready = { enabled: true, ubuntuX64: true, nodeVersion: 'v22.14.0', buildCommit: '1'.repeat(40), trueforgeVersion: '0.1.4', sdkVersion: '0.1.3', mcpServerVersion: '2.0.0', dataPath: '/operator/trueforge', model: 'openai/example', reasoningEffort: 'medium', reply: 'operator input' };
 test('native acceptance preflight distinguishes skips, external blocks, and ready execution', () => {
@@ -47,4 +48,10 @@ test('sandbox runtime count returns only a count', async () => {
   const store = await mkdtemp(path.join(os.tmpdir(), 'codealongai-sandbox-count-'));
   try { await mkdir(path.join(store, 'nested', 'sandbox-runtime'), { recursive: true }); assert.equal(await localSandboxRuntimeDirectoryCount(store), 1); }
   finally { await rm(store, { recursive: true, force: true }); }
+});
+test('native owned shutdown escalates after one exact five-second grace', async () => {
+  const signals: string[] = []; const waits: number[] = [];
+  const child = { exitCode: null, signalCode: null, kill: (signal: string) => { signals.push(signal); return true; }, once: () => child, removeListener: () => child };
+  assert.equal(await terminateOwnedSidecar(child as never, async () => true, async (_child, timeout) => { waits.push(timeout); return false; }), 'kill');
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']); assert.deepEqual(waits, [5_000, 5_000]);
 });
