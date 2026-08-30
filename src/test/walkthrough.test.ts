@@ -414,6 +414,35 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('retries one exact failed Ask with a fresh turn and never exposes provider text', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      if (api.session) return; // Earlier public coverage owns the reset flow.
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeError = errorWindow.showErrorMessage;
+      let select: ((action: string) => void) | undefined;
+      const sentinel = 'PROVIDER_SECRET_SENTINEL';
+      commandRuntime.producerEventError = new Error(sentinel);
+      errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => {
+        assert.equal(message.includes(sentinel), false); assert.equal(actions.includes('Show CodeAlongAI Output'), true);
+        return new Promise<string>((resolve) => { select = resolve; });
+      }) as unknown as typeof vscode.window.showErrorMessage;
+      try {
+        const before = commandRuntime.producerTurnCalls.length;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => select ? true : undefined, 'the failure notification should offer a selection');
+        assert.equal(api.hasPendingWalkthroughRequest, true);
+        commandRuntime.producerEventError = undefined;
+        select!('Retry walkthrough');
+        await eventually(() => api.session, 'Retry should use a new producer session and turn');
+        assert.deepEqual(commandRuntime.producerTurnCalls.slice(before).map((call) => call.kind), ['session', 'turn', 'events', 'session', 'turn', 'events']);
+      } finally { commandRuntime.producerEventError = undefined; errorWindow.showErrorMessage = nativeError; }
+    }));
+  });
+
 });
 
 suite('MCP lifecycle', () => {

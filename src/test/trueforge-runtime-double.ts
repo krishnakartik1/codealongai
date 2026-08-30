@@ -27,6 +27,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public producerEventWait: Promise<void> | undefined;
   public producerCancelCalls = 0;
   public producerCancelled = false;
+  public producerEventError: Error | undefined;
   public mcpPort: number | undefined;
   private producerIdentity: TrueForgeProducerRuntime | undefined;
   public get producer(): TrueForgeProducerRuntime {
@@ -40,6 +41,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
       events: async function* () {
         runtime.producerTurnCalls.push({ producer, kind: 'events' });
         await runtime.producerEventWait;
+        if (runtime.producerEventError) throw runtime.producerEventError;
         if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
         const requestId = typeof text === 'string' ? text.match(/request ID ([^.]*)\./)?.[1] : undefined;
