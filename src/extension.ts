@@ -70,6 +70,10 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
+  const traceProducer = (label: string, value: unknown): void => {
+    try { output.appendLine(`${label}: ${JSON.stringify(value)}`); }
+    catch (error) { output.appendLine(`${label}: ${String(value)}; serialization_error=${String(error)}`); }
+  };
   const producerTurnOwner = new ProducerTurnOwner();
   const producerObservations: ProducerTurnObservation[] = [];
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
@@ -305,7 +309,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const replacementTurnResult = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-          try { return await producerTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer }); }
+          try { return await producerTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); }, observe: observeProducer, trace: traceProducer }); }
           finally { cancellation.dispose(); }
         });
         if (replacementTurnResult.status !== 'committed') throw new Error(replacementTurnResult.diagnostic);
@@ -314,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const producer = trueForge.producer;
         const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-          try { return await producerTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer }); }
+          try { return await producerTurnOwner.start(producer, { requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeStartReceipt(receipt), rollbackTentativeStart: () => { authority.rollbackTentativeStart(); }, observe: observeProducer, trace: traceProducer }); }
           finally { cancellation.dispose(); }
         });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -445,7 +449,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is answering your question', cancellable: true }, async (_progress, token) => {
         const cancellation = token.onCancellationRequested(() => { void producerTurnOwner.cancel(); });
-        try { return await producerTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer }); }
+        try { return await producerTurnOwner.start(trueForge.producer, { kind: 'question', requestId: request.id, configuration: { model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }, acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('./walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => { authority.rollbackTentativeQuestion(); }, observe: observeProducer, trace: traceProducer }); }
         finally { cancellation.dispose(); }
       });
       if (result.status !== 'committed') throw new Error(result.diagnostic);

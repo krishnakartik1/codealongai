@@ -22,6 +22,8 @@ export interface ProducerTurnInput {
   readonly rollbackTentativeQuestion?: () => void;
   /** Acceptance-only, normalized event summary. It never receives IDs, text, paths, or payloads. */
   readonly observe?: (event: ProducerTurnObservation) => void;
+  /** Operator-only raw TrueForge/MCP trace. It is never used for acceptance. */
+  readonly trace?: (label: string, value: unknown) => void;
 }
 
 export interface ProducerAgentSpecSummary { readonly kind: 'start' | 'question' | 'replacement'; readonly model: string; readonly reasoningEffort: string; readonly skill: 'codealongai'; readonly connector: 'codealongai-mcp'; readonly preload: true; readonly sandbox: 'daytona'; readonly parallelToolCalls: false; readonly downloads: false; readonly subagents: false; readonly userQuestions: false; readonly iterationLimit: 9; }
@@ -41,6 +43,11 @@ const providerDiagnostic = (value: unknown): string => {
   if (!(value instanceof Error)) return String(value);
   const cause = (value as Error & { cause?: unknown }).cause;
   return cause === undefined ? value.message : `${value.message}: ${providerDiagnostic(cause)}`;
+};
+
+const rawDiagnostic = (condition: string, value: unknown): string => {
+  try { return `${condition}; received=${JSON.stringify(value)}`; }
+  catch (error) { return `${condition}; received=${String(value)}; serialization_error=${String(error)}`; }
 };
 
 const producerTurnMessage = (input: ProducerTurnInput): string => {
@@ -90,15 +97,15 @@ export class ProducerTurnReducer {
     const eventId = string(record.id);
     if (eventId !== undefined) { if (this.seenEvents.has(eventId)) return; this.seenEvents.add(eventId); }
     const type = string(record.type);
-    if ((type === 'model.message' || type === 'tool.response') && (typeof record.id !== 'string' || record.threadId !== 'main')) { this.failure = 'tool_provenance'; return; }
+    if ((type === 'model.message' || type === 'tool.response') && (typeof record.id !== 'string' || record.threadId !== 'main')) { this.failure = rawDiagnostic('tool provenance requires a string event id and main thread', event); return; }
     if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') { this.failure = 'unexpected_command'; return; }
-    if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = 'tool_provenance'; return; } this.acceptCall(calls[0]); return; }
+    if (type === 'model.message') { const rawCalls = record.toolCalls; const calls = modelToolCalls(record); if (!Array.isArray(rawCalls) || rawCalls.length !== 1 || calls.length !== 1) { this.failure = rawDiagnostic('tool provenance requires exactly one valid tool call', event); return; } this.acceptCall(calls[0]); return; }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
   }
   public get result(): ProducerTurnResult | undefined { return this.receipt ? { status: 'committed', receipt: this.receipt } : this.failure ? { status: 'failed', diagnostic: this.failure } : undefined; }
   public fail(diagnostic: string): void { if (!this.receipt) this.failure = diagnostic; }
   private acceptCall(call: ProducerCall): void {
-    if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
+    if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : rawDiagnostic('tool provenance requires CodeAlongAI MCP tool metadata', call); return; }
     const { id, name, arguments: args } = call;
     const transitionTool = this.kind === 'question' ? questionTool : this.kind === 'replacement' ? replacementTool : startTool;
     if (name !== transitionTool && ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
@@ -155,6 +162,13 @@ function observeProducerEvent(observe: ProducerTurnInput['observe'], event: unkn
   if (terminalState(event) === 'done') observe({ kind: 'terminal-done' });
   else if (terminalState(event) === 'failed') observe({ kind: 'terminal-failed' });
   else if (type === 'sandbox.command' || type === 'command' || type === 'approval.request' || type === 'tool.approval_required' || type === 'tool.response_required' || type === 'ask_user') observe({ kind: 'forbidden' });
+}
+
+function traceProducerEvent(trace: ProducerTurnInput['trace'], source: 'streamed' | 'persisted', event: unknown): void {
+  trace?.(`TrueForge ${source} event`, event);
+  const record = object(eventEnvelope(event).event);
+  if (record?.type === 'model.message' && modelToolCalls(record).some((call) => call.provenance)) trace?.('CodeAlongAI MCP call', event);
+  if (record?.type === 'tool.response') trace?.('CodeAlongAI MCP response', event);
 }
 
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
@@ -219,11 +233,13 @@ export class ReceiptBackedProducerCoordinator {
         if (!session.cancelled) this.abort.abort();
         return { status: 'failed', diagnostic: session.cancelled ? 'cancelled' : 'deadline_exceeded' };
       }
+      input.trace?.('TrueForge session response', session.value);
       sessionId = idOf(session.value); this.activeSessionId = sessionId; input.observe?.({ kind: 'session-created' });
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
       const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: producerTurnMessage(input) }], previousTurnId: 'none' }, options: requestOptions(this.abort.signal, deadline) }), deadline, this.cancelledSignal);
       if (!turn.completed) { if (!turn.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
+      input.trace?.('TrueForge turn response', turn.value);
       const turnId = idOf(turn.value); input.observe?.({ kind: 'turn-created' });
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new ProducerTurnReducer(input.requestId, input.acceptReceipt, input.kind ?? 'start');
@@ -270,6 +286,7 @@ export class ReceiptBackedProducerCoordinator {
           // blocked. Do not let its subsequently delivered receipt commit.
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           if (next.value.value.done) { recoverableEof = true; break; }
+          traceProducerEvent(input.trace, 'streamed', next.value.value.value);
           const envelope = eventEnvelope(next.value.value.value);
           if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
           reducer.accept(envelope.event);
@@ -306,6 +323,7 @@ export class ReceiptBackedProducerCoordinator {
           // cursor continuation: it can contain a call missed before a live
           // response with a higher sequence. Stable event ids make replay safe.
           for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
+            traceProducerEvent(input.trace, 'persisted', event);
             const envelope = eventEnvelope(event);
             if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
             reducer.accept(envelope.event); observeOnce(envelope.event);
@@ -331,6 +349,7 @@ export class ReceiptBackedProducerCoordinator {
       const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId, requestOptions(this.abort.signal, reconciliationDeadline)).catch(() => []), reconciliationDeadline, this.cancelledSignal);
       if (!persisted.completed) { if (!persisted.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'missing_receipt' }; }
       for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
+        traceProducerEvent(input.trace, 'persisted', event);
         const envelope = eventEnvelope(event);
         if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); }
         reducer.accept(envelope.event); observeOnce(envelope.event);
