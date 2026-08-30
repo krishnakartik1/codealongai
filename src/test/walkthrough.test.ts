@@ -115,6 +115,7 @@ suite('Extension Development Host walkthrough', () => {
       commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
       setReadinessActionSelectorForTests(async (actions) => {
         assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+        editor.selection = new vscode.Selection(0, 0, 0, 1);
         commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
         return 'Retry Setup';
       });
@@ -130,6 +131,7 @@ suite('Extension Development Host walkthrough', () => {
       document: 'checkout.ts',
       range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } }
       });
+      editor.selection = selection;
 
       const replyTarget = await eventually(() => api.replyTargetAt('checkout-origin'), 'the origin should render a native CodeAlongAI comment thread');
       assert.equal(Object.isFrozen(replyTarget), true);
@@ -253,9 +255,18 @@ suite('Extension Development Host walkthrough', () => {
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement);
 
         notificationWindow.showWarningMessage = (async (message: string) => message === 'Starting a new walkthrough clears all conversations.' ? 'Start new walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+        setReadinessActionSelectorForTests(async (actions) => {
+          assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+          editor.selection = new vscode.Selection(0, 0, 0, 1);
+          commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+          return 'Retry Setup';
+        });
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         const replacement = await eventually(() => api.session?.id !== beforeReplacement.id ? api.session : undefined, 'the confirmed public Ask command should replace the walkthrough');
+        setReadinessActionSelectorForTests(undefined);
         assert.equal(replacement.stops.length, 1);
+        assert.deepEqual(replacement.origin?.range, { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } });
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement + 1);
       } finally { notificationWindow.showWarningMessage = originalWarning; }
     }));
@@ -275,6 +286,27 @@ suite('Extension Development Host walkthrough', () => {
     });
     assert.deepEqual(api.session, before);
     assert.equal(api.hasPendingWalkthroughRequest, false);
+  });
+
+  test('Configure TrueForge retries a failed Daytona readiness check through its registered command', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const prepares = commandRuntime.prepareCalls;
+      commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'snapshots', outcome: 'failed' };
+      commandRuntime.producerReadiness = { phase: 'ready', outcome: 'ready' };
+      setReadinessActionSelectorForTests(async (actions) => {
+        assert.deepEqual(actions, ['Open TrueForge Setup', 'Retry Setup']);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+        return 'Retry Setup';
+      });
+      try {
+        await vscode.commands.executeCommand('codealongai.trueforge.configure');
+        await eventually(() => commandRuntime.prepareCalls > prepares ? true : undefined, 'Retry Setup should rerun Configure and producer readiness');
+      } finally {
+        setReadinessActionSelectorForTests(undefined);
+        commandRuntime.daytonaProbe = { provider: 'daytona', phase: 'ready', outcome: 'ready' };
+      }
+    }));
   });
 
   test('refreshes the retained readiness coordinator when the external producer is replaced', async () => {
@@ -862,7 +894,7 @@ suite('producer readiness', () => {
   test('requires the exact successful terminal turn contract from the SDK', async () => {
     const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
     const done = { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] };
-    const producerWithTerminal = (state: Record<string, unknown>) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
+    const producerWithTerminal = (state: Record<string, unknown>, timer?: { waitFor<T>(operation: Promise<T>): Promise<T | undefined> }, lifecycle: string[] = []) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
       settings: {
         modelProviders: { list: async () => [] }, sandboxProviders: { get: async () => ({}), createOrUpdate: async () => ({}) },
         skills: { createOrUpdate: async () => ({}), list: async () => ({ data: [{ manifest: { name: 'codealongai', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', ref: input.skillCommit, path: 'skills/codealongai' } }] }) },
@@ -870,14 +902,17 @@ suite('producer readiness', () => {
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: input.model, properties: { reasoningEfforts: [input.reasoningEffort] } }] }) },
       mcpServers: { listTools: async () => ({ data: ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'].map((name) => ({ name })) }) },
-      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state }; })(), cancel: async () => undefined, delete: async () => undefined }
-    }));
+      sessions: { create: async () => ({ data: { id: 'terminal-contract-session' } }), createTurn: async () => ({ data: { id: 'terminal-contract-turn' } }), subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state }; })(), cancel: async () => { lifecycle.push('cancel'); }, delete: async () => { lifecycle.push('delete'); } }
+    }), new DaytonaProbeState(), timer);
 
     assert.deepEqual(await producerWithTerminal(done).prepareProducer(input), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(await producerWithTerminal({ ...done, completedAt: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, completedAt: 0 }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, output: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, type: 'model.message', id: 1 } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, content: 'NOT READY' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, content: '' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(await producerWithTerminal({ ...done, output: { ...done.output, refusal: 'I cannot comply' } }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: undefined }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: {} }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ ...done, requiredActions: [{ type: 'approval' }] }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
@@ -889,6 +924,9 @@ suite('producer readiness', () => {
     assert.deepEqual(await producerWithTerminal({ ...done, output: null }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model authorization 401 failed' }).prepareProducer(input), { phase: 'authentication', outcome: 'failed' });
     assert.deepEqual(await producerWithTerminal({ status: 'error', message: 'configured model network timeout' }).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    const lifecycle: string[] = [];
+    assert.deepEqual(await producerWithTerminal(done, { waitFor: async () => undefined }, lifecycle).prepareProducer(input), { phase: 'network', outcome: 'failed' });
+    assert.deepEqual(lifecycle, ['cancel', 'delete']);
   });
 
   test('serializes the producer AgentSpec with parallel tool calls disabled in model params', async () => {

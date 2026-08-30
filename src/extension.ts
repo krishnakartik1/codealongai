@@ -243,11 +243,12 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const editor = vscode.window.activeTextEditor;
     const origin = editor && deriveOrigin(vscode.workspace.asRelativePath(editor.document.uri, false), editor.selection, editor.document.lineAt(editor.selection.active.line).text);
     if (!origin) { void vscode.window.showWarningMessage(noOriginMessage); return undefined; }
-    if (!await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.ask'))) return undefined;
-    const replacement = authority.getPendingReplacement();
-    const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
-    const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
-    try {
+    const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
+      if (!await daytonaReadyForWalkthrough(commitAuthorizedOrigin)) return undefined;
+      const replacement = authority.getPendingReplacement();
+      const request = current ? (replacement ?? authority.captureReplacement(origin)) : (authority.getPendingStart() ?? authority.captureStart(origin));
+      const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
+      try {
       if (current) {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
         await commitDeterministicReplacement(lifecycle.port!, request.id, current.id, current.revision, descriptor);
@@ -276,20 +277,22 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         showReplacementFailure(request.id);
         return undefined;
       }
-      retryStart = async () => { await vscode.commands.executeCommand('codealongai.walkthrough.ask'); };
+      retryStart = async () => { await commitAuthorizedOrigin(); };
       void vscode.window.showErrorMessage(`CodeAlongAI could not start the walkthrough: ${String(error)}`, 'Retry walkthrough', 'Discard request').then((action) => {
         if (action === 'Retry walkthrough') void retryStart?.();
         if (action === 'Discard request') authority.discardStart();
       });
-      return undefined;
-    }
+        return undefined;
+      }
+    };
+    return commitAuthorizedOrigin();
   });
   const configureTrueForgeCommand = vscode.commands.registerCommand('codealongai.trueforge.configure', async () => {
     try {
       await trueForge.configure();
       await updateEndpoint();
       if (!mcpReady()) { reportProducerReadiness({ phase: 'mcp-discovery', outcome: 'failed', action: 'show-output' }); return; }
-      await daytonaReadyForWalkthrough();
+      await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.trueforge.configure'));
     } catch {
       output.error('TrueForge setup failed safely.');
       void vscode.window.showErrorMessage('CodeAlongAI could not start TrueForge setup.');

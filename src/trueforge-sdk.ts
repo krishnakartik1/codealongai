@@ -5,7 +5,7 @@ import type { DaytonaProbeResult, DaytonaReadinessPhase } from './daytona';
 /** Pinned 0.1.3 SDK adapter. It owns no credentials and passes none to CodeAlongAI. */
 export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readonly client: TrueForgeSdkClient;
-  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge({ baseUrl: url }) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState()) { this.client = createClient(baseUrl); }
+  public constructor(baseUrl: string, createClient: TrueForgeSdkClientFactory = (url) => new TrueForge({ baseUrl: url }) as unknown as TrueForgeSdkClient, private readonly probeState: DaytonaProbeState = new DaytonaProbeState(), private readonly terminalTimer: TerminalTimer = systemTerminalTimer) { this.client = createClient(baseUrl); }
   public discoverConfiguration(): Promise<unknown> { return this.readConfiguration(); }
   public discoverProviders(): Promise<unknown> { return this.readCatalogProviders(); }
   public discoverModels(): Promise<unknown> { return this.readModels(); }
@@ -46,7 +46,7 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
       const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
       const turnId = responseId(turn);
       if (!turnId) return { phase: 'network', outcome: 'failed' };
-      const terminal = await terminalReadiness(this, sessionId, turnId);
+      const terminal = await terminalReadiness(this, sessionId, turnId, this.terminalTimer);
       if (terminal !== 'ready') return { phase: terminal, outcome: 'failed' };
     } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
     finally { if (sessionId) await this.deleteSession(sessionId).catch(() => undefined); }
@@ -158,13 +158,27 @@ async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessio
   return 'absent';
 }
 function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
-async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string): Promise<'ready' | 'authentication' | 'network'> { for await (const event of runtime.events(sessionId, turnId)) { const record = asRecord(event); if (record?.type !== 'turn.done') continue; const state = asRecord(record.state); if (state?.status === 'done') return isSuccessfulTurnStateDone(state) ? 'ready' : 'network'; if (state?.status === 'error') return terminalFailurePhase(state.message); return 'network'; } return 'network'; }
+export interface TerminalTimer { waitFor<T>(operation: Promise<T>): Promise<T | undefined>; }
+const systemTerminalTimer: TerminalTimer = { waitFor: (operation) => Promise.race([operation, new Promise<undefined>((resolve) => setTimeout(resolve, 10_000))]) };
+async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string, timer: TerminalTimer): Promise<'ready' | 'authentication' | 'network'> {
+  const iterator = runtime.events(sessionId, turnId)[Symbol.asyncIterator]();
+  while (true) {
+    const next = await timer.waitFor(iterator.next());
+    if (!next) { await runtime.cancelTurn(sessionId).catch(() => undefined); return 'network'; }
+    if (next.done) return 'network';
+    const record = asRecord(next.value);
+    if (record?.type !== 'turn.done') continue;
+    const state = asRecord(record.state);
+    if (state?.status === 'done') return isSuccessfulTurnStateDone(state) ? 'ready' : 'network';
+    if (state?.status === 'error') return terminalFailurePhase(state.message);
+    return 'network';
+  }
+}
 /** Pinned SDK 0.1.3 decodes TurnStateDone and ModelMessageEvent to camel-case fields. */
 function isSuccessfulTurnStateDone(state: Record<string, unknown>): boolean { return typeof state.completedAt === 'string' && isModelMessageEvent(state.output) && Array.isArray(state.requiredActions) && state.requiredActions.length === 0; }
-function isModelMessageEvent(value: unknown): boolean { const event = asRecord(value); return event?.type === 'model.message' && typeof event.id === 'string' && typeof event.threadId === 'string' && typeof event.createdAt === 'string' && validModelMessageContent(event.content) && optionalString(event.name) && optionalString(event.reasoningContent) && optionalNullableString(event.refusal); }
-function validModelMessageContent(value: unknown): boolean { if (value === undefined || value === null || typeof value === 'string') return true; return Array.isArray(value) && value.every((item) => { const record = asRecord(item); return record?.type === 'text' && typeof record.text === 'string' || record?.type === 'refusal' && typeof record.refusal === 'string'; }); }
+function isModelMessageEvent(value: unknown): boolean { const event = asRecord(value); return event?.type === 'model.message' && typeof event.id === 'string' && typeof event.threadId === 'string' && typeof event.createdAt === 'string' && exactReadyContent(event.content) && optionalString(event.name) && optionalString(event.reasoningContent) && (event.refusal === undefined || event.refusal === null); }
+function exactReadyContent(value: unknown): boolean { if (value === 'READY') return true; return Array.isArray(value) && value.length === 1 && asRecord(value[0])?.type === 'text' && asRecord(value[0])?.text === 'READY'; }
 function optionalString(value: unknown): boolean { return value === undefined || typeof value === 'string'; }
-function optionalNullableString(value: unknown): boolean { return value === undefined || value === null || typeof value === 'string'; }
 /** Inspect a terminal message transiently; its contents never cross the runtime boundary. */
 function terminalFailurePhase(value: unknown): 'authentication' | 'network' { if (typeof value !== 'string') return 'network'; const text = value.toLowerCase(); if (/\bbrowser\b|\bfetch\b|\bnetwork\b|\bdns\b|\btimeout\b/.test(text)) return 'network'; return /(^|\D)(401|403)(\D|$)|\bunauthorized\b|\binvalid (api )?key\b|\bcredential\b/.test(text) ? 'authentication' : 'network'; }
 
