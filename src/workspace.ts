@@ -17,7 +17,7 @@ export interface WorkspaceSource {
   readonly readFile: (path: string) => Promise<WorkspaceFile>;
 }
 
-export type WorkspaceErrorCode = 'workspace_unavailable' | 'path_invalid' | 'path_outside_workspace' | 'file_unsupported' | 'file_too_large';
+export type WorkspaceErrorCode = 'workspace_unavailable' | 'path_invalid' | 'range_invalid' | 'path_outside_workspace' | 'file_unsupported' | 'file_too_large';
 
 export class WorkspaceError extends Error {
   public constructor(public readonly code: WorkspaceErrorCode) { super(code); }
@@ -46,16 +46,29 @@ export class WorkspaceReader {
 
   public async read(request: { path: string; startLine?: number; endLine?: number }): Promise<{ path: string; startLine: number; endLine: number; text: string; dirty: boolean; documentVersion?: number }> {
     const { path: candidate, startLine, endLine } = request;
-    if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('path_invalid');
+    if (typeof candidate !== 'string' || !candidate) throw new WorkspaceError('path_invalid');
+    if ((startLine === undefined) !== (endLine === undefined) || (startLine !== undefined && (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine! < startLine))) throw new WorkspaceError('range_invalid');
     const requested = normalizeWorkspacePath(candidate);
     this.requireWorkspace();
-    const file = this.classify(await this.source.readFile(requested));
+    let sourceFile: WorkspaceFile;
+    try { sourceFile = await this.source.readFile(requested); }
+    catch { throw new WorkspaceError('path_invalid'); }
+    const file = this.classify(sourceFile);
     if (file.failure) throw new WorkspaceError(file.failure);
     const lines = file.text!.split(/\r\n|\n|\r/);
     const actualStart = startLine ?? 0;
-    const actualEnd = endLine ?? lines.length;
-    if (actualEnd > lines.length) throw new WorkspaceError('path_invalid');
+    const actualEnd = Math.min(endLine ?? lines.length, lines.length);
+    if (actualStart > lines.length) throw new WorkspaceError('range_invalid');
     return { path: file.path, startLine: actualStart, endLine: actualEnd, text: lines.slice(actualStart, actualEnd).join('\n'), dirty: file.dirty, ...(file.documentVersion === undefined ? {} : { documentVersion: file.documentVersion }) };
+  }
+
+  /** Validates a UTF-16 anchor against the same current (including dirty)
+   * source that MCP exposes.  It grants no wider workspace access. */
+  public async validateAnchor(path: string, startLine: number, startCharacter: number, endLine: number, endCharacter: number): Promise<void> {
+    if (!Number.isInteger(startLine) || !Number.isInteger(startCharacter) || !Number.isInteger(endLine) || !Number.isInteger(endCharacter) || startLine < 0 || startCharacter < 0 || endLine < 0 || endCharacter < 0) throw new WorkspaceError('range_invalid');
+    const file = await this.read({ path });
+    const lines = file.text.split('\n');
+    if (startLine >= lines.length || endLine >= lines.length || startCharacter > lines[startLine].length || endCharacter > lines[endLine].length || endLine < startLine || (endLine === startLine && endCharacter < startCharacter)) throw new WorkspaceError('range_invalid');
   }
 
   public async search(query: string, after?: string): Promise<WorkspaceMatch[]> {
@@ -84,6 +97,7 @@ export class WorkspaceReader {
   }
 
   private classify(file: WorkspaceFile): WorkspaceFile {
+    if (!file || typeof file.path !== 'string' || typeof file.dirty !== 'boolean' || (file.failure === undefined && typeof file.text !== 'string')) throw new WorkspaceError('path_invalid');
     const normalized = { ...file, path: normalizeWorkspacePath(file.path) };
     return (() => {
       if (normalized.failure) return normalized;

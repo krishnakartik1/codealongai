@@ -1,23 +1,29 @@
 import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/server';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import type { NavigationDirection, OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
+import type { NavigationDirection, OriginDescriptor, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
-const pathInput = z.object({ schemaVersion, path: z.string().min(1), startLine: z.number().int().nonnegative().optional(), endLine: z.number().int().nonnegative().optional() }).strict();
+// Domain code, not Zod's generic parser error, owns stable path/range diagnostics.
+const pathInput = z.object({ schemaVersion, path: z.unknown().optional(), startLine: z.unknown().optional(), endLine: z.unknown().optional() }).strict();
 const position = z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict();
 const range = z.object({ start: position, end: position }).strict();
+const originDocument = z.string().min(1).describe('Workspace-relative path copied exactly from the authorized request input.origin.path; never source text.');
 const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
 const graphPatch = z.object({ addedStops: z.array(addedStop), appendedDestinations: z.array(z.object({ sourceStopId: z.string().min(1), destinationIds: z.array(z.string().min(1)) }).strict()), recommendedNextUpdates: z.array(z.object({ sourceStopId: z.string().min(1), targetStopId: z.string().min(1) }).strict()) }).strict();
 const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal('explanation-only'), answerMarkdown: z.string() }).strict(), z.object({ kind: z.literal('destination-offer'), answerMarkdown: z.string(), destinationIds: z.array(z.string().min(1)) }).strict(), z.object({ kind: z.literal('generated-walkthrough'), answerMarkdown: z.string(), patch: graphPatch }).strict(), z.object({ kind: z.literal('explicit-unsupported'), answerMarkdown: z.string() }).strict()]);
-const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range }).strict();
+const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
 const defaultToolCallDeadlineMs = 30_000;
+interface GeneratedAnchor { readonly path: string; readonly startLine: number; readonly startCharacter: number; readonly endLine: number; readonly endCharacter: number; }
+function generatedAnchors(outcome: { kind: string; patch?: { addedStops: readonly { path: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }[] } }): readonly GeneratedAnchor[] {
+  if (outcome.kind !== 'generated-walkthrough' || !outcome.patch) return [];
+  return outcome.patch.addedStops.map((stop) => ({ path: stop.path, startLine: stop.range.start.line, startCharacter: stop.range.start.character, endLine: stop.range.end.line, endCharacter: stop.range.end.character }));
+}
 
 export class LoopbackMcpEndpoint {
   private listener: http.Server | undefined;
@@ -73,21 +79,23 @@ export class LoopbackMcpEndpoint {
     }));
     server.registerTool('codealongai_read_workspace_file', {
       description: 'Read bounded text from one workspace file.', inputSchema: pathInput, annotations: readAnnotations
-    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input)));
+    }, async (input: z.infer<typeof pathInput>) => this.workspaceResult(() => this.workspace.read(input as { path: string; startLine?: number; endLine?: number })));
     server.registerTool('codealongai_search_workspace', {
       description: 'Search workspace text literally and case-sensitively.', inputSchema: z.object({ schemaVersion, query: z.string().min(1).refine((value) => !/[\r\n]/.test(value), 'query must be single-line'), cursor: z.string().optional() }).strict(), annotations: readAnnotations
     }, async (input: { schemaVersion: 1; query: string; cursor?: string }) => this.workspaceResult(async () => {
       const after = decodeCursor(input.cursor, 'search', input.query);
       const matches = await this.workspace.search(input.query, after);
-      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`);
+      return paged(matches, input.cursor, 'search', input.query, (match) => `${match.path}\u0000${match.range.start.line}\u0000${match.range.start.character}\u0000${match.range.end.line}\u0000${match.range.end.character}`, 20);
     }));
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
-      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
-        const session = this.authority.start(input.requestId, input.origin);
+        const cached = this.authority.cachedStartReceipt(input.requestId, input.origin);
+        if (cached) return { structuredContent: cached, content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        const session = this.authority.startTentative(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch {
@@ -120,12 +128,19 @@ export class LoopbackMcpEndpoint {
       description: 'Atomically commit one authorized question outcome and append-only graph patch.',
       inputSchema: z.object({ schemaVersion, requestId: z.string().min(1), expectedSessionId: z.string().min(1), expectedRevision: z.number().int().positive(), outcome: questionOutcome }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-    }, (input, context) => {
+    }, async (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
-        const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
+        const commit = { requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision };
+        const cached = this.authority.cachedQuestionReceipt(commit, input.outcome as QuestionOutcome);
+        if (cached) return { structuredContent: cached, content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        for (const anchor of generatedAnchors(input.outcome)) await this.workspace.validateAnchor(anchor.path, anchor.startLine, anchor.startCharacter, anchor.endLine, anchor.endCharacter);
+        // Validation can suspend. The same HTTP attempt must still own the
+        // transition at the point we stage its receipt-backed candidate.
+        if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
+        const receipt = this.authority.commitQuestionOutcome(commit, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch (error) { return error instanceof WorkspaceError && (error.code === 'path_invalid' || error.code === 'range_invalid') ? domainErrorResult(error.code, error.code === 'path_invalid' ? 'The requested workspace file is unavailable.' : 'The requested line interval is invalid.', false) : domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_navigate_walkthrough', {
       description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next edge, or directly to one known stop.',
@@ -231,8 +246,12 @@ export class LoopbackMcpEndpoint {
       const structuredContent: Record<string, unknown> = { schemaVersion: 1, ...(result as object) };
       return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
     } catch (error) {
-      const code = error instanceof WorkspaceError ? error.code : 'internal_error';
-      return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
+      // The public producer boundary deliberately collapses filesystem detail:
+      // malformed, traversing, absent, unreadable and unsupported paths are
+      // one non-retryable input error, never provider prose.
+      const rawCode = error instanceof WorkspaceError ? error.code : 'internal_error';
+      const code = rawCode === 'path_outside_workspace' || rawCode === 'file_unsupported' || rawCode === 'file_too_large' ? 'path_invalid' : rawCode;
+      return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : code === 'range_invalid' ? 'The requested line interval is invalid.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
     }
   }
 
@@ -247,12 +266,12 @@ export class LoopbackMcpEndpoint {
   }
 }
 
-function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item)): { paths?: T[]; matches?: T[]; nextCursor?: string } {
+function paged<T>(items: readonly T[], cursor: string | undefined, tool: string, query: string, key: (item: T) => string = (item) => String(item), pageSize = 200): { paths?: T[]; matches?: T[]; nextCursor?: string } {
   const after = decodeCursor(cursor, tool, query);
   const start = after === undefined ? 0 : items.findIndex((item) => key(item) > after);
-  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + 200);
+  const page = items.slice(start < 0 ? items.length : start, (start < 0 ? items.length : start) + pageSize);
   const response = tool === 'list' ? { paths: page } : { matches: page };
-  if (page.length === 200 && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
+  if (page.length === pageSize && page.length < items.length - (start < 0 ? items.length : start)) return { ...response, nextCursor: Buffer.from(JSON.stringify({ tool, query, after: key(page[page.length - 1]) })).toString('base64url') };
   return response;
 }
 
@@ -322,45 +341,4 @@ function requestId(body: unknown): string | number | null {
 function domainErrorResult(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
   const structuredContent = { schemaVersion: 1, code, message, retryable };
   return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
-}
-
-/** The model-free producer uses the same public transport a future producer will use. */
-export async function commitDeterministicOrigin(port: number, requestId: string, origin: OriginDescriptor): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized start request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_start_walkthrough', arguments: { schemaVersion: 1, requestId, origin } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally {
-    await transport.close();
-  }
-}
-
-/** The deterministic producer replaces through the same strict MCP boundary as an external producer. */
-export async function commitDeterministicReplacement(port: number, requestId: string, expectedSessionId: string, expectedRevision: number, origin: OriginDescriptor): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized replacement request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId, expectedSessionId, expectedRevision, origin } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally { await transport.close(); }
-}
-
-/** The deterministic question producer exercises the same loopback command boundary. */
-export async function commitDeterministicQuestion(port: number, commit: QuestionCommit, outcome: QuestionOutcome): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId: commit.requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized question request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: commit.requestId, expectedSessionId: commit.sessionId, expectedRevision: commit.revision, outcome } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally { await transport.close(); }
 }
