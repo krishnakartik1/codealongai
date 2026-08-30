@@ -1705,6 +1705,30 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(ninth.result, { status: 'failed', diagnostic: 'call_budget_exceeded' });
   });
 
+  test('rejects a second sequential workspace list before any transition', () => {
+    const reducer = new StartTurnReducer('request-1');
+    const call = (id: string, name: string, args: object, content: object): void => { reducer.accept({ type: 'model.message', id: `call-${id}`, toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] }); reducer.accept({ type: 'tool.response', id: `result-${id}`, toolCallId: id, content: JSON.stringify(content) }); };
+    call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } } } } });
+    call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 3 }, { structuredContent: {} });
+    call('list-one', 'codealongai_list_workspace_files', {}, { structuredContent: { paths: [] } });
+    reducer.accept({ type: 'model.message', id: 'call-list-two', toolCalls: [{ id: 'list-two', type: 'function', function: { name: 'codealongai_list_workspace_files', arguments: '{}' }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+    assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'workspace_list_repeated' });
+  });
+
+  test('uses the smallest exclusive origin line interval for multi-line authority ranges', () => {
+    const accept = (endCharacter: number, readEndLine: number): StartTurnReducer => {
+      const reducer = new StartTurnReducer('request-1');
+      reducer.accept({ type: 'model.message', id: 'authority-call', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+      reducer.accept({ type: 'tool.response', id: 'authority-result', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 3 }, end: { line: 5, character: endCharacter } } } } }) });
+      reducer.accept({ type: 'model.message', id: 'read-call', toolCalls: [{ id: 'read', type: 'function', function: { name: 'codealongai_read_workspace_file', arguments: JSON.stringify({ path: 'checkout.ts', startLine: 2, endLine: readEndLine }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+      return reducer;
+    };
+    assert.equal(accept(0, 5).result, undefined);
+    assert.deepEqual(accept(0, 6).result, { status: 'failed', diagnostic: 'origin_range_required' });
+    assert.equal(accept(4, 6).result, undefined);
+    assert.deepEqual(accept(4, 5).result, { status: 'failed', diagnostic: 'origin_range_required' });
+  });
+
   test('fails an out-of-order tool call and refuses sandbox command events', () => {
     const reducer = new StartTurnReducer('request-1');
     reducer.accept({ type: 'model.message', id: 'call-start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
@@ -1912,6 +1936,19 @@ suite('workspace context over loopback MCP', () => {
       await transport.close();
       await endpoint.stop();
     }
+  });
+
+  test('normalizes an unreadable workspace document at the real MCP boundary', async () => {
+    const source: WorkspaceSource = { workspaceFolderCount: () => 1, listFiles: async () => ['unreadable.ts'], readFile: async () => { throw new Error('host filesystem detail must not cross MCP'); } };
+    const endpoint = new LoopbackMcpEndpoint(new WalkthroughAuthority(), source);
+    await endpoint.start(0);
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`));
+    const client = new Client({ name: 'test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'unreadable.ts' } });
+      assert.deepEqual(result.structuredContent, { schemaVersion: 1, code: 'path_invalid', message: 'The requested workspace file is unavailable.', retryable: false });
+    } finally { await transport.close(); await endpoint.stop(); }
   });
 });
 
