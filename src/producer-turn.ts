@@ -7,6 +7,10 @@ export interface StartTurnInput {
   readonly model: string;
   readonly reasoningEffort: string;
   readonly mcpUrl: string;
+  /** Production supplies the extension-owned receipt validator; fixture-only
+   * coordinators may omit it. */
+  readonly acceptReceipt?: (receipt: StartReceipt) => boolean;
+  readonly rollbackTentativeStart?: () => void;
 }
 
 export type StartTurnResult = { readonly status: 'committed'; readonly receipt: StartReceipt } | { readonly status: 'failed'; readonly diagnostic: string };
@@ -37,7 +41,7 @@ export class StartTurnReducer {
   private origin: { path: string; startLine: number; endLine: number } | undefined;
   private receipt: StartReceipt | undefined;
   private failure: string | undefined;
-  public constructor(private readonly requestId: string) {}
+  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: StartReceipt) => boolean) {}
   public accept(event: unknown): void {
     if (this.receipt || this.failure) return;
     const record = object(event); if (!record) return;
@@ -60,7 +64,10 @@ export class StartTurnReducer {
     if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
     if (name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
     if (name !== startTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
-    if (name === startTool && (args.requestId !== this.requestId || this.transitioned)) { this.failure = 'transition_invalid'; return; }
+    // A real start request carries its origin descriptor; those calls must be
+    // grounded by the exact authorized read. Older malformed event fixtures
+    // remain non-committing at the MCP boundary and are only correlation tests.
+    if (name === startTool && (args.requestId !== this.requestId || this.transitioned || (args.origin !== undefined && !this.originRead))) { this.failure = this.originRead ? 'transition_invalid' : 'origin_read_required'; return; }
     if (name === 'codealongai_list_workspace_files') this.listed = true;
     if (name === startTool) this.transitioned = true;
     this.pending = { id, name };
@@ -73,13 +80,16 @@ export class StartTurnReducer {
     const pending = this.pending; this.pending = undefined;
     const result = object(content); if (!result || result.isError === true) { this.failure = safeToolError(result); return; }
     if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    if (pending.name === 'codealongai_read_workspace_file') this.originRead = true;
     if (pending.name !== startTool) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
+    if (this.acceptReceipt && !this.acceptReceipt(receipt)) { this.failure = 'receipt_invalid'; return; }
     this.receipt = receipt;
   }
   private listed = false;
   private transitioned = false;
+  private originRead = false;
   public get hasReceipt(): boolean { return this.receipt !== undefined; }
 }
 
@@ -140,11 +150,11 @@ export class ReceiptBackedStartCoordinator {
       sessionId = idOf(session.value); this.activeSessionId = sessionId;
       if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
-      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start a walkthrough for request ID ${input.requestId}.` }], previousTurnId: 'none' } }), deadline, this.cancelledSignal);
+      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `start\n${input.requestId}` }], previousTurnId: 'none' } }), deadline, this.cancelledSignal);
       if (!turn.completed) return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' };
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
-      const reducer = new StartTurnReducer(input.requestId);
+      const reducer = new StartTurnReducer(input.requestId, input.acceptReceipt);
       let lastSequence = -1;
       const seenSequences = new Set<number>();
       let receipt: Extract<StartTurnResult, { status: 'committed' }> | undefined;
@@ -218,6 +228,10 @@ export class ReceiptBackedStartCoordinator {
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
     finally {
+      // The MCP command may have committed just before a lost response,
+      // cancellation, or malformed receipt. The authority itself decides
+      // whether this request still owns a tentative session.
+      input.rollbackTentativeStart?.();
       this.activeSessionId = undefined;
       if (sessionId) {
         // A session is never deleted while its one native cancellation is in

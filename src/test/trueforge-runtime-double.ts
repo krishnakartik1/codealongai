@@ -1,6 +1,6 @@
 import type { TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions } from '../trueforge';
 import type { DaytonaProbeResult } from '../daytona';
-import { commitDeterministicOrigin } from '../mcp';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 export const emptyTrueForgeProducer: TrueForgeProducerRuntime = {
   discoverConfiguration: async () => [], discoverProviders: async () => [], discoverModels: async () => [], discoverSkills: async () => [],
@@ -45,15 +45,31 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         if (runtime.producerEventError) throw runtime.producerEventError;
         if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
-        const requestId = typeof text === 'string' ? text.match(/request ID ([^.]*)\./)?.[1] : undefined;
+        const requestId = typeof text === 'string' && text.startsWith('start\n') ? text.slice('start\n'.length) : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
         const port = runtime.mcpPort;
-        yield { type: 'model.message', id: 'call-authority', threadId: 'main', createdAt: '2026-01-01T00:00:00.000Z', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ schemaVersion: 1, requestId }) }, toolInfo: { type: 'mcp', name: 'codealongai_get_walkthrough_request', serverId: 'test', serverName: 'codealongai-mcp' } }] };
-        yield { type: 'tool.response', id: 'response-authority', threadId: 'main', createdAt: '2026-01-01T00:00:01.000Z', toolCallId: 'authority', content: JSON.stringify({ schemaVersion: 1, requestId, kind: 'start', authorizedAction: 'start', status: 'pending', input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }) };
-        await commitDeterministicOrigin(port, requestId, { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } } });
-        yield { type: 'model.message', id: 'call-start', threadId: 'main', createdAt: '2026-01-01T00:00:02.000Z', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ schemaVersion: 1, requestId }) }, toolInfo: { type: 'mcp', name: 'codealongai_start_walkthrough', serverId: 'test', serverName: 'codealongai-mcp' } }] };
-        yield { type: 'tool.response', id: 'response-start', threadId: 'main', createdAt: '2026-01-01T00:00:03.000Z', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId, sessionId: 'test-session', revision: 1, attentionStopId: 'checkout-origin' }) };
-        yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
+        const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+        const client = new Client({ name: 'TrueForge runtime double', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
+        await client.connect(transport);
+        try {
+          const call = (id: string, name: string, args: object, at: string) => ({ type: 'model.message', id: `call-${id}`, threadId: 'main', createdAt: at, toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', name, serverId: 'test', serverName: 'codealongai-mcp' } }] });
+          const response = (id: string, result: unknown, at: string) => ({ type: 'tool.response', id: `response-${id}`, threadId: 'main', createdAt: at, toolCallId: id, content: JSON.stringify(result) });
+          yield call('authority', 'codealongai_get_walkthrough_request', { schemaVersion: 1, requestId }, '2026-01-01T00:00:00.000Z');
+          const authority = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
+          yield response('authority', authority, '2026-01-01T00:00:01.000Z');
+          const origin = (authority.structuredContent as { input?: { origin?: { path?: string; range?: unknown } } } | undefined)?.input?.origin;
+          if (!origin?.path || !origin.range) return;
+          const interval = origin.range as { start: { line: number }; end: { line: number; character: number } };
+          const endLine = interval.end.character === 0 ? interval.end.line : interval.end.line + 1;
+          yield call('origin', 'codealongai_read_workspace_file', { schemaVersion: 1, path: origin.path, startLine: interval.start.line, endLine }, '2026-01-01T00:00:02.000Z');
+          const read = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: origin.path, startLine: interval.start.line, endLine } });
+          yield response('origin', read, '2026-01-01T00:00:03.000Z');
+          const start = { schemaVersion: 1, requestId, origin: { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: origin.path, range: origin.range } };
+          yield call('start', 'codealongai_start_walkthrough', start, '2026-01-01T00:00:04.000Z');
+          const committed = await client.callTool({ name: 'codealongai_start_walkthrough', arguments: start });
+          yield response('start', committed, '2026-01-01T00:00:05.000Z');
+          yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
+        } finally { await transport.close(); }
       },
       cancelTurn: async () => { runtime.producerCancelCalls += 1; runtime.producerCancelled = true; },
       probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } }
