@@ -2127,6 +2127,23 @@ suite('receipt-backed start producer turn', () => {
       assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' } } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
+
+  test('serializes the complete native Reply AgentSpec through the pinned SDK runtime session boundary', async () => {
+    let received: { url?: string; body?: Record<string, unknown> } = {};
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => { received = { url: request.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }; response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ id: 'question-session' })); });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); assert.ok(address && typeof address === 'object');
+    try {
+      const runtime = new SdkTrueForgeProducerRuntime(`http://127.0.0.1:${address.port}`);
+      await runtime.createSession({ agent: { spec: startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) } });
+      assert.equal(received.url, '/api/v1/sessions');
+      assert.deepEqual(received.body, { agent: { spec: { model: { name: 'openai/gpt', params: { reasoning_effort: 'medium', parallel_tool_calls: false } }, skills: [{ name: 'codealongai' }], mcp_servers: [{ name: 'codealongai-mcp', enable_tools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], require_approval_for_tools: [] }], config: { sandbox: { enabled: true, file_downloads: false }, dynamic_sub_agents: { enabled: false }, ask_user_questions: { enabled: false }, iteration_limit: 9 }, instructions: 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' } } });
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+  });
 });
 
 suite('workspace context over loopback MCP', () => {
