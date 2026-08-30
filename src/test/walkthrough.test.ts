@@ -250,7 +250,12 @@ suite('Extension Development Host walkthrough', () => {
       assert.equal(commandRuntime.probeCalls, replyProbes + 3);
       assert.equal(commandRuntime.prepareCalls, replyPrepares + 1);
       assert.deepEqual(branched.stops.map((stop) => stop.id), ['checkout-origin', 'pricing-function', 'pricing-reducer', 'pricing-reducer-revisit', 'checkout-cart']);
+      assert.deepEqual(branched.stops[0].conversation.slice(-2), [{ author: 'You', bodyMarkdown: 'Follow this value.' }, { author: 'CodeAlongAI', bodyMarkdown: 'Follow the value through the subtotal function and its reducer.' }]);
+      assert.ok(destinationQuickPickItems(branched).some((item) => item.stopId === 'pricing-function'));
+      assert.deepEqual(branched.origin, origin.origin);
+      assert.equal(branched.attentionStopId, 'checkout-origin');
       assert.equal(document.getText(), sourceBefore);
+      assert.equal(document.isDirty, false);
       assert.deepEqual(editor.selection, selection);
       await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the completed public reply should clear its request before another reply begins');
 
