@@ -10,6 +10,13 @@ import type { TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions 
 import { loopbackUrl } from './trueforge-url';
 
 const terminationGraceMs = 5_000;
+export interface TrueForgeCapabilitySummary { readonly available: boolean; readonly version: string | undefined; }
+/** Public capability response reduced to the only acceptance-safe fields. */
+export function trueForgeCapabilitySummary(status: number | undefined, body: string): TrueForgeCapabilitySummary {
+  if (status !== 200) return { available: false, version: undefined };
+  try { const value = JSON.parse(body) as { version?: unknown; data?: { version?: unknown } }; const candidate = value.version ?? value.data?.version; return { available: true, version: typeof candidate === 'string' && /^\d+\.\d+\.\d+$/.test(candidate) ? candidate : undefined }; }
+  catch { return { available: false, version: undefined }; }
+}
 export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   private child: ChildProcess | undefined; private ownershipPath: string | undefined; private ownershipLaunchId: string | undefined; private ownershipRelease: Promise<void> | undefined; private port: number | undefined; private childExited = false; private record: OwnershipRecord | undefined; private stopping = false; private producerRuntime: SdkTrueForgeProducerRuntime | undefined; private readonly probeState: DaytonaProbeState;
   public constructor(private readonly openExternal: (url: string) => Promise<boolean>, private readonly configuredNodePath: () => string | undefined, private readonly reportUnexpectedExit: (message: string) => void = () => undefined, probeStateStore?: DaytonaProbeStateStore) { this.probeState = new DaytonaProbeState(probeStateStore); }
@@ -35,6 +42,8 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
   }
   public health(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}healthz`, (status, body) => status === 200 && body === 'OK!'); }
   public verifyCapability(port: number): Promise<boolean> { return requestStatus(`${loopbackUrl(port)}api/v1/capabilities`, (status, body) => status === 200 && body.trimStart().startsWith('{')); }
+  /** Acceptance-only public summary; no response payload, IDs, paths, or configuration crosses this boundary. */
+  public capabilitySummary(port: number): Promise<TrueForgeCapabilitySummary> { return requestBody(`${loopbackUrl(port)}api/v1/capabilities`).then(({ status, body }) => trueForgeCapabilitySummary(status, body)); }
   public async open(url: string): Promise<void> { if (!await this.openExternal(url)) throw new Error('VS Code could not open the TrueForge setup UI.'); }
   public async stop(): Promise<void> {
     const child = this.child; const record = this.record; this.stopping = true;
@@ -85,6 +94,7 @@ export class NativeTrueForgeRuntime implements TrueForgeRuntime {
 export { releaseOwnershipIfCurrent } from './trueforge-ownership';
 
 function requestStatus(url: string, accepts: (status: number | undefined, body: string) => boolean): Promise<boolean> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve(accepts(response.statusCode, body))); }); request.once('error', () => resolve(false)); request.setTimeout(1_000, () => { request.destroy(); resolve(false); }); }); }
+function requestBody(url: string): Promise<{ status: number | undefined; body: string }> { return new Promise((resolve) => { const request = http.get(url, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { body += chunk; }); response.on('end', () => resolve({ status: response.statusCode, body })); }); request.once('error', () => resolve({ status: undefined, body: '' })); request.setTimeout(1_000, () => { request.destroy(); resolve({ status: undefined, body: '' }); }); }); }
 function childHasExited(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>): boolean { return child.exitCode !== null || child.signalCode !== null; }
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (childHasExited(child)) return Promise.resolve(true);

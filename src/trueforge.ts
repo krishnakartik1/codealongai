@@ -2,7 +2,7 @@ import * as net from 'node:net';
 import type { TrueForgeRuntime } from './trueforge-contract';
 
 export type { TrueForgeProducerReadinessInput, TrueForgeProducerReadinessPhase, TrueForgeProducerReadinessResult, TrueForgeProducerRuntime, TrueForgeRuntime, TrueForgeStartOptions, TrueForgeTurnRequest } from './trueforge-contract';
-export { NativeTrueForgeRuntime, releaseOwnershipIfCurrent } from './trueforge-native';
+export { NativeTrueForgeRuntime, releaseOwnershipIfCurrent, trueForgeCapabilitySummary, type TrueForgeCapabilitySummary } from './trueforge-native';
 export { recoverStaleOwnership } from './trueforge-ownership';
 export { SdkTrueForgeProducerRuntime, type TrueForgeSdkClient, type TrueForgeSdkClientFactory } from './trueforge-sdk';
 export { isUbuntuX64 } from './trueforge-environment';
