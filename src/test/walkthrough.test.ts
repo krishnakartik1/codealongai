@@ -1516,6 +1516,47 @@ suite('receipt-backed start producer turn', () => {
     const request = authority.captureStart(origin);
     return { authority, request, endpoint: new LoopbackMcpEndpoint(authority, memorySource([{ path: 'checkout.ts', text: 'const', dirty: false }])) };
   };
+  const loopbackQuestion = (): { authority: WalkthroughAuthority; request: ReturnType<WalkthroughAuthority['captureQuestion']>; before: WalkthroughSession; endpoint: LoopbackMcpEndpoint } => {
+    const authority = new WalkthroughAuthority();
+    const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } } };
+    const start = authority.captureStart(origin);
+    authority.start(start.id, origin);
+    const before = authority.getSession()!;
+    const request = authority.captureQuestion(origin.stopId, 'Why this code?');
+    return { authority, request, before, endpoint: new LoopbackMcpEndpoint(authority, memorySource([{ path: 'checkout.ts', text: 'const', dirty: false }])) };
+  };
+  const loopbackQuestionRuntime = (port: number, requestId: string, onTentative: () => void, releaseResponse: Promise<void>, deliverResponse: boolean, cleanupFails = false): TrueForgeProducerRuntime => {
+    const call = (id: string, name: string, args: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'model.message', id: `question-call-${id}`, threadId: 'main', createdAt: 'now', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } });
+    const response = (id: string, result: unknown, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `question-response-${id}`, threadId: 'main', createdAt: 'now', toolCallId: id, content: JSON.stringify(result) } });
+    let delivered = false;
+    return {
+      ...emptyTrueForgeProducer,
+      createSession: async () => ({ id: 'question-session' }),
+      runTurn: async () => ({ id: 'question-turn' }),
+      cancelTurn: async () => { if (cleanupFails) throw new Error('cleanup failed'); },
+      deleteSession: async () => { if (cleanupFails) throw new Error('delete failed'); },
+      events: async function* () {
+        if (delivered) return; delivered = true;
+        const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
+        const client = new Client({ name: 'question receipt lifecycle test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
+        await client.connect(transport);
+        try {
+          yield call('authority', 'codealongai_get_walkthrough_request', { schemaVersion: 1, requestId }, 1);
+          const authorized = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
+          yield response('authority', authorized, 2);
+          yield call('walkthrough', 'codealongai_get_walkthrough', {}, 3);
+          const walkthrough = await client.callTool({ name: 'codealongai_get_walkthrough', arguments: {} });
+          yield response('walkthrough', walkthrough, 4);
+          const input = (authorized.structuredContent as { input: { sessionId: string; revision: number } }).input;
+          const commit = { schemaVersion: 1, requestId, expectedSessionId: input.sessionId, expectedRevision: input.revision, outcome: { kind: 'explanation-only' as const, answerMarkdown: 'Because it is the source.' } };
+          yield call('commit', 'codealongai_commit_question_outcome', commit, 5);
+          const receipt = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: commit });
+          onTentative(); await releaseResponse;
+          if (deliverResponse) { yield response('commit', receipt, 6); yield { type: 'turn.done', id: 'question-done', threadId: 'main', state: { status: 'done' } }; }
+        } finally { await transport.close(); }
+      }
+    };
+  };
   test('returns the cached start receipt for an identical real MCP retry and conflicts on changed input', async () => {
     const { authority, request, endpoint } = loopbackStart();
     await endpoint.start(0);
@@ -1548,6 +1589,69 @@ suite('receipt-backed start producer turn', () => {
       assert.deepEqual(result, { status: 'failed', diagnostic: 'missing_receipt' });
       assert.equal(authority.getSession(), undefined);
       assert.deepEqual(authority.getPendingStart(), request);
+    } finally { await endpoint.stop(); }
+  });
+  test('rolls back the exact pre-question session when a real loopback committed response is lost', async () => {
+    const { authority, request, before, endpoint } = loopbackQuestion();
+    let tentative: (() => void) | undefined; const tentativeSeen = new Promise<void>((resolve) => { tentative = resolve; });
+    await endpoint.start(0);
+    try {
+      const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), Promise.resolve(), false);
+      const result = await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      await tentativeSeen;
+      assert.deepEqual(result, { status: 'failed', diagnostic: 'missing_receipt' });
+      assert.deepEqual(authority.getSession(), before);
+      assert.deepEqual(authority.getPendingQuestion(), request);
+    } finally { await endpoint.stop(); }
+  });
+  test('does not roll back newer navigation state after a real loopback question response is lost', async () => {
+    const { authority, request, endpoint } = loopbackQuestion();
+    let tentative: (() => void) | undefined; const tentativeSeen = new Promise<void>((resolve) => { tentative = resolve; });
+    await endpoint.start(0);
+    try {
+      const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), Promise.resolve(), false);
+      const operation = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      await tentativeSeen;
+      const committed = authority.getSession()!;
+      authority.navigateDestination({ sessionId: committed.id, revision: committed.revision, targetStopId: 'origin' });
+      const newer = authority.getSession()!;
+      assert.deepEqual(await operation, { status: 'failed', diagnostic: 'missing_receipt' });
+      assert.deepEqual(authority.getSession(), newer);
+      assert.deepEqual(authority.getPendingQuestion(), request);
+    } finally { await endpoint.stop(); }
+  });
+  test('cancels a real loopback committed question before its response and ignores the late response', async () => {
+    const { authority, request, before, endpoint } = loopbackQuestion();
+    let tentative: (() => void) | undefined; const tentativeSeen = new Promise<void>((resolve) => { tentative = resolve; });
+    let release: (() => void) | undefined; const responseGate = new Promise<void>((resolve) => { release = resolve; });
+    await endpoint.start(0);
+    try {
+      const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => tentative!(), responseGate, true);
+      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const operation = coordinator.start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      await tentativeSeen;
+      coordinator.cancel();
+      release!();
+      assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+      await coordinator.settled;
+      assert.deepEqual(authority.getSession(), before);
+      assert.deepEqual(authority.getPendingQuestion(), request);
+    } finally { release?.(); await endpoint.stop(); }
+  });
+  test('finalizes an accepted real loopback question receipt despite later cancellation and cleanup failure', async () => {
+    const { authority, request, endpoint } = loopbackQuestion();
+    await endpoint.start(0);
+    try {
+      const runtime = loopbackQuestionRuntime(endpoint.port!, request.id, () => undefined, Promise.resolve(), true, true);
+      const coordinator = new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined);
+      const result = await coordinator.start({ kind: 'question', requestId: request.id, model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused', acceptReceipt: (receipt) => authority.acknowledgeQuestionReceipt(receipt as import('../walkthrough').QuestionReceipt), rollbackTentativeQuestion: () => authority.rollbackTentativeQuestion() });
+      assert.equal(result.status, 'committed');
+      const accepted = authority.getSession()!;
+      coordinator.cancel();
+      await coordinator.settled;
+      assert.equal(authority.rollbackTentativeQuestion(), false);
+      assert.deepEqual(authority.getSession(), accepted);
+      assert.equal(authority.getPendingQuestion(), undefined);
     } finally { await endpoint.stop(); }
   });
   test('cancels a real loopback tentative start and ignores its late response', async () => {
