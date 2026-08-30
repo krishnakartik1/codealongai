@@ -453,7 +453,7 @@ suite('Extension Development Host walkthrough', () => {
         commandRuntime.producerEventError = undefined;
         select!('Retry walkthrough');
         await eventually(() => api.session, 'Retry should use a new producer session and turn');
-        assert.deepEqual(commandRuntime.producerTurnCalls.slice(before).map((call) => call.kind), ['session', 'turn', 'events', 'session', 'turn', 'events']);
+        assert.deepEqual(commandRuntime.producerTurnCalls.slice(before).map((call) => call.kind), ['session', 'turn', 'events', 'events', 'session', 'turn', 'events']);
       } finally { commandRuntime.producerEventError = undefined; errorWindow.showErrorMessage = nativeError; }
     }));
   });
@@ -483,7 +483,7 @@ suite('Extension Development Host walkthrough', () => {
         await eventually(() => selections.length === 1 ? true : undefined, 'the first failed Ask should offer its actions');
         selections[0]('Discard request');
         await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'Discard request should invalidate only the first request');
-        assert.equal(commandRuntime.producerTurnCalls.length, before + 3);
+        assert.equal(commandRuntime.producerTurnCalls.length, before + 4);
 
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         await eventually(() => selections.length === 2 ? true : undefined, 'the later failed Ask should offer separate actions');
@@ -529,7 +529,7 @@ suite('Extension Development Host walkthrough', () => {
         await vscode.commands.executeCommand('codealongai.walkthrough.ask');
         await eventually(() => shown.length === 1 ? true : undefined, 'Show CodeAlongAI Output should reveal the native output channel');
         assert.deepEqual(shown, [true]);
-        assert.equal(commandRuntime.producerTurnCalls.length, before + 3);
+        assert.equal(commandRuntime.producerTurnCalls.length, before + 4);
         assert.equal(api.session, undefined);
         assert.equal(api.hasPendingWalkthroughRequest, true);
         // Output is observation only; discard remains an explicit learner action.
@@ -1844,6 +1844,20 @@ suite('receipt-backed start producer turn', () => {
     assert.deepEqual(reducer.result, { status: 'failed', diagnostic: 'path_invalid' });
   });
 
+  test('normalizes pinned MCP error arrays without retaining their text', () => {
+    const reject = (content: object): unknown => {
+      const reducer = new StartTurnReducer('request-1');
+      reducer.accept({ type: 'model.message', id: 'authority', threadId: 'main', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] });
+      reducer.accept({ type: 'tool.response', id: 'authority-response', threadId: 'main', toolCallId: 'authority', content: JSON.stringify(content) });
+      return reducer.result;
+    };
+    assert.deepEqual(reject({ error: [{ structuredContent: { code: 'path_invalid', message: 'sentinel-path' } }] }), { status: 'failed', diagnostic: 'path_invalid' });
+    assert.deepEqual(reject({ error: [{ structuredContent: { code: 'range_invalid', message: 'sentinel-range' } }] }), { status: 'failed', diagnostic: 'range_invalid' });
+    const generic = reject({ error: [{ type: 'text', text: 'sentinel-generic' }] });
+    assert.deepEqual(generic, { status: 'failed', diagnostic: 'tool_result_invalid' });
+    assert.equal(JSON.stringify(generic).includes('sentinel'), false);
+  });
+
   test('applies one absolute deadline to stalled create, turn, and stream operations', async () => {
     const never = new Promise<never>(() => undefined);
     const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:1/mcp' };
@@ -1892,6 +1906,23 @@ suite('receipt-backed start producer turn', () => {
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 7); return; } assert.equal(cancels, 0, 'recoverable EOF must not cancel before reconciliation and resubscription'); yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 8); yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 9); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 10); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 11); yield response('start', receipt, 12); yield { sequenceNumber: 13, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [], cancelTurn: async () => { cancels += 1; } };
     assert.equal((await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
     assert.deepEqual(subscriptions, [undefined, 7]);
+  });
+
+  test('recovers one thrown pinned stream interruption before its cursor resubscription', async () => {
+    const subscriptions: (number | undefined)[] = []; let cancels = 0;
+    const call = (id: string, name: string, arguments_: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'model.message', id: `call-${id}`, threadId: 'main', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(arguments_) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } });
+    const response = (id: string, content: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `response-${id}`, threadId: 'main', toolCallId: id, content: JSON.stringify(id === 'authority' ? { schemaVersion: 1, requestId: 'request-1', kind: 'start', authorizedAction: 'start', status: 'pending', ...content } : content) } });
+    const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 7); throw new Error('interrupted'); } assert.equal(cancels, 0, 'the first interruption must not cancel before recovery'); yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } } } } }, 8); yield call('origin', 'codealongai_read_workspace_file', { path: 'checkout.ts', startLine: 2, endLine: 2 }, 9); yield response('origin', { structuredContent: { schemaVersion: 1, path: 'checkout.ts', startLine: 2, endLine: 2, text: 'x' } }, 10); yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 11); yield response('start', receipt, 12); yield { sequenceNumber: 13, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [], cancelTurn: async () => { cancels += 1; } };
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+    assert.deepEqual(subscriptions, [undefined, 7]);
+  });
+
+  test('fails a second thrown pinned stream interruption', async () => {
+    let attempts = 0;
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { attempts += 1; throw new Error('interrupted'); }, listTurnEvents: async () => [] };
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'producer_error' });
+    assert.equal(attempts, 2);
   });
 
   test('waits one injected five-second grace after receipt without done, then cancels before deletion', async () => {

@@ -76,7 +76,7 @@ export class StartTurnReducer {
     if (!this.pending) { this.deferredResults.set(id, content); return; }
     if (this.pending.id !== id) { this.failure = 'result_correlation'; return; }
     const pending = this.pending; this.pending = undefined;
-    const result = object(content); if (!result || result.isError === true) { this.failure = safeToolError(result); return; }
+    const result = object(content); if (!result || result.isError === true || Array.isArray(result.error)) { this.failure = safeToolError(result); return; }
     if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
     if (pending.name === 'codealongai_read_workspace_file') {
       if (!this.origin || !exactOriginRead(result, this.origin)) { this.failure = 'origin_read_invalid'; return; }
@@ -175,7 +175,15 @@ export class ReceiptBackedStartCoordinator {
           const remaining = deadline - Date.now();
           if (remaining <= 0) { this.abort.abort(); return { status: 'failed', diagnostic: 'deadline_exceeded' }; }
           const eventDeadline = receipt ? deadline : reconciliationCutoff ?? deadline;
-          const next = await (receiptGrace ? Promise.race([beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })), receiptGrace.then((value) => ({ kind: 'grace' as const, value }))]) : beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })));
+          const interrupted = { interrupted: true } as const;
+          const nextEvent = beforeDeadline(iterator.next(), eventDeadline, this.cancelledSignal).then((value) => ({ kind: 'event' as const, value })).catch(() => interrupted);
+          const next = await (receiptGrace ? Promise.race([nextEvent, receiptGrace.then((value) => ({ kind: 'grace' as const, value }))]) : nextEvent);
+          if ('interrupted' in next) {
+            if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
+            if (Date.now() >= deadline) { this.abort.abort(); return { status: 'failed', diagnostic: 'deadline_exceeded' }; }
+            if (subscription === 0) { recoverableEof = true; break; }
+            return { status: 'failed', diagnostic: 'producer_error' };
+          }
           if (next.kind === 'grace') {
             if (!next.value.completed) { if (!next.value.cancelled) this.abort.abort(); return { status: 'failed', diagnostic: next.value.cancelled ? 'cancelled' : 'deadline_exceeded' }; }
             return receipt!;
@@ -321,7 +329,8 @@ function exactOriginRead(value: Record<string, unknown>, origin: { path: string;
   return result?.schemaVersion === 1 && result.path === origin.path && result.startLine === origin.startLine && result.endLine === origin.endLine && typeof result.text === 'string' && result.text.length > 0;
 }
 function safeToolError(value: Record<string, unknown> | undefined): string {
-  const structured = object(value?.structuredContent) ?? value;
+  const errors = Array.isArray(value?.error) ? value.error : [];
+  const structured = errors.map(object).map((error) => object(error?.structuredContent) ?? error).find((error) => string(error?.code) === 'path_invalid' || string(error?.code) === 'range_invalid') ?? object(value?.structuredContent) ?? value;
   const code = string(structured?.code);
   return code === 'path_invalid' || code === 'range_invalid' ? code : 'tool_result_invalid';
 }
