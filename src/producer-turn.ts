@@ -85,7 +85,7 @@ export class StartTurnReducer {
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
 export class ReceiptBackedStartCoordinator {
   private active: Promise<StartTurnResult> | undefined;
-  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000) {}
+  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number) => Promise<void> = gracePeriod) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
     const operation = this.run(input); this.active = operation;
@@ -150,7 +150,7 @@ export class ReceiptBackedStartCoordinator {
           }
         }
       }
-      if (receipt) { await gracePeriod(Math.min(5_000, Math.max(0, deadline - Date.now()))); return receipt; }
+      if (receipt) { await this.waitForGrace(Math.min(5_000, Math.max(0, deadline - Date.now()))); return receipt; }
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
     finally {
