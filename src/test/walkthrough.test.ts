@@ -13,7 +13,7 @@ import type { WorkspaceFile, WorkspaceSource } from '../workspace';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { TrueForge } from '@truefoundry/trueforge-sdk';
 import { LoopbackMcpEndpoint } from '../mcp';
-import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setMcpPortObserverForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
+import { commentThreadOptions, destinationQuickPickItems, deterministicQuestionOutcome, navigationContext, selectReadinessRetryForTests, setMcpPortObserverForTests, setOutputShowObserverForTests, setReadinessActionSelectorForTests, setTrueForgeEnvironmentForTests, setTrueForgeRuntimeForTests, threadComments, threadLabel } from '../extension';
 import { emptyTrueForgeProducer, TrueForgeRuntimeDouble } from './trueforge-runtime-double';
 import { McpLifecycle } from '../lifecycle';
 import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueForgeProducerRuntime, TrueForgeSidecar, type TrueForgeProducerReadinessResult, type TrueForgeProducerRuntime, type TrueForgeRuntime } from '../trueforge';
@@ -34,7 +34,7 @@ interface WalkthroughTestApi {
 }
 
 const commandRuntime = new TrueForgeRuntimeDouble();
-setTrueForgeRuntimeForTests(() => commandRuntime);
+setTrueForgeRuntimeForTests((reportUnexpectedExit) => { commandRuntime.reportUnexpectedExitForTests = reportUnexpectedExit; return commandRuntime; });
 setMcpPortObserverForTests((port) => { commandRuntime.mcpPort = port; });
 setBuildCommitForTests('1111111111111111111111111111111111111111');
 
@@ -440,6 +440,128 @@ suite('Extension Development Host walkthrough', () => {
         await eventually(() => api.session, 'Retry should use a new producer session and turn');
         assert.deepEqual(commandRuntime.producerTurnCalls.slice(before).map((call) => call.kind), ['session', 'turn', 'events', 'session', 'turn', 'events']);
       } finally { commandRuntime.producerEventError = undefined; errorWindow.showErrorMessage = nativeError; }
+    }));
+  });
+
+  test('does not let a discarded start-failure retry select a later request', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      const warningWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeWarning = warningWindow.showWarningMessage;
+      const nativeError = errorWindow.showErrorMessage;
+      const selections: ((action: string) => void)[] = [];
+      warningWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      errorWindow.showErrorMessage = ((message: string, ...actions: string[]) => {
+        assert.equal(message, 'CodeAlongAI could not start the walkthrough.');
+        assert.deepEqual(actions, ['Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output']);
+        return new Promise<string>((resolve) => { selections.push(resolve); });
+      }) as unknown as typeof vscode.window.showErrorMessage;
+      try {
+        if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the walkthrough should reset'); }
+        commandRuntime.producerEventError = new Error('first request fails');
+        const before = commandRuntime.producerTurnCalls.length;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => selections.length === 1 ? true : undefined, 'the first failed Ask should offer its actions');
+        selections[0]('Discard request');
+        await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'Discard request should invalidate only the first request');
+        assert.equal(commandRuntime.producerTurnCalls.length, before + 3);
+
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => selections.length === 2 ? true : undefined, 'the later failed Ask should offer separate actions');
+        // The first notification's retry capability was discarded with its
+        // request. It must not be rebound to the later pending request.
+        const callsBeforeStaleRetry = commandRuntime.producerTurnCalls.length;
+        selections[0]('Retry walkthrough');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(commandRuntime.producerTurnCalls.length, callsBeforeStaleRetry);
+        assert.equal(api.session, undefined);
+        assert.equal(api.hasPendingWalkthroughRequest, true);
+        selections[1]('Discard request');
+        await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the later request should be discarded for test cleanup');
+      } finally {
+        commandRuntime.producerEventError = undefined;
+        warningWindow.showWarningMessage = nativeWarning;
+        errorWindow.showErrorMessage = nativeError;
+      }
+    }));
+  });
+
+  test('shows sanitized start failure output without retrying or changing its request', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      if (api.session) return;
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeError = errorWindow.showErrorMessage;
+      let discardAfterOutput: (() => void) | undefined;
+      const shown: boolean[] = [];
+      commandRuntime.producerEventError = new Error('output only failure');
+      setOutputShowObserverForTests((preserveFocus) => { shown.push(preserveFocus); });
+      errorWindow.showErrorMessage = (() => ({
+        then: (selected: (action: string) => unknown) => {
+          void selected('Show CodeAlongAI Output');
+          return new Promise<void>((resolve) => { discardAfterOutput = () => { void selected('Discard request'); resolve(); }; });
+        }
+      })) as unknown as typeof vscode.window.showErrorMessage;
+      try {
+        const before = commandRuntime.producerTurnCalls.length;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => shown.length === 1 ? true : undefined, 'Show CodeAlongAI Output should reveal the native output channel');
+        assert.deepEqual(shown, [true]);
+        assert.equal(commandRuntime.producerTurnCalls.length, before + 3);
+        assert.equal(api.session, undefined);
+        assert.equal(api.hasPendingWalkthroughRequest, true);
+        // Output is observation only; discard remains an explicit learner action.
+        discardAfterOutput!();
+        await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the output action should not prevent a later explicit discard');
+      } finally {
+        commandRuntime.producerEventError = undefined;
+        setOutputShowObserverForTests(undefined);
+        errorWindow.showErrorMessage = nativeError;
+      }
+    }));
+  });
+
+  test('a sidecar crash cancels the owned active turn without replaying it', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      if (api.session) return;
+      const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+      const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+      const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
+      const nativeError = errorWindow.showErrorMessage;
+      let discard: ((action: string) => void) | undefined;
+      errorWindow.showErrorMessage = (() => new Promise<string>((resolve) => { discard = resolve; })) as typeof vscode.window.showErrorMessage;
+      let release: (() => void) | undefined;
+      commandRuntime.producerEventWait = new Promise<void>((resolve) => { release = resolve; });
+      try {
+        const startsBefore = commandRuntime.calls.filter((call) => call.startsWith('start:')).length;
+        const turnsBefore = commandRuntime.producerTurnCalls.length;
+        const ask = vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        await eventually(() => commandRuntime.producerTurnCalls.length === turnsBefore + 3 ? true : undefined, 'the active Ask should own one producer turn');
+        commandRuntime.crashForTests();
+        release!();
+        await ask;
+        await eventually(() => discard ? true : undefined, 'the crashed turn should report a recoverable failure');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(commandRuntime.producerTurnCalls.length, turnsBefore + 3);
+        assert.equal(commandRuntime.calls.filter((call) => call.startsWith('start:')).length, startsBefore);
+        assert.equal(api.session, undefined);
+        assert.equal(api.hasPendingWalkthroughRequest, true);
+        discard!('Discard request');
+        await eventually(() => !api.hasPendingWalkthroughRequest ? true : undefined, 'the crashed request should remain explicitly discardable');
+      } finally {
+        release?.();
+        commandRuntime.producerEventWait = undefined;
+        errorWindow.showErrorMessage = nativeError;
+      }
     }));
   });
 

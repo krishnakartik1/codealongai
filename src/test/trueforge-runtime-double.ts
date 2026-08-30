@@ -29,6 +29,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   public producerCancelled = false;
   public producerEventError: Error | undefined;
   public mcpPort: number | undefined;
+  public reportUnexpectedExitForTests: ((message: string) => void) | undefined;
   private producerIdentity: TrueForgeProducerRuntime | undefined;
   public get producer(): TrueForgeProducerRuntime {
     const runtime = this;
@@ -60,6 +61,8 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
     return this.producerIdentity ??= producer;
   }
   public replaceProducerForTests(): void { this.producerIdentity = undefined; }
+  /** Simulates the owned child dying; the production callback decides recovery. */
+  public crashForTests(): void { this.reportUnexpectedExitForTests?.('TrueForge sidecar exited unexpectedly (code 1).'); }
   public async start(options: TrueForgeStartOptions): Promise<void> { this.calls.push(`start:${options.port}`); if (this.failStart) throw new Error('configured test sidecar failure'); }
   public async health(): Promise<boolean> { return this.healthy; }
   public async verifyCapability(): Promise<boolean> { return this.healthy; }

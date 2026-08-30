@@ -63,11 +63,21 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   controller.options = commentThreadOptions;
   let endpoint: LoopbackMcpEndpoint | undefined;
   const output = vscode.window.createOutputChannel('CodeAlongAI', { log: true });
+  const startTurnOwner = new StartTurnOwner();
+  let sidecarCrashedRequestId: string | undefined;
+  const reportUnexpectedSidecarExit = (message: string): void => {
+    output.error(message);
+    const activeRequestId = startTurnOwner.activeRequestId;
+    if (activeRequestId) {
+      sidecarCrashedRequestId = activeRequestId;
+      void startTurnOwner.cancel();
+    }
+  };
   const trueForge = new TrueForgeSidecar(
-    testRuntimeFactory?.((message) => output.error(message)) ?? new NativeTrueForgeRuntime(
+    testRuntimeFactory?.(reportUnexpectedSidecarExit) ?? new NativeTrueForgeRuntime(
       async (url) => vscode.env.openExternal(await vscode.env.asExternalUri(vscode.Uri.parse(url))),
       () => vscode.workspace.getConfiguration('codealongai.trueforge').get<string>('nodePath') || undefined,
-      (message) => output.error(message),
+      reportUnexpectedSidecarExit,
       { read: async () => context.globalState.get<{ sessionId: string; result: DaytonaProbeResult }>('codealongai.daytonaProbeResidual'), write: async (value) => { await context.globalState.update('codealongai.daytonaProbeResidual', value); } }
     ),
     context.globalStorageUri.fsPath
@@ -90,7 +100,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const replyTargetStopIds = new WeakMap<object, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
-  const startTurnOwner = new StartTurnOwner();
   let retryReplacement: (() => Promise<void>) | undefined;
   let retryReset: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
@@ -134,9 +143,10 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     return 'provider_error';
   };
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
+    const retry = retryStart;
     output.error(`Start turn failed (${phase}).`);
     void vscode.window.showErrorMessage('CodeAlongAI could not start the walkthrough.', 'Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output').then((action) => {
-      if (action === 'Retry walkthrough') void retryStart?.();
+      if (action === 'Retry walkthrough') void retry?.();
       if (action === 'Discard request' && authority.getPendingStart()?.id === requestId) { authority.discardStart(); clearStartRetry(); }
       if (action === 'Show CodeAlongAI Output') { testOutputShowObserver?.(true); output.show(true); }
     });
@@ -325,7 +335,9 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         clearStartRetry();
         await commitAuthorizedOrigin();
       };
-      showStartFailure(failedRequestId, startFailurePhase(error));
+      const phase = sidecarCrashedRequestId === failedRequestId ? 'sidecar_crash' : startFailurePhase(error);
+      if (sidecarCrashedRequestId === failedRequestId) sidecarCrashedRequestId = undefined;
+      showStartFailure(failedRequestId, phase);
         return undefined;
       }
     };
