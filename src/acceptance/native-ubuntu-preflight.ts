@@ -63,8 +63,8 @@ export async function localSandboxRuntimeDirectoryCount(store: string): Promise<
   return count;
 }
 
-export interface NativeReadinessFacts { readonly provider: 'daytona'; readonly phases: readonly string[]; readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly ownership: boolean; readonly probeCleaned: boolean; }
-/** Whitelist-only readiness evidence; rejects missing selected provider, build pin, connector, ownership, or cleanup. */
+export interface NativeReadinessFacts { readonly skillCommit: string; readonly connectorDiscovered: boolean; readonly ownership: boolean; }
+/** Whitelist-only configuration evidence. Sandbox evidence comes from actual producer turns. */
 export function validNativeReadinessFacts(facts: NativeReadinessFacts, buildCommit: string): boolean {
-  return facts.provider === 'daytona' && facts.phases.includes('snapshots') && facts.phases.includes('sandboxes') && facts.phases.includes('ready') && facts.skillCommit === buildCommit && /^[0-9a-f]{40}$/i.test(facts.skillCommit) && facts.connectorDiscovered && facts.ownership && facts.probeCleaned;
+  return facts.skillCommit === buildCommit && /^[0-9a-f]{40}$/i.test(facts.skillCommit) && facts.connectorDiscovered && facts.ownership;
 }

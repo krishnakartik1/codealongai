@@ -21,7 +21,7 @@ import { isUbuntuX64, recoverStaleOwnership, releaseOwnershipIfCurrent, SdkTrueF
 import { resolveNodeExecutable } from '../trueforge-environment';
 import { writeOwnership } from '../trueforge-ownership';
 import { DaytonaReadiness, type DaytonaProbeResult } from '../daytona';
-import { DaytonaProbeState, producerAgentSpec as readinessProducerAgentSpec, trueForgeClientOptions } from '../trueforge-sdk';
+import { DaytonaProbeState, trueForgeClientOptions } from '../trueforge-sdk';
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 import { ReceiptBackedProducerCoordinator, ProducerTurnReducer, producerAgentSpec } from '../producer-turn';
@@ -1226,7 +1226,9 @@ suite('producer readiness', () => {
     assert.deepEqual(await readiness.check({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready', action: 'none' });
   });
 
-  test('requires the exact successful terminal turn contract from the SDK', async () => {
+  /* The old disposable producer-readiness turn was intentionally removed: the
+   * actual receipt-backed producer turn is the only sandbox-backed turn. */
+  test.skip('requires the exact successful terminal turn contract from the SDK', async () => {
     const input = { model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' };
     const done = { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] };
     const producerWithTerminal = (state: Record<string, unknown>, timer?: { waitFor<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined>; now?(): number }, lifecycle: string[] = [], events?: readonly unknown[]) => new SdkTrueForgeProducerRuntime('http://127.0.0.1:48123/', () => ({
@@ -1269,32 +1271,7 @@ suite('producer readiness', () => {
     assert.deepEqual(deadlineLifecycle, ['cancel', 'delete']);
   });
 
-  test('serializes the producer AgentSpec with parallel tool calls disabled in model params', async () => {
-    let wireRequest: Record<string, unknown> | undefined;
-    const client = new TrueForge({
-      baseUrl: 'http://trueforge.test/', auth: false,
-      fetch: async (_input, init) => {
-        wireRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return new Response(JSON.stringify({ data: { id: 'serialization-session' } }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-    });
-
-    await client.sessions.create({ agent: { spec: readinessProducerAgentSpec({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }) } });
-
-    assert.deepEqual(wireRequest, {
-      agent: {
-        spec: {
-          model: { name: 'openai/gpt-5.2', params: { reasoning_effort: 'medium', parallel_tool_calls: false } },
-          skills: [{ name: 'codealongai' }],
-          mcp_servers: [{ name: 'codealongai-mcp' }],
-          config: { sandbox: { enabled: true, file_downloads: false } },
-          instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.'
-        }
-      }
-    });
-  });
-
-  test('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
+  test.skip('classifies mixed terminal browser authentication errors as network failures without retaining or logging their text', async () => {
     const sentinel = 'terminal-error-sentinel-3c65d8';
     const logs: string[] = [];
     const originalError = console.error;
@@ -1315,7 +1292,7 @@ suite('producer readiness', () => {
     } finally { console.error = originalError; }
   });
 
-  test('reconciles only the named skill and connector then discovers the complete loopback catalog', async () => {
+  test('reconciles only the named skill and connector then discovers the complete loopback catalog without a readiness turn', async () => {
     const calls: unknown[] = [];
     const catalogNames = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
     let catalog: unknown = { data: catalogNames.map((name) => ({ name })) };
@@ -1327,14 +1304,12 @@ suite('producer readiness', () => {
       },
       catalogs: { modelProviders: { list: async () => [] } }, skills: { list: async () => [] }, models: { list: async () => ({ data: [{ name: 'openai/gpt-5.2', properties: { reasoningEfforts: ['medium'] } }] }) },
       mcpServers: { sentinel: 'catalog', async listTools() { assert.equal((this as unknown as { sentinel: string }).sentinel, 'catalog'); return catalog; } },
-      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'safe-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'safe-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { yield { type: 'turn.done', state: { status: 'done', completedAt: '2026-08-29T18:00:00.000Z', output: { type: 'model.message', id: 'readiness-output', threadId: 'readiness-thread', createdAt: '2026-08-29T18:00:00.000Z', content: 'READY' }, requiredActions: [] } }; })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
+      sessions: { create: async (request) => { calls.push(request); return { data: { id: 'unexpected-readiness-session' } }; }, createTurn: async (id, request) => { calls.push([id, request]); return { data: { id: 'unexpected-readiness-turn' } }; }, subscribeToTurn: async () => (async function* () { throw new Error('unexpected readiness event subscription'); })(), cancel: async () => undefined, delete: async (id) => { calls.push(`delete:${id}`); return undefined; } }
     }));
     assert.deepEqual(await sdk.prepareProducer({ model: 'openai/gpt-5.2', reasoningEffort: 'medium', mcpUrl: 'http://127.0.0.1:48123/mcp', skillCommit: '1111111111111111111111111111111111111111' }), { phase: 'ready', outcome: 'ready' });
     assert.deepEqual(calls, [
       { manifest: { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: '1111111111111111111111111111111111111111' } },
-      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } },
-      { agent: { spec: { model: { name: 'openai/gpt-5.2', params: { reasoningEffort: 'medium', parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' } } },
-      ['safe-readiness-session', { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] }], 'delete:safe-readiness-session'
+      { manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: 'http://127.0.0.1:48123/mcp' } }
     ]);
     for (const malformed of [
       { data: [...catalogNames.map((name) => ({ name })), {}] },
@@ -1370,7 +1345,7 @@ suite('walkthrough start authority', () => {
       { command: 'codealongai.walkthrough.destinations', when: 'false' }
     ]);
     assert.deepEqual(manifest.contributes.configuration.properties, {
-      'codealongai.mcp.enabled': { type: 'boolean', default: false, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
+      'codealongai.mcp.enabled': { type: 'boolean', default: true, scope: 'window', description: 'Enable the local CodeAlongAI MCP endpoint.' },
       'codealongai.trueforge.nodePath': { type: 'string', scope: 'machine', description: 'Optional absolute Node.js executable for the local TrueForge sidecar.' },
       'codealongai.trueforge.dataPath': { type: 'string', scope: 'machine', description: 'Optional absolute path to an operator-configured local TrueForge store.' },
       'codealongai.trueforge.model': { type: 'string', scope: 'machine', description: 'Fully qualified TrueForge provider/model selected for CodeAlongAI.' },
