@@ -890,17 +890,18 @@ suite('TrueForge setup sidecar', () => {
       catalogs: { modelProviders: { list: async () => { calls.push('catalog-providers'); return 'catalog'; } } },
       models: { list: async () => { calls.push('models'); return 'models'; } }, skills: { list: async () => { calls.push('skills'); return 'skills'; } },
       sessions: {
-        create: async (input, options) => { calls.push(['create', input, options]); return 'session'; }, createTurn: async (id, input) => { calls.push(['turn', id, input]); return 'turn'; },
-        subscribeToTurn: async (id, turn) => { calls.push(['events', id, turn]); return (async function* () { yield 'event'; })(); }, cancel: async (id, request, options) => { calls.push(['cancel', id, request, options]); return undefined; }, delete: async (id, options) => { calls.push(['delete', id, options]); return undefined; }
+        create: async (input, options) => { calls.push(['create', input, options]); return 'session'; }, createTurn: async (id, input, options) => { calls.push(['turn', id, input, options]); return 'turn'; },
+        subscribeToTurn: async (id, turn, request, options) => { calls.push(['events', id, turn, request, options]); return (async function* () { yield 'event'; })(); }, listTurnEvents: async (id, turn, request, options) => { calls.push(['history', id, turn, request, options]); return { data: ['persisted'] }; }, cancel: async (id, request, options) => { calls.push(['cancel', id, request, options]); return undefined; }, delete: async (id, options) => { calls.push(['delete', id, options]); return undefined; }
       }
     }));
     assert.deepEqual(await sdk.discoverConfiguration(), ['providers', 'skills', 'sandbox']);
     assert.equal(await sdk.discoverProviders(), 'catalog'); assert.equal(await sdk.discoverModels(), 'models'); assert.equal(await sdk.discoverSkills(), 'skills');
-    assert.equal(await sdk.createSession({ agentId: 'a' }, requestOptions), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' } }), 'turn');
-    const events: unknown[] = []; for await (const event of sdk.events('s', 't')) events.push(event);
+    assert.equal(await sdk.createSession({ agentId: 'a' }, requestOptions), 'session'); assert.equal(await sdk.runTurn({ sessionId: 's', request: { text: 'x' }, options: requestOptions }), 'turn');
+    const events: unknown[] = []; for await (const event of sdk.events('s', 't', 4, requestOptions)) events.push(event);
+    assert.deepEqual(await sdk.listTurnEvents('s', 't', requestOptions), ['persisted']);
     await sdk.cancelTurn('s', requestOptions); await sdk.deleteSession('s', requestOptions);
     assert.deepEqual(events, ['event']);
-    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }, requestOptions], ['turn', 's', { text: 'x' }], ['events', 's', 't'], ['cancel', 's', undefined, requestOptions], ['delete', 's', requestOptions]]);
+    assert.deepEqual(calls, [['http://127.0.0.1:48123/', 'configured-providers'], 'configured-skills', 'configured-sandbox', 'catalog-providers', 'models', 'skills', ['create', { agentId: 'a' }, requestOptions], ['turn', 's', { text: 'x' }, requestOptions], ['events', 's', 't', { afterSequenceNumber: 4 }, requestOptions], ['history', 's', 't', { order: 'asc', limit: 100 }, requestOptions], ['cancel', 's', undefined, requestOptions], ['delete', 's', requestOptions]]);
   });
   test('preserves pinned SSE numeric ids and resume cursor at the producer boundary', async () => {
     const cursors: (number | undefined)[] = [];
@@ -1550,13 +1551,14 @@ suite('receipt-backed start producer turn', () => {
     assert.equal(authority.rollbackTentativeStart(accepted), false);
     assert.deepEqual(authority.getSession(), retry);
   });
-  test('owns one active turn without queueing duplicates and cancels it on disposal', async () => {
+  test('dedupes one request, rejects a different request as busy, and cancels on disposal', async () => {
     let cancelCalls = 0;
     const pending = new Promise<never>(() => undefined);
     let started: (() => void) | undefined; const startedSession = new Promise<void>((resolve) => { started = resolve; });
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { started!(); return { id: 'session' }; }, runTurn: async () => ({ id: 'turn' }), events: async function* () { await pending; }, cancelTurn: async () => { cancelCalls += 1; } };
     const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
-    assert.equal(owner.start(runtime, input), owner.start(runtime, { ...input, requestId: 'request-2' }));
+    assert.equal(owner.start(runtime, input), owner.start(runtime, input));
+    assert.deepEqual(await owner.start(runtime, { ...input, requestId: 'request-2' }), { status: 'failed', diagnostic: 'start_busy' });
     await startedSession; await new Promise<void>((resolve) => setImmediate(resolve)); await owner.dispose();
     assert.equal(cancelCalls, 1);
   });
@@ -1570,7 +1572,7 @@ suite('receipt-backed start producer turn', () => {
     const first = owner.start(runtimeA, input);
     await new Promise<void>((resolve) => setImmediate(resolve));
     await owner.cancel();
-    assert.equal(owner.start(runtimeB, { ...input, requestId: 'request-2' }), first);
+    assert.deepEqual(await owner.start(runtimeB, { ...input, requestId: 'request-2' }), { status: 'failed', diagnostic: 'start_busy' });
     assert.equal(aSessions, 1); assert.equal(bSessions, 0); await eventually(() => cancelled === 1 ? true : undefined, 'native cancellation should begin');
     release!();
     await first;
@@ -1868,7 +1870,7 @@ suite('workspace context over loopback MCP', () => {
       assert.deepEqual(read.structuredContent, { schemaVersion: 1, path: 'src/draft.ts', startLine: 0, endLine: 2, text: 'const draft = true;\n', dirty: true, documentVersion: 3 });
       const rejected = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: '../secret.ts' } });
       assert.equal(rejected.isError, true);
-      assert.deepEqual(rejected.structuredContent, { schemaVersion: 1, code: 'path_outside_workspace', message: 'The requested workspace file is unavailable.', retryable: false });
+      assert.deepEqual(rejected.structuredContent, { schemaVersion: 1, code: 'path_invalid', message: 'The requested workspace file is unavailable.', retryable: false });
       const invalidRange = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: 'src/draft.ts', startLine: 3, endLine: 4 } });
       assert.deepEqual(invalidRange.structuredContent, { schemaVersion: 1, code: 'range_invalid', message: 'The requested line interval is invalid.', retryable: false });
       for (const arguments_ of [

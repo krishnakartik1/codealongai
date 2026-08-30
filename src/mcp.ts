@@ -232,7 +232,11 @@ export class LoopbackMcpEndpoint {
       const structuredContent: Record<string, unknown> = { schemaVersion: 1, ...(result as object) };
       return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
     } catch (error) {
-      const code = error instanceof WorkspaceError ? error.code : 'internal_error';
+      // The public producer boundary deliberately collapses filesystem detail:
+      // malformed, traversing, absent, unreadable and unsupported paths are
+      // one non-retryable input error, never provider prose.
+      const rawCode = error instanceof WorkspaceError ? error.code : 'internal_error';
+      const code = rawCode === 'path_outside_workspace' || rawCode === 'file_unsupported' || rawCode === 'file_too_large' ? 'path_invalid' : rawCode;
       return domainErrorResult(code, code === 'workspace_unavailable' ? 'Exactly one workspace folder is required.' : code === 'range_invalid' ? 'The requested line interval is invalid.' : 'The requested workspace file is unavailable.', code === 'workspace_unavailable' || code === 'internal_error');
     }
   }

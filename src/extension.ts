@@ -331,7 +331,12 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       retryStart = async () => {
         // A retry is an ephemeral capability for precisely this still-pending
         // request. It never revives a completed, discarded, or replaced turn.
-        if (authority.getSession() || authority.getPendingStart()?.id !== failedRequestId || startTurnOwner.activeRequestId !== undefined) return;
+        if (authority.getSession() || authority.getPendingStart()?.id !== failedRequestId) return;
+        // The old producer can still be cancelling when the user selects
+        // Retry. Keep its exact request leased through cleanup, then start
+        // exactly that immutable request rather than capturing a new Ask.
+        await startTurnOwner.settled?.catch(() => undefined);
+        if (authority.getSession() || authority.getPendingStart()?.id !== failedRequestId) return;
         clearStartRetry();
         await commitAuthorizedOrigin();
       };

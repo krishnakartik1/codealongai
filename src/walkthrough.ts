@@ -55,7 +55,7 @@ export class WalkthroughAuthority {
   private readonly resetRequests = new Map<string, ResetRequest>();
   private readonly sessionReceipts = new Map<string, SessionReceipt>();
   private session: WalkthroughSession | undefined;
-  public captureStart(origin: OriginAnchor): StartRequest { const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; return this.getStartRequest(request.id)!; }
+  public captureStart(origin: OriginAnchor): StartRequest { if (this.startRequest?.status === 'pending') return this.getStartRequest(this.startRequest.id)!; const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; return this.getStartRequest(request.id)!; }
   public getStartRequest(id: string): StartRequest | undefined { const request = this.startRequest?.id === id ? this.startRequest : undefined; return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, origin: copyAnchor(request.snapshot.origin) } }; }
   public getSession(): WalkthroughSession | undefined { return this.session && copySession(this.session); }
   public getPendingStart(): StartRequest | undefined { return this.startRequest?.status === 'pending' ? this.getStartRequest(this.startRequest.id) : undefined; }

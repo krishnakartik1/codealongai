@@ -19,7 +19,7 @@ export interface TrueForgeRuntime {
   readonly producer: TrueForgeProducerRuntime;
 }
 
-export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; }
+export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; readonly options?: TrueForgeRequestOptions; }
 export interface TrueForgeRequestOptions { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number; }
 
 /** Safe, credentials-free producer configuration supplied by the extension. */
@@ -41,9 +41,9 @@ export interface TrueForgeProducerRuntime {
   createSession(sessionRequest: unknown, options?: TrueForgeRequestOptions): Promise<unknown>;
   runTurn(input: TrueForgeTurnRequest): Promise<unknown>;
   /** Live events resume exclusively after this persisted SSE sequence number. */
-  events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown>;
+  events(sessionId: string, turnId: string, afterSequenceNumber?: number, options?: TrueForgeRequestOptions): AsyncIterable<unknown>;
   /** Persisted turn events reconcile a one-time stream interruption. */
-  listTurnEvents(sessionId: string, turnId: string): Promise<readonly unknown[]>;
+  listTurnEvents(sessionId: string, turnId: string, options?: TrueForgeRequestOptions): Promise<readonly unknown[]>;
   cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void>;
   deleteSession(sessionId: string, options?: TrueForgeRequestOptions): Promise<void>;
   /** Creates and disposes a credential-free, provider-backed readiness probe. */
