@@ -10,10 +10,11 @@ const schemaVersion = z.literal(1);
 const pathInput = z.object({ schemaVersion, path: z.unknown().optional(), startLine: z.unknown().optional(), endLine: z.unknown().optional() }).strict();
 const position = z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict();
 const range = z.object({ start: position, end: position }).strict();
+const originDocument = z.string().min(1).describe('Workspace-relative path copied exactly from the authorized request input.origin.path; never source text.');
 const addedStop = z.object({ id: z.string().min(1), displayName: z.string().min(1), explanationMarkdown: z.string(), path: z.string().min(1), range, destinationIds: z.array(z.string().min(1)), recommendedNextId: z.string().min(1).optional(), backId: z.string().min(1).optional() }).strict();
 const graphPatch = z.object({ addedStops: z.array(addedStop), appendedDestinations: z.array(z.object({ sourceStopId: z.string().min(1), destinationIds: z.array(z.string().min(1)) }).strict()), recommendedNextUpdates: z.array(z.object({ sourceStopId: z.string().min(1), targetStopId: z.string().min(1) }).strict()) }).strict();
 const questionOutcome = z.discriminatedUnion('kind', [z.object({ kind: z.literal('explanation-only'), answerMarkdown: z.string() }).strict(), z.object({ kind: z.literal('destination-offer'), answerMarkdown: z.string(), destinationIds: z.array(z.string().min(1)) }).strict(), z.object({ kind: z.literal('generated-walkthrough'), answerMarkdown: z.string(), patch: graphPatch }).strict(), z.object({ kind: z.literal('explicit-unsupported'), answerMarkdown: z.string() }).strict()]);
-const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range }).strict();
+const originDescriptor = z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range }).strict();
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const unavailableWorkspace: WorkspaceSource = { workspaceFolderCount: () => 0, listFiles: async () => [], readFile: async (path) => ({ path, dirty: false, failure: 'file_unsupported' }) };
 const maxRequestBytes = 1024 * 1024;
@@ -88,7 +89,7 @@ export class LoopbackMcpEndpoint {
     }));
     server.registerTool('codealongai_start_walkthrough', {
       description: 'Commit an authorized origin-only walkthrough.',
-      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: z.string().min(1), range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+      inputSchema: z.object({ schemaVersion, requestId: z.string(), origin: z.object({ stopId: z.string().min(1), displayName: z.string().min(1), explanation: z.string(), document: originDocument, range: z.object({ start: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict(), end: z.object({ line: z.number().int().nonnegative(), character: z.number().int().nonnegative() }).strict() }).strict() }).strict() }).strict(), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     }, (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
