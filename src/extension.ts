@@ -18,6 +18,7 @@ let testReadinessActionSelector: ((actions: readonly string[]) => Promise<string
 let testReadinessSelectorGeneration = 0;
 let testEnvironment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined;
 let testMcpPortObserver: ((port: number) => void) | undefined;
+let testOutputShowObserver: ((preserveFocus: boolean) => void) | undefined;
 
 /** Test harness registration only; production never calls this. */
 export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined): void { testRuntimeFactory = factory; }
@@ -25,6 +26,8 @@ export function setTrueForgeRuntimeForTests(factory: ((reportUnexpectedExit: (me
 export function setTrueForgeEnvironmentForTests(environment: { isUbuntuX64(): Promise<boolean>; resolveNodeExecutable(configured?: string): Promise<string> } | undefined): void { testEnvironment = environment; }
 /** Test-only loopback endpoint observation; production has no runtime URL seam. */
 export function setMcpPortObserverForTests(observer: ((port: number) => void) | undefined): void { testMcpPortObserver = observer; }
+/** Test-only observation of the user-selected Output action. */
+export function setOutputShowObserverForTests(observer: ((preserveFocus: boolean) => void) | undefined): void { testOutputShowObserver = observer; }
 /** Test-only notification seam; production always uses VS Code's notification UI. */
 export function setReadinessActionSelectorForTests(selector: ((actions: readonly string[]) => Promise<string | undefined>) | undefined): void { testReadinessActionSelector = selector; testReadinessSelectorGeneration += 1; }
 /** Exercises the same test-only notification selector and ephemeral retry dispatch used by the reporter. */
@@ -135,7 +138,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     void vscode.window.showErrorMessage('CodeAlongAI could not start the walkthrough.', 'Retry walkthrough', 'Discard request', 'Show CodeAlongAI Output').then((action) => {
       if (action === 'Retry walkthrough') void retryStart?.();
       if (action === 'Discard request' && authority.getPendingStart()?.id === requestId) { authority.discardStart(); clearStartRetry(); }
-      if (action === 'Show CodeAlongAI Output') output.show(true);
+      if (action === 'Show CodeAlongAI Output') { testOutputShowObserver?.(true); output.show(true); }
     });
   };
   const updateEndpoint = async (): Promise<void> => {
