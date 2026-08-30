@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { z } from 'zod';
-import type { NavigationDirection, OriginDescriptor, QuestionCommit, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
+import type { NavigationDirection, OriginDescriptor, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
 import { WorkspaceError, WorkspaceReader, type WorkspaceSource } from './workspace';
 
 const schemaVersion = z.literal(1);
@@ -127,6 +127,9 @@ export class LoopbackMcpEndpoint {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
         if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor({ path: stop.path, range: stop.range })));
+        // Validation can suspend. The same HTTP attempt must still own the
+        // transition at the point we stage its receipt-backed candidate.
+        if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
@@ -332,22 +335,8 @@ function domainErrorResult(code: string, message: string, retryable: boolean): {
   return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
 }
 
-/** The model-free producer uses the same public transport a future producer will use. */
-export async function commitDeterministicOrigin(port: number, requestId: string, origin: OriginDescriptor): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized start request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_start_walkthrough', arguments: { schemaVersion: 1, requestId, origin } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally {
-    await transport.close();
-  }
-}
-
-/** The deterministic producer replaces through the same strict MCP boundary as an external producer. */
+/** Replacement remains an extension-owned deterministic adapter. Reply never
+ * has this production fixture path. */
 export async function commitDeterministicReplacement(port: number, requestId: string, expectedSessionId: string, expectedRevision: number, origin: OriginDescriptor): Promise<void> {
   const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
@@ -356,19 +345,6 @@ export async function commitDeterministicReplacement(port: number, requestId: st
     const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
     if (request.isError || request.structuredContent === null) throw new Error('the authorized replacement request is unavailable');
     const result = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId, expectedSessionId, expectedRevision, origin } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally { await transport.close(); }
-}
-
-/** The deterministic question producer exercises the same loopback command boundary. */
-export async function commitDeterministicQuestion(port: number, commit: QuestionCommit, outcome: QuestionOutcome): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId: commit.requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized question request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: commit.requestId, expectedSessionId: commit.sessionId, expectedRevision: commit.revision, outcome } });
     if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
   } finally { await transport.close(); }
 }

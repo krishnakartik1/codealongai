@@ -383,6 +383,13 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const session = authority.getSession();
     if (!session) return;
     const pending = authority.getPendingQuestion() ?? retryQuestionRequest;
+    const showPendingQuestion = (request: NonNullable<typeof pending>): void => {
+      void vscode.window.showWarningMessage('Finish or discard the pending CodeAlongAI question before submitting another.', 'Retry question', 'Discard question', 'Show CodeAlongAI Output').then((action) => {
+        if (action === 'Retry question') void retryQuestion?.();
+        if (action === 'Discard question') discardQuestion(request.id);
+        if (action === 'Show CodeAlongAI Output') { testOutputShowObserver?.(true); output.show(true); }
+      });
+    };
     if (!mcpReady()) {
       if (pending) void vscode.window.showWarningMessage('CodeAlongAI needs its MCP endpoint to finish the pending question.', 'Enable MCP', 'Discard question').then((action) => {
         if (action === 'Enable MCP') void vscode.commands.executeCommand('workbench.action.openSettings', 'codealongai.mcp.enabled');
@@ -391,10 +398,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return;
     }
     if (pending && (pending.sourceStopId !== sourceStopId || pending.text !== text)) {
-      void vscode.window.showWarningMessage('Finish or discard the pending CodeAlongAI question before submitting another.', 'Retry question', 'Discard question').then((action) => {
-        if (action === 'Retry question') void retryQuestion?.();
-        if (action === 'Discard question') discardQuestion(pending.id);
-      });
+      showPendingQuestion(pending);
       return;
     }
     if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
@@ -407,7 +411,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       const current = authority.getSession();
       const currentSourceStopId = threadStopIds.get(reply.thread) ?? replyTargetStopIds.get(reply.thread);
       const existing = authority.getPendingQuestion() ?? retryQuestionRequest;
-      if (existing) { if (existing.sourceStopId !== sourceStopId || existing.text !== text) return; request = existing; }
+      if (existing) { if (existing.sourceStopId !== sourceStopId || existing.text !== text) { showPendingQuestion(existing); return; } request = existing; }
       else if (!current || current.id !== session.id || current.revision !== session.revision || currentSourceStopId !== sourceStopId || !current.stops.some((stop) => stop.id === sourceStopId)) return;
       else { try { request = authority.captureQuestion(sourceStopId, text, snapshot); } catch { return; } }
     }
