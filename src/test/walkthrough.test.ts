@@ -1469,34 +1469,46 @@ suite('receipt-backed start producer turn', () => {
     await owner.start(runtimeB, { ...input, requestId: 'request-2' });
     assert.equal(bSessions, 1);
   });
-  test('cancels a creating session before any turn and deletes its late result', async () => {
+  test('retains a cancelled creating session until it is deleted before shutdown', async () => {
     let resolveSession: ((value: { id: string }) => void) | undefined;
     let turns = 0; const deleted: string[] = [];
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => new Promise<{ id: string }>((resolve) => { resolveSession = resolve; }), runTurn: async () => { turns += 1; return { id: 'turn' }; }, deleteSession: async (id) => { deleted.push(id); } };
     const owner = new StartTurnOwner();
     const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => resolveSession ? true : undefined, 'session creation should begin');
-    await owner.cancel();
-    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    const disposing = owner.dispose();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(owner.activeRequestId, 'request-1');
     resolveSession!({ id: 'late-session' });
+    await disposing;
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
     await eventually(() => deleted.length === 1 ? true : undefined, 'a late session must be deleted after cancellation');
     assert.deepEqual(deleted, ['late-session']);
     assert.equal(turns, 0);
+    assert.equal(owner.activeRequestId, undefined);
   });
-  test('disposes an unresolved turn before allowing runtime shutdown', async () => {
+  test('waits for the one native cancellation before deletion and runtime shutdown', async () => {
     const calls: string[] = [];
     const never = new Promise<never>(() => undefined);
     let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
-    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await never; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    let resolveCancel: (() => void) | undefined;
+    const nativeCancel = new Promise<void>((resolve) => { resolveCancel = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await never; }, cancelTurn: async () => { calls.push('cancel'); await nativeCancel; }, deleteSession: async () => { calls.push('delete'); } };
     const owner = new StartTurnOwner();
     owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
     await eventually(() => owner.activeRequestId === 'request-1' ? true : undefined, 'the owner should retain the active turn');
     await enteredEvents;
-    await owner.dispose();
+    const disposing = owner.dispose();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, ['cancel']);
+    assert.equal(owner.activeRequestId, 'request-1');
+    calls.push('runtime-shutdown-attempt');
+    assert.deepEqual(calls, ['cancel', 'runtime-shutdown-attempt']);
+    resolveCancel!();
+    await disposing;
     assert.equal(owner.activeRequestId, undefined);
     calls.push('runtime-shutdown');
-    assert.equal(calls.includes('cancel'), true);
-    assert.deepEqual(calls.slice(-2), ['delete', 'runtime-shutdown']);
+    assert.deepEqual(calls, ['cancel', 'runtime-shutdown-attempt', 'delete', 'runtime-shutdown']);
   });
   test('disables pinned SDK request retries and stream reconnects at client construction', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
@@ -1607,6 +1619,18 @@ suite('receipt-backed start producer turn', () => {
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield { sequenceNumber: 1, event: { type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 2, event: { type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }) } }; yield { sequenceNumber: 3, event: { type: 'model.message', id: 'start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 4, event: { type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) } }; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
     assert.equal((await new ReceiptBackedStartCoordinator(runtime, 100_000, async (ms) => { grace.push(ms); }).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' })).status, 'committed');
     assert.deepEqual(grace, [5_000]); assert.deepEqual(calls, ['cancel', 'delete']);
+  });
+  test('cancels an in-progress receipt grace before cleanup', async () => {
+    const calls: string[] = [];
+    let enteredGrace: (() => void) | undefined; const graceEntered = new Promise<void>((resolve) => { enteredGrace = resolve; });
+    let resolveGrace: (() => void) | undefined; const graceReleased = new Promise<void>((resolve) => { resolveGrace = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield { sequenceNumber: 1, event: { type: 'model.message', id: 'authority', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'authority', type: 'function', function: { name: 'codealongai_get_walkthrough_request', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 2, event: { type: 'tool.response', id: 'authority-result', threadId: 'main', createdAt: 'now', toolCallId: 'authority', content: JSON.stringify({ input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }) } }; yield { sequenceNumber: 3, event: { type: 'model.message', id: 'start', threadId: 'main', createdAt: 'now', toolCalls: [{ id: 'start', type: 'function', function: { name: 'codealongai_start_walkthrough', arguments: JSON.stringify({ requestId: 'request-1' }) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } }; yield { sequenceNumber: 4, event: { type: 'tool.response', id: 'receipt', threadId: 'main', createdAt: 'now', toolCallId: 'start', content: JSON.stringify({ schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' }) } }; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    const coordinator = new ReceiptBackedStartCoordinator(runtime, 100_000, async (_ms, signal) => { enteredGrace!(); signal?.addEventListener('abort', () => resolveGrace!(), { once: true }); await graceReleased; });
+    const operation = coordinator.start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await graceEntered;
+    coordinator.cancel();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    assert.deepEqual(calls, ['cancel', 'delete']);
   });
 
   test('creates a capability-minimal Daytona agent spec with a selected skill', () => {

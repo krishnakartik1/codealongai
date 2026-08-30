@@ -89,7 +89,9 @@ export class ReceiptBackedStartCoordinator {
   private cancelled = false;
   private cancelWaiter: (() => void) | undefined;
   private readonly cancelledSignal = new Promise<void>((resolve) => { this.cancelWaiter = resolve; });
-  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number) => Promise<void> = gracePeriod) {}
+  private readonly abort = new AbortController();
+  private nativeCancel: Promise<void> | undefined;
+  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number, signal?: AbortSignal) => Promise<void> = gracePeriod) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
     const operation = this.run(input); this.active = operation;
@@ -101,7 +103,8 @@ export class ReceiptBackedStartCoordinator {
     if (this.cancelled) return;
     this.cancelled = true;
     this.cancelWaiter?.();
-    if (this.activeSessionId) void this.runtime.cancelTurn(this.activeSessionId).catch(() => undefined);
+    this.abort.abort();
+    if (this.activeSessionId) this.requestNativeCancel(this.activeSessionId);
   }
   private async run(input: StartTurnInput): Promise<StartTurnResult> {
     let sessionId: string | undefined;
@@ -110,9 +113,15 @@ export class ReceiptBackedStartCoordinator {
       const creating = this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } });
       const session = await beforeDeadline(creating, deadline, this.cancelledSignal);
       if (!session.completed) {
-        // A timed-out create may still succeed after the caller has gone away.
-        // Dispose that late session without retaining it in extension memory.
-        void creating.then((value) => { const lateId = idOf(value); return lateId ? this.runtime.deleteSession(lateId).catch(() => undefined) : undefined; }).catch(() => undefined);
+        if (session.cancelled) {
+          // Cancellation may not detach a session creation: retain ownership
+          // until it materializes (or the same absolute deadline expires).
+          const cancelledCreation = await beforeDeadline(creating, deadline);
+          if (cancelledCreation.completed) {
+            sessionId = idOf(cancelledCreation.value);
+            this.activeSessionId = sessionId;
+          }
+        }
         return { status: 'failed', diagnostic: session.cancelled ? 'cancelled' : 'deadline_exceeded' };
       }
       sessionId = idOf(session.value); this.activeSessionId = sessionId;
@@ -171,18 +180,30 @@ export class ReceiptBackedStartCoordinator {
           }
         }
       }
-      if (receipt) { await this.waitForGrace(Math.min(5_000, Math.max(0, deadline - Date.now()))); return receipt; }
+      if (receipt) {
+        const grace = await beforeDeadline(this.waitForGrace(Math.min(5_000, Math.max(0, deadline - Date.now())), this.abort.signal), deadline, this.cancelledSignal);
+        if (!grace.completed) return { status: 'failed', diagnostic: grace.cancelled ? 'cancelled' : 'deadline_exceeded' };
+        if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
+        return receipt;
+      }
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
     finally {
       this.activeSessionId = undefined;
       if (sessionId) {
-        // Start each best-effort cleanup action, but never let cleanup extend the
-        // request's absolute deadline or retain the coordinator indefinitely.
-        if (!this.cancelled) await beforeDeadline(this.runtime.cancelTurn(sessionId).catch(() => undefined), deadline);
+        // A session is never deleted while its one native cancellation is in
+        // flight. Owner disposal therefore cannot stop its runtime early.
+        const cancellation = this.requestNativeCancel(sessionId);
+        const cancelledWithinDeadline = await beforeDeadline(cancellation, deadline);
+        // If a provider ignores the deadline, keep ownership rather than
+        // deleting under its in-flight cancellation.
+        if (!cancelledWithinDeadline.completed) await cancellation;
         await beforeDeadline(this.runtime.deleteSession(sessionId).catch(() => undefined), deadline);
       }
     }
+  }
+  private requestNativeCancel(sessionId: string): Promise<void> {
+    return this.nativeCancel ??= this.runtime.cancelTurn(sessionId).catch(() => undefined);
   }
 }
 
@@ -217,7 +238,15 @@ function authorizedOrigin(value: unknown): { path: string; startLine: number; en
 function finite(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
 function eventEnvelope(value: unknown): { sequence: number | undefined; event: unknown } { const record = object(value); const sequence = finite(record?.sequenceNumber ?? record?.sequence_number ?? record?.sequence); return { sequence, event: object(record?.event) ?? value }; }
 function terminalState(value: unknown): 'done' | 'failed' | undefined { const record = object(value); if (record?.type !== 'turn.done') return undefined; const state = object(record.state); return state?.status === 'done' ? 'done' : 'failed'; }
-async function gracePeriod(milliseconds: number): Promise<void> { if (milliseconds <= 0) return; await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)); }
+async function gracePeriod(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (milliseconds <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (): void => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve(); };
+    timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
+}
 function jsonValue(value: string): unknown { try { return JSON.parse(value); } catch { return undefined; } }
 function jsonObject(value: unknown): Record<string, unknown> | undefined { return typeof value === 'string' ? object(jsonValue(value)) : object(value); }
 async function beforeDeadline<T>(operation: Promise<T>, deadline: number, cancelled?: Promise<void>): Promise<{ completed: true; value: T } | { completed: false; cancelled: boolean }> {
