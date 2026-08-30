@@ -104,7 +104,7 @@ export class ProducerTurnReducer {
     if (type === 'model.message') {
       if (!eventId) { this.failure = rawDiagnostic('tool provenance requires a string event id', event); return; }
       this.streamingMessages.set(eventId, record);
-      if (record.finishReason !== undefined) this.acceptCompletedMessage(record);
+      if (record.finishReason != null || (Array.isArray(record.toolCalls) && record.toolCalls.length > 0)) this.acceptCompletedMessage(record);
       return;
     }
     if (type === 'model.message.delta') {
@@ -112,7 +112,7 @@ export class ProducerTurnReducer {
       const base = this.streamingMessages.get(eventId);
       if (!base) { this.failure = rawDiagnostic('model message delta arrived without a retained base message', event); return; }
       mergeEventDelta(base as never, record as never);
-      if (record.finishReason !== undefined) this.acceptCompletedMessage(base);
+      if (record.finishReason != null) this.acceptCompletedMessage(base);
       return;
     }
     const result = toolResult(record); if (result) this.acceptResult(result.id, result.content);
