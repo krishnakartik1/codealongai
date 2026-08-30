@@ -4,8 +4,8 @@ import type { QuestionReceipt } from './walkthrough';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
 export interface ProducerTurnInput {
-  /** Native Reply uses the same short-lived receipt coordinator as Ask. */
-  readonly kind?: 'start' | 'question';
+  /** Native Reply and replacement use the same short-lived receipt coordinator as Ask. */
+  readonly kind?: 'start' | 'question' | 'replacement';
   readonly requestId: string;
   readonly model: string;
   readonly reasoningEffort: string;
@@ -23,6 +23,7 @@ export interface StartReceipt { readonly schemaVersion: 1; readonly requestId: s
 
 const allowedReads = new Set(['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace']);
 const startTool = 'codealongai_start_walkthrough';
+const replacementTool = 'codealongai_replace_walkthrough';
 const questionTool = 'codealongai_commit_question_outcome';
 const permittedTools = [...allowedReads, startTool];
 
@@ -30,12 +31,13 @@ const permittedTools = [...allowedReads, startTool];
  * shell, approval, user-question, download, retry, or subagent capability. */
 export function producerAgentSpec(input: ProducerTurnInput): TrueForgeApi.AgentSpec {
   const question = input.kind === 'question';
+  const replacement = input.kind === 'replacement';
   return {
     model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } },
     skills: [{ name: 'codealongai' }],
-    mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : permittedTools, requireApprovalForTools: [] }],
+    mcpServers: [{ name: 'codealongai-mcp', enableTools: question ? [...allowedReads, questionTool] : replacement ? [...allowedReads, replacementTool] : permittedTools, requireApprovalForTools: [] }],
     config: { sandbox: { enabled: true, fileDownloads: false }, dynamicSubAgents: { enabled: false }, askUserQuestions: { enabled: false }, iterationLimit: 9 },
-    instructions: question ? 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' : 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
+    instructions: question ? 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.' : replacement ? 'Produce exactly one CodeAlongAI replacement transition. First read the exact authorized replacement request, then its exact new origin before one matching replacement transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.' : 'Produce exactly one CodeAlongAI start transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, download files, ask for approval, ask the user, retry, or create subagents.'
   };
 }
 
@@ -45,13 +47,13 @@ export class ProducerTurnReducer {
   private pending: { id: string; name: string } | undefined;
   private readonly deferredResults = new Map<string, unknown>();
   private callsUsed = 0;
-  private origin: { path: string; startLine: number; endLine: number } | undefined;
+  private origin: { path: string; startLine: number; endLine: number; sessionId?: string; revision?: number } | undefined;
   private activeWalkthroughRead = false;
   private activeSession: { id: string; revision: number } | undefined;
   private questionRead: { path: string; startLine: number; endLine: number } | undefined;
   private receipt: ProducerReceipt | undefined;
   private failure: string | undefined;
-  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean, private readonly kind: 'start' | 'question' = 'start') {}
+  public constructor(private readonly requestId: string, private readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean, private readonly kind: 'start' | 'question' | 'replacement' = 'start') {}
   public accept(event: unknown): void {
     if (this.receipt || this.failure) return;
     const record = object(event); if (!record) return;
@@ -68,13 +70,13 @@ export class ProducerTurnReducer {
   private acceptCall(call: ProducerCall): void {
     if (!call.provenance || this.pending) { this.failure = this.pending ? 'result_required' : 'tool_provenance'; return; }
     const { id, name, arguments: args } = call;
-    const transitionTool = this.kind === 'question' ? questionTool : startTool;
+    const transitionTool = this.kind === 'question' ? questionTool : this.kind === 'replacement' ? replacementTool : startTool;
     if (name !== transitionTool && ++this.callsUsed > 8) { this.failure = 'call_budget_exceeded'; return; }
     if (this.callsUsed === 1 && (name !== 'codealongai_get_walkthrough_request' || args.requestId !== this.requestId)) { this.failure = 'request_authority_required'; return; }
     if (this.callsUsed > 1 && name === 'codealongai_get_walkthrough_request') { this.failure = 'request_authority_required'; return; }
     if (name === 'codealongai_list_workspace_files' && this.listed) { this.failure = 'workspace_list_repeated'; return; }
     if (name === 'codealongai_search_workspace' && (typeof args.query !== 'string' || /[\r\n]/.test(args.query))) { this.failure = 'search_invalid'; return; }
-    if (this.kind === 'start' && name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
+    if (this.kind !== 'question' && name === 'codealongai_read_workspace_file' && (!this.origin || args.path !== this.origin.path || args.startLine !== this.origin.startLine || args.endLine !== this.origin.endLine)) { this.failure = 'origin_range_required'; return; }
     if (this.kind === 'question' && name === 'codealongai_read_workspace_file') {
       const startLine = args.startLine; const endLine = args.endLine;
       if (typeof args.path !== 'string' || typeof startLine !== 'number' || typeof endLine !== 'number' || !Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine < startLine || endLine - startLine > 200) { this.failure = 'context_range_required'; return; }
@@ -82,7 +84,7 @@ export class ProducerTurnReducer {
     }
     if (name !== transitionTool && !allowedReads.has(name)) { this.failure = 'tool_not_allowed'; return; }
     if (this.kind === 'question' && name !== transitionTool && this.callsUsed === 2 && name !== 'codealongai_get_walkthrough') { this.failure = 'active_walkthrough_required'; return; }
-    if (name === transitionTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (this.kind === 'start' ? !this.originRead : !this.activeWalkthroughRead) || (this.kind === 'question' && (args.expectedSessionId !== this.activeSession?.id || args.expectedRevision !== this.activeSession?.revision)))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : 'transition_invalid'; return; }
+    if (name === transitionTool && (args.requestId !== this.requestId || this.transitioned || this.callsUsed === 0 || (this.kind === 'question' ? !this.activeWalkthroughRead : !this.originRead) || (this.kind === 'question' && (args.expectedSessionId !== this.activeSession?.id || args.expectedRevision !== this.activeSession?.revision)) || (this.kind === 'replacement' && (args.expectedSessionId !== this.origin?.sessionId || args.expectedRevision !== this.origin?.revision)))) { this.failure = this.callsUsed === 0 ? 'request_authority_required' : 'transition_invalid'; return; }
     if (name === 'codealongai_list_workspace_files') this.listed = true;
     if (name === transitionTool) this.transitioned = true;
     this.pending = { id, name };
@@ -94,14 +96,14 @@ export class ProducerTurnReducer {
     if (this.pending.id !== id) { this.failure = 'result_correlation'; return; }
     const pending = this.pending; this.pending = undefined;
     const result = object(content); if (!result || result.isError === true || Array.isArray(result.error)) { this.failure = safeToolError(result); return; }
-    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = this.kind === 'question' ? authorizedQuestion(result, this.requestId) : authorizedOrigin(result, this.requestId); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
+    if (pending.name === 'codealongai_get_walkthrough_request') { this.origin = this.kind === 'question' ? authorizedQuestion(result, this.requestId) : authorizedOrigin(result, this.requestId, this.kind); if (!this.origin) { this.failure = 'request_authority_invalid'; return; } }
     if (this.kind === 'question' && pending.name === 'codealongai_get_walkthrough') { const active = activeWalkthrough(result, this.origin); if (!active) { this.failure = 'active_walkthrough_invalid'; return; } this.activeSession = active; this.activeWalkthroughRead = true; }
     if (pending.name === 'codealongai_read_workspace_file') {
       const expected = this.kind === 'question' ? this.questionRead : this.origin;
       if (!expected || !exactOriginRead(result, expected)) { this.failure = this.kind === 'question' ? 'context_read_invalid' : 'origin_read_invalid'; return; }
       this.originRead = true;
     }
-    if (pending.name !== (this.kind === 'question' ? questionTool : startTool)) return;
+    if (pending.name !== (this.kind === 'question' ? questionTool : this.kind === 'replacement' ? replacementTool : startTool)) return;
     const receipt = receiptFrom(content);
     if (!receipt || receipt.requestId !== this.requestId) { this.failure = 'missing_receipt'; return; }
     if (this.acceptReceipt && !this.acceptReceipt(receipt)) { this.failure = 'receipt_invalid'; return; }
@@ -338,10 +340,12 @@ function toolResult(value: Record<string, unknown>): { id: string; content: unkn
   return value.type === 'tool.response' && id && content !== undefined ? { id, content: jsonValue(content) } : undefined;
 }
 function receiptFrom(value: unknown): ProducerReceipt | undefined { const item = object(value); const candidate = object(item?.structuredContent) ?? item; return candidate?.schemaVersion === 1 && typeof candidate.requestId === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.revision === 'number' && typeof candidate.attentionStopId === 'string' ? candidate as unknown as ProducerReceipt : undefined; }
-function authorizedOrigin(value: unknown, requestId: string): { path: string; startLine: number; endLine: number } | undefined {
+function authorizedOrigin(value: unknown, requestId: string, kind: 'start' | 'replacement'): { path: string; startLine: number; endLine: number; sessionId?: string; revision?: number } | undefined {
   const item = object(value); const request = object(item?.structuredContent) ?? item; const input = object(request?.input); const origin = object(input?.origin); const path = string(origin?.path); const range = object(origin?.range); const start = object(range?.start); const end = object(range?.end); const startLine = finite(start?.line); const endLine = finite(end?.line);
   const startCharacter = finite(start?.character); const endCharacter = finite(end?.character);
-  return request?.schemaVersion === 1 && request?.requestId === requestId && request?.kind === 'start' && request?.authorizedAction === 'start' && request?.status === 'pending' && path !== undefined && startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined ? { path, startLine, endLine: endCharacter === 0 ? endLine : endLine + 1 } : undefined;
+  const expectedSessionId = string(input?.expectedSessionId); const expectedRevision = finite(input?.expectedRevision);
+  const authorized = kind === 'start' ? request?.kind === 'start' && request?.authorizedAction === 'start' : request?.kind === 'replace' && request?.authorizedAction === 'replace' && expectedSessionId !== undefined && expectedRevision !== undefined;
+  return request?.schemaVersion === 1 && request?.requestId === requestId && authorized && request?.status === 'pending' && path !== undefined && startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined ? { path, startLine, endLine: endCharacter === 0 ? endLine : endLine + 1, ...(kind === 'replacement' ? { sessionId: expectedSessionId, revision: expectedRevision } : {}) } : undefined;
 }
 /** Question authority is intentionally narrower than a start origin: the
  * producer may only use the immutable request identity and must subsequently

@@ -1,6 +1,5 @@
 import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/server';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { z } from 'zod';
 import type { NavigationDirection, OriginDescriptor, QuestionOutcome, WalkthroughAuthority } from './walkthrough';
@@ -341,18 +340,4 @@ function requestId(body: unknown): string | number | null {
 function domainErrorResult(code: string, message: string, retryable: boolean): { isError: true; structuredContent: Record<string, unknown>; content: [{ type: 'text'; text: string }] } {
   const structuredContent = { schemaVersion: 1, code, message, retryable };
   return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
-}
-
-/** Replacement remains an extension-owned deterministic adapter. Reply never
- * has this production fixture path. */
-export async function commitDeterministicReplacement(port: number, requestId: string, expectedSessionId: string, expectedRevision: number, origin: OriginDescriptor): Promise<void> {
-  const client = new Client({ name: 'CodeAlongAI deterministic producer', version: '0.0.1' }, { versionNegotiation: { mode: 'auto' } });
-  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`));
-  await client.connect(transport);
-  try {
-    const request = await client.callTool({ name: 'codealongai_get_walkthrough_request', arguments: { schemaVersion: 1, requestId } });
-    if (request.isError || request.structuredContent === null) throw new Error('the authorized replacement request is unavailable');
-    const result = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId, expectedSessionId, expectedRevision, origin } });
-    if (result.isError) throw new Error(result.content.map((item) => item.type === 'text' ? item.text : '').join(''));
-  } finally { await transport.close(); }
 }

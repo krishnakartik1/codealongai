@@ -48,7 +48,8 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
         if (runtime.producerCancelled) return;
         const text = (((turn?.input as readonly { content?: unknown }[] | undefined)?.[0])?.content);
         const question = typeof text === 'string' && text.startsWith('question\n');
-        const requestId = typeof text === 'string' && (text.startsWith('start\n') || question) ? text.slice(text.indexOf('\n') + 1) : undefined;
+        const replacement = typeof text === 'string' && text.startsWith('replacement\n');
+        const requestId = typeof text === 'string' && (text.startsWith('start\n') || question || replacement) ? text.slice(text.indexOf('\n') + 1) : undefined;
         if (!requestId || runtime.mcpPort === undefined) return;
         if (question) {
           const agent = ((spec?.agent as { spec?: { skills?: { name?: string }[]; mcpServers?: { enableTools?: string[] }[]; config?: { sandbox?: { fileDownloads?: boolean }; dynamicSubAgents?: { enabled?: boolean }; askUserQuestions?: { enabled?: boolean } }; model?: { params?: { parallelToolCalls?: boolean } } } } | undefined)?.spec);
@@ -82,8 +83,13 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
             const committed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: commit });
             yield response('question', committed, '2026-01-01T00:00:05.000Z');
             yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
-            return;
-          }
+          return;
+        }
+        if (replacement) {
+          const agent = ((spec?.agent as { spec?: { mcpServers?: { enableTools?: string[] }[] } } | undefined)?.spec);
+          const tools = agent?.mcpServers?.[0]?.enableTools ?? [];
+          if (!tools.includes('codealongai_replace_walkthrough') || tools.includes('codealongai_start_walkthrough')) throw new Error('replacement_agent_spec_invalid');
+        }
           const origin = (authority.structuredContent as { input?: { origin?: { path?: string; range?: unknown } } } | undefined)?.input?.origin;
           if (!origin?.path || !origin.range) return;
           const interval = origin.range as { start: { line: number }; end: { line: number; character: number } };
@@ -91,10 +97,11 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
           yield call('origin', 'codealongai_read_workspace_file', { schemaVersion: 1, path: origin.path, startLine: interval.start.line, endLine }, '2026-01-01T00:00:02.000Z');
           const read = await client.callTool({ name: 'codealongai_read_workspace_file', arguments: { schemaVersion: 1, path: origin.path, startLine: interval.start.line, endLine } });
           yield response('origin', read, '2026-01-01T00:00:03.000Z');
-          const start = { schemaVersion: 1, requestId, origin: { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: origin.path, range: origin.range } };
-          yield call('start', 'codealongai_start_walkthrough', start, '2026-01-01T00:00:04.000Z');
-          const committed = await client.callTool({ name: 'codealongai_start_walkthrough', arguments: start });
-          yield response('start', committed, '2026-01-01T00:00:05.000Z');
+          const transition = replacement ? { schemaVersion: 1, requestId, expectedSessionId: (authority.structuredContent as { input?: { expectedSessionId?: string } } | undefined)?.input?.expectedSessionId, expectedRevision: (authority.structuredContent as { input?: { expectedRevision?: number } } | undefined)?.input?.expectedRevision, origin: { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: origin.path, range: origin.range } } : { schemaVersion: 1, requestId, origin: { stopId: 'checkout-origin', displayName: 'Origin', explanation: 'What would you like to understand about this code?', document: origin.path, range: origin.range } };
+          const tool = replacement ? 'codealongai_replace_walkthrough' : 'codealongai_start_walkthrough';
+          yield call('transition', tool, transition, '2026-01-01T00:00:04.000Z');
+          const committed = await client.callTool({ name: tool, arguments: transition });
+          yield response('transition', committed, '2026-01-01T00:00:05.000Z');
           yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
         } finally { await transport.close(); }
       },

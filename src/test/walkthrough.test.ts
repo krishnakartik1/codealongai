@@ -271,6 +271,7 @@ suite('Extension Development Host walkthrough', () => {
 
       const beforeReplacement = api.session!;
       const preparesBeforeReplacement = commandRuntime.prepareCalls;
+      const producerCallsBeforeReplacement = commandRuntime.producerTurnCalls.length;
       const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
       const originalWarning = notificationWindow.showWarningMessage;
       try {
@@ -293,6 +294,12 @@ suite('Extension Development Host walkthrough', () => {
         assert.equal(replacement.stops.length, 1);
         assert.deepEqual(replacement.origin?.range, { start: { line: 2, character: 0 }, end: { line: 2, character: 22 } });
         assert.equal(commandRuntime.prepareCalls, preparesBeforeReplacement + 1);
+        assert.deepEqual(commandRuntime.producerTurnCalls.slice(producerCallsBeforeReplacement).map((call) => call.kind), ['session', 'turn', 'events']);
+        const callsBeforeReset = commandRuntime.producerTurnCalls.length;
+        notificationWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+        await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+        await eventually(() => api.session === undefined ? true : undefined, 'the confirmed public Reset command should clear the replacement');
+        assert.equal(commandRuntime.producerTurnCalls.length, callsBeforeReset);
       } finally { notificationWindow.showWarningMessage = originalWarning; }
     }));
   });
