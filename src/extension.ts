@@ -55,6 +55,7 @@ export interface WalkthroughTestApi {
   readonly hasPendingWalkthroughRequest: boolean;
   readonly producerObservations: readonly ProducerTurnObservation[];
   readonly nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
+  readonly nativeCapabilityVersion: string | undefined;
   replyTargetAt(stopId: string): object | undefined;
   /** Boolean-only assertion seam: no conversation content crosses it. */
   sourceThreadHasAnswerAt(stopId: string): boolean;
@@ -73,6 +74,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const producerObservations: ProducerTurnObservation[] = [];
   const observeProducer = process.env.CODEALONGAI_NATIVE_ACCEPTANCE === '1' ? (event: ProducerTurnObservation): void => { producerObservations.push(event); } : undefined;
   let nativeAcceptanceFacts: NativeAcceptanceFacts | undefined;
+  let nativeCapabilityVersion: string | undefined;
   let sidecarCrashedRequestId: string | undefined;
   const reportUnexpectedSidecarExit = (message: string): void => {
     output.error(message);
@@ -274,7 +276,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
           mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`,
           skillCommit
         });
-        if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); return true; }
+        if (producer.action === 'none') { nativeAcceptanceFacts = await trueForge.acceptanceFacts(); nativeCapabilityVersion = (await trueForge.capabilitySummary())?.version; return true; }
         reportProducerReadiness(producer, retry);
         return false;
       }
@@ -549,6 +551,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     get hasPendingWalkthroughRequest() { return authority.getPendingStart() !== undefined || authority.getPendingReplacement() !== undefined || authority.getPendingQuestion() !== undefined; },
     get producerObservations() { return producerObservations.slice(); },
     get nativeAcceptanceFacts() { return nativeAcceptanceFacts; },
+    get nativeCapabilityVersion() { return nativeCapabilityVersion; },
     replyTargetAt(stopId) {
       if (!threads.has(stopId)) return undefined;
       const existing = replyTargets.get(stopId);

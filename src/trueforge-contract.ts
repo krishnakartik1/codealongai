@@ -10,6 +10,7 @@ export interface TrueForgeRuntime {
   health(port: number): Promise<boolean>;
   /** Proves the endpoint speaks the public TrueForge API, not only /healthz. */
   verifyCapability(port: number): Promise<boolean>;
+  capabilitySummary?(port: number): Promise<{ readonly available: boolean; readonly version: string | undefined }>;
   /** Lets startup reject an owned bind failure instead of trusting the released port. */
   hasExited(): boolean;
   /** Validates the retained child identity before reusing its loopback endpoint. */
