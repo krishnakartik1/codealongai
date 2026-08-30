@@ -126,13 +126,13 @@ export class LoopbackMcpEndpoint {
     }, async (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
-        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor({ path: stop.path, range: stop.range })));
+        if (input.outcome.kind === 'generated-walkthrough') await Promise.all(input.outcome.patch.addedStops.map((stop) => this.workspace.validateAnchor(stop.path, stop.range)));
         // Validation can suspend. The same HTTP attempt must still own the
         // transition at the point we stage its receipt-backed candidate.
         if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
         const receipt = this.authority.commitQuestionOutcome({ requestId: input.requestId, sessionId: input.expectedSessionId, revision: input.expectedRevision }, input.outcome as QuestionOutcome);
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } catch { return domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
+      } catch (error) { return error instanceof WorkspaceError && (error.code === 'path_invalid' || error.code === 'range_invalid') ? domainErrorResult(error.code, error.code === 'path_invalid' ? 'The requested workspace file is unavailable.' : 'The requested line interval is invalid.', false) : domainErrorResult('walkthrough_conflict', 'The walkthrough request is unavailable or stale.', false); }
     });
     server.registerTool('codealongai_navigate_walkthrough', {
       description: 'Move CodeAlongAI walkthrough attention along a server-derived Back or Next edge, or directly to one known stop.',

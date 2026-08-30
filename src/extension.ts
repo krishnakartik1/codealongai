@@ -144,7 +144,6 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (diagnostic === 'tool_result_invalid' || diagnostic === 'request_authority_invalid') return 'malformed_output';
     return 'provider_error';
   };
-  const questionFailurePhase = (value: unknown): ReturnType<typeof startFailurePhase> => startFailurePhase(value);
   const showStartFailure = (requestId: string, phase: ReturnType<typeof startFailurePhase>): void => {
     const retry = retryStart;
     output.error(`Start turn failed (${phase}).`);
@@ -440,7 +439,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       if (sourceThread) sourceThread.comments = threadComments(source).map(commentFor);
       refreshThreads(committed, committed.attentionStopId);
     } catch (error) {
-      output.error(`Question turn failed (${questionFailurePhase(error)}).`);
+      output.error(`Question turn failed (${startFailurePhase(error)}).`);
       void vscode.window.showErrorMessage('CodeAlongAI could not answer the question.', 'Retry question', 'Discard question', 'Show CodeAlongAI Output').then((action) => {
         if (action === 'Retry question') void retryQuestion?.();
         if (action === 'Discard question') discardQuestion(request.id);
