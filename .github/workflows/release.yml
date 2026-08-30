@@ -1,0 +1,164 @@
+name: Publish VSIX release
+
+on:
+  workflow_run:
+    workflows:
+      - Extension Development Host acceptance
+    types:
+      - completed
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted-push-range
+          path: accepted-push-range
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - id: version
+        run: echo "extension_version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - id: tag
+        run: echo "release_tag=v${{ steps.version.outputs.extension_version }}" >> "$GITHUB_OUTPUT"
+
+      - id: version-changed
+        run: |
+          source accepted-push-range/push-range.env
+          if [ "$push_after" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "The accepted push range does not match the tested commit." >&2
+            exit 1
+          fi
+          if [ "$push_before" = "0000000000000000000000000000000000000000" ]; then
+            push_range="$push_after"
+          else
+            if ! git cat-file -e "$push_before^{commit}" 2> /dev/null; then
+              git fetch --no-tags origin "$push_before"
+            fi
+            if ! git cat-file -e "$push_before^{commit}" 2> /dev/null; then
+              echo "The accepted push range start is unavailable." >&2
+              exit 1
+            fi
+            push_range="$push_before..$push_after"
+          fi
+          has_version_bump=false
+          for commit in $(git rev-list "$push_range" -- package.json); do
+            if ! git cat-file -e "$commit^:package.json" 2> /dev/null; then
+              continue
+            fi
+            commit_version="$(git show "$commit:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
+            parent_version="$(git show "$commit^:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
+            if [ "$commit_version" = "${{ steps.version.outputs.extension_version }}" ] && [ "$parent_version" != "$commit_version" ]; then
+              has_version_bump=true
+              break
+            fi
+          done
+          echo "has_version_bump=$has_version_bump" >> "$GITHUB_OUTPUT"
+
+      - id: existing-release
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.tag.outputs.release_tag }}" > /dev/null; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: release-eligibility
+        env:
+          HAS_VERSION_BUMP: ${{ steps.version-changed.outputs.has_version_bump }}
+          TAG_EXISTS: ${{ steps.existing-release.outputs.tag_exists }}
+        run: |
+          release_should_publish=false
+          if [ "$HAS_VERSION_BUMP" = true ] && [ "$TAG_EXISTS" = false ]; then
+            release_should_publish=true
+          fi
+          echo "release_should_publish=$release_should_publish" >> "$GITHUB_OUTPUT"
+
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
+        run: npm ci
+
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
+        run: npm run package
+
+      - name: Create release when its tag is new
+        if: steps.release-eligibility.outputs.release_should_publish == 'true' && steps.existing-release.outputs.tag_exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if release_id="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="${{ steps.tag.outputs.release_tag }}" \
+            -f target_commitish="${{ github.event.workflow_run.head_sha }}" \
+            -F generate_release_notes=true \
+            --jq '.id')"; then
+            :
+          elif gh release view "${{ steps.tag.outputs.release_tag }}" > /dev/null; then
+            :
+          else
+            exit 1
+          fi
+
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "${{ steps.tag.outputs.release_tag }}" codealongai.vsix; then
+              exit 0
+            fi
+            if gh release view "${{ steps.tag.outputs.release_tag }}" --json assets --jq '.assets[].name' | grep --fixed-strings --line-regexp 'codealongai.vsix' > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - if: steps.release-eligibility.outputs.release_should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          highest_release_id="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | node -e '
+            let releaseSource = "";
+            process.stdin.on("data", chunk => releaseSource += chunk);
+            process.stdin.on("end", () => {
+              const normalReleases = JSON.parse(releaseSource).flat().filter(release => {
+                if (release.draft || release.prerelease) return false;
+                return /^v\d+\.\d+\.\d+$/.test(release.tag_name);
+              });
+              const compareReleaseVersions = (leftRelease, rightRelease) => {
+                const leftVersion = leftRelease.tag_name.slice(1).split(".").map(Number);
+                const rightVersion = rightRelease.tag_name.slice(1).split(".").map(Number);
+                for (let index = 0; index < leftVersion.length; index += 1) {
+                  if (leftVersion[index] !== rightVersion[index]) {
+                    return leftVersion[index] - rightVersion[index];
+                  }
+                }
+                return 0;
+              };
+              const highestRelease = normalReleases.reduce((highestSoFar, release) =>
+                highestSoFar === undefined || compareReleaseVersions(release, highestSoFar) > 0 ? release : highestSoFar,
+              undefined);
+              if (highestRelease === undefined) process.exit(1);
+              console.log(highestRelease.id);
+            });
+          ')"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$highest_release_id" -f make_latest=true

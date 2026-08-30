@@ -119,6 +119,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "npm run build && vsce package --out codealongai.vsix",
     "test": "npm run build && vscode-test",
     "test:headless": "npm run build && xvfb-run -a vscode-test"
   },
@@ -128,6 +129,7 @@
     "@types/vscode": "^1.103.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "3.7.1",
     "typescript": "^5.9.2"
   },
   "dependencies": {
