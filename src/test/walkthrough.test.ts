@@ -1423,7 +1423,8 @@ suite('walkthrough replacement and reset authority', () => {
     const authority = startedAuthority();
     const question = authority.captureQuestion(oldOrigin.stopId, 'Why?');
     const old = authority.getSession()!;
-    authority.commitQuestionOutcome({ requestId: question.id, sessionId: old.id, revision: old.revision }, { kind: 'explanation-only', answerMarkdown: 'Because.' });
+    const questionReceipt = authority.commitQuestionOutcome({ requestId: question.id, sessionId: old.id, revision: old.revision }, { kind: 'explanation-only', answerMarkdown: 'Because.' });
+    authority.acknowledgeQuestionReceipt(questionReceipt);
     const before = authority.getSession()!;
     const request = authority.captureReplacement({ document: newOrigin.document, range: newOrigin.range });
     assert.throws(() => authority.replace(request.id, before.id, before.revision, { ...newOrigin, document: 'wrong.ts' }));
@@ -1619,6 +1620,9 @@ suite('receipt-backed start producer turn', () => {
       assert.deepEqual(await operation, { status: 'failed', diagnostic: 'missing_receipt' });
       assert.deepEqual(authority.getSession(), newer);
       assert.deepEqual(authority.getPendingQuestion(), request);
+      const retryReceipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: newer.id, revision: newer.revision }, { kind: 'explanation-only', answerMarkdown: 'Because it is the source.' });
+      assert.equal(authority.acknowledgeQuestionReceipt(retryReceipt), true);
+      assert.equal(authority.getSession()!.revision, newer.revision + 1);
     } finally { await endpoint.stop(); }
   });
   test('cancels a real loopback committed question before its response and ignores the late response', async () => {
@@ -2101,11 +2105,11 @@ suite('receipt-backed start producer turn', () => {
   });
 
   test('creates the exact native Reply capability set', () => {
-    const spec = startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) as unknown as { mcpServers: { enableTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean } }; model: { params: { parallelToolCalls: boolean } } };
-    assert.ok(spec.mcpServers[0].enableTools.includes('codealongai_commit_question_outcome'));
-    assert.equal(spec.mcpServers[0].enableTools.includes('codealongai_start_walkthrough'), false);
+    const spec = startProducerAgentSpec({ kind: 'question', requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'http://ignored/mcp' }) as unknown as { mcpServers: { enableTools: string[]; requireApprovalForTools: string[] }[]; skills: { name: string }[]; config: { sandbox: { enabled: boolean; fileDownloads: boolean }; dynamicSubAgents: { enabled: boolean }; askUserQuestions: { enabled: boolean }; iterationLimit: number }; model: { params: { parallelToolCalls: boolean } }; instructions: string };
+    assert.deepEqual(spec.mcpServers, [{ name: 'codealongai-mcp', enableTools: ['codealongai_get_walkthrough_request', 'codealongai_get_walkthrough', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_commit_question_outcome'], requireApprovalForTools: [] }]);
     assert.deepEqual(spec.skills, [{ name: 'codealongai' }]);
-    assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.model.params.parallelToolCalls, false);
+    assert.equal(spec.config.sandbox.enabled, true); assert.equal(spec.config.sandbox.fileDownloads, false); assert.equal(spec.config.dynamicSubAgents.enabled, false); assert.equal(spec.config.askUserQuestions.enabled, false); assert.equal(spec.config.iterationLimit, 9); assert.equal(spec.model.params.parallelToolCalls, false);
+    assert.equal(spec.instructions, 'Produce exactly one CodeAlongAI question outcome. First read the exact authorized question, then read the active walkthrough, then use only bounded supplemental context before one matching question-outcome transition. Use only the registered codealongai skill and MCP tools. Do not run sandbox commands, skill files, downloads, ask for approval, ask the user, retry, or create subagents.');
   });
 
   test('serializes the pinned start AgentSpec without a connector URL', async () => {
@@ -2370,6 +2374,7 @@ suite('question-generated walkthrough graph', () => {
     try {
       const committed = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: question.id, expectedSessionId: authority.getSession()!.id, expectedRevision: 1, outcome } });
       assert.deepEqual(committed.structuredContent, { schemaVersion: 1, status: 'committed', requestId: question.id, sessionId: authority.getSession()!.id, revision: 2, attentionStopId: 'checkout-origin' });
+      assert.equal(authority.acknowledgeQuestionReceipt(committed.structuredContent as import('../walkthrough').QuestionReceipt), true);
       for (const nextOutcome of [
         { kind: 'explanation-only', answerMarkdown: '**Opaque** Markdown is not an instruction.' },
         { kind: 'destination-offer', answerMarkdown: 'A metadata-only offer.', destinationIds: ['pricing-function', 'checkout-cart'] },
@@ -2379,6 +2384,7 @@ suite('question-generated walkthrough graph', () => {
         const currentSession = authority.getSession()!;
         const reply = await client.callTool({ name: 'codealongai_commit_question_outcome', arguments: { schemaVersion: 1, requestId: followUpQuestion.id, expectedSessionId: currentSession.id, expectedRevision: currentSession.revision, outcome: nextOutcome } });
         assert.notEqual(reply.isError, true);
+        assert.equal(authority.acknowledgeQuestionReceipt(reply.structuredContent as import('../walkthrough').QuestionReceipt), true);
         assert.equal(authority.getSession()!.attentionStopId, 'checkout-origin');
       }
       const snapshot = await client.callTool({ name: 'codealongai_get_walkthrough', arguments: {} });
@@ -2410,7 +2416,8 @@ suite('non-branching question outcomes and recovery', () => {
       const authority = createStartedAuthority();
       const request = authority.captureQuestion(origin.stopId, 'Why?');
       const before = authority.getSession()!;
-      authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, outcome);
+      const receipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, outcome);
+      assert.equal(authority.acknowledgeQuestionReceipt(receipt), true);
       const after = authority.getSession()!;
       assert.equal(after.attentionStopId, before.attentionStopId);
       assert.deepEqual(after.stops.map((stop) => stop.id), before.stops.map((stop) => stop.id));
@@ -2418,14 +2425,33 @@ suite('non-branching question outcomes and recovery', () => {
     }
   });
 
+  test('keeps a tentative question candidate private until its exact receipt is accepted or discarded', () => {
+    const authority = createStartedAuthority();
+    const before = authority.getSession()!;
+    const request = authority.captureQuestion(origin.stopId, 'Add a child');
+    const receipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added privately.', patch: { addedStops: [{ id: 'child', displayName: 'Child', explanationMarkdown: 'Child', path: 'child.ts', range: origin.range, destinationIds: [], backId: origin.stopId }], appendedDestinations: [{ sourceStopId: origin.stopId, destinationIds: ['child'] }], recommendedNextUpdates: [] } });
+    assert.deepEqual(authority.getSession(), before);
+    authority.discardQuestion(request.id);
+    assert.deepEqual(authority.getSession(), before);
+    const replacement = authority.captureQuestion(origin.stopId, 'Answer instead');
+    const replacementReceipt = authority.commitQuestionOutcome({ requestId: replacement.id, sessionId: before.id, revision: before.revision }, { kind: 'explanation-only', answerMarkdown: 'Accepted once.' });
+    assert.equal(authority.acknowledgeQuestionReceipt(replacementReceipt), true);
+    assert.equal(authority.acknowledgeQuestionReceipt(replacementReceipt), false);
+    assert.deepEqual(authority.getSession()!.stops.map((stop) => stop.id), [origin.stopId]);
+    assert.equal(authority.getSession()!.stops[0].conversation.at(-1)?.bodyMarkdown, 'Accepted once.');
+    assert.equal(receipt.revision, before.revision + 1);
+  });
+
   test('validates a destination offer without changing the graph or attention', () => {
     const authority = createStartedAuthority();
     const generated = authority.captureQuestion(origin.stopId, 'Add a destination');
     const session = authority.getSession()!;
-    authority.commitQuestionOutcome({ requestId: generated.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [{ id: 'child', displayName: 'Child', explanationMarkdown: 'Child', path: 'child.ts', range: origin.range, destinationIds: [], backId: origin.stopId }], appendedDestinations: [{ sourceStopId: origin.stopId, destinationIds: ['child'] }], recommendedNextUpdates: [] } });
+    const generatedReceipt = authority.commitQuestionOutcome({ requestId: generated.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [{ id: 'child', displayName: 'Child', explanationMarkdown: 'Child', path: 'child.ts', range: origin.range, destinationIds: [], backId: origin.stopId }], appendedDestinations: [{ sourceStopId: origin.stopId, destinationIds: ['child'] }], recommendedNextUpdates: [] } });
+    assert.equal(authority.acknowledgeQuestionReceipt(generatedReceipt), true);
     const request = authority.captureQuestion(origin.stopId, 'Where next?');
     const before = authority.getSession()!;
-    authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, { kind: 'destination-offer', answerMarkdown: 'Try child.', destinationIds: ['child'] });
+    const receipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: before.id, revision: before.revision }, { kind: 'destination-offer', answerMarkdown: 'Try child.', destinationIds: ['child'] });
+    assert.equal(authority.acknowledgeQuestionReceipt(receipt), true);
     const after = authority.getSession()!;
     assert.equal(after.attentionStopId, origin.stopId);
     assert.deepEqual(after.stops.map((stop) => ({ id: stop.id, destinationIds: stop.destinationIds })), before.stops.map((stop) => ({ id: stop.id, destinationIds: stop.destinationIds })));
@@ -2438,6 +2464,7 @@ suite('non-branching question outcomes and recovery', () => {
     const outcome: QuestionOutcome = { kind: 'explanation-only', answerMarkdown: 'Answer.' };
     const receipt = authority.commitQuestionOutcome({ requestId: request.id, sessionId: session.id, revision: session.revision }, outcome);
     assert.deepEqual(authority.commitQuestionOutcome({ requestId: request.id, sessionId: session.id, revision: session.revision }, outcome), receipt);
+    assert.equal(authority.acknowledgeQuestionReceipt(receipt), true);
     const next = authority.captureQuestion(origin.stopId, 'Offer?');
     const before = authority.getSession()!;
     assert.throws(() => authority.commitQuestionOutcome({ requestId: next.id, sessionId: before.id, revision: before.revision }, { kind: 'destination-offer', answerMarkdown: 'Bad', destinationIds: [origin.stopId] }));
@@ -2455,10 +2482,11 @@ suite('walkthrough navigation', () => {
     authority.start(start.id, origin);
     const question = authority.captureQuestion(origin.stopId, 'Add stops');
     const session = authority.getSession()!;
-    authority.commitQuestionOutcome({ requestId: question.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [
+    const receipt = authority.commitQuestionOutcome({ requestId: question.id, sessionId: session.id, revision: session.revision }, { kind: 'generated-walkthrough', answerMarkdown: 'Added.', patch: { addedStops: [
       { id: 'same-file', displayName: 'Same', explanationMarkdown: 'Same', path: 'checkout.ts', range: origin.range, destinationIds: ['other-file'], recommendedNextId: 'other-file', backId: 'origin' },
       { id: 'other-file', displayName: 'Other', explanationMarkdown: 'Other', path: 'pricing.ts', range: origin.range, destinationIds: [], backId: 'same-file' }
     ], appendedDestinations: [{ sourceStopId: 'origin', destinationIds: ['same-file'] }], recommendedNextUpdates: [{ sourceStopId: 'origin', targetStopId: 'same-file' }] } });
+    authority.acknowledgeQuestionReceipt(receipt);
     return authority;
   };
 

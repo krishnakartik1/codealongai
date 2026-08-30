@@ -398,7 +398,19 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return;
     }
     if (!pending && !await daytonaReadyForWalkthrough(() => vscode.commands.executeCommand('codealongai.walkthrough.submitComment', reply))) return;
-    const request = pending ?? authority.captureQuestion(sourceStopId, text, await captureQuestionSnapshot(session));
+    // Readiness and snapshot capture both await.  Revalidate the exact native
+    // Reply origin immediately before consuming its single-use authority.
+    let request = authority.getPendingQuestion() ?? retryQuestionRequest;
+    if (request && (request.sourceStopId !== sourceStopId || request.text !== text)) return;
+    if (!request) {
+      const snapshot = await captureQuestionSnapshot(session);
+      const current = authority.getSession();
+      const currentSourceStopId = threadStopIds.get(reply.thread) ?? replyTargetStopIds.get(reply.thread);
+      const existing = authority.getPendingQuestion() ?? retryQuestionRequest;
+      if (existing) { if (existing.sourceStopId !== sourceStopId || existing.text !== text) return; request = existing; }
+      else if (!current || current.id !== session.id || current.revision !== session.revision || currentSourceStopId !== sourceStopId || !current.stops.some((stop) => stop.id === sourceStopId)) return;
+      else { try { request = authority.captureQuestion(sourceStopId, text, snapshot); } catch { return; } }
+    }
     retryQuestionRequest = request;
     retryQuestion = async () => {
       await questionTurnOwner.settled?.catch(() => undefined);
