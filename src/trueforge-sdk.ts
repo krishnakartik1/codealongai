@@ -17,30 +17,29 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   public async deleteSession(sessionId: string): Promise<void> { await this.deleteSdkSession(sessionId); }
   public probeDaytona(): Promise<DaytonaProbeResult> { const operation = this.probeState.queue.catch(() => undefined).then(async () => { await this.probeState.hydrate(); return this.probeDaytonaOwned(); }); this.probeState.queue = operation.then(() => undefined, () => undefined); return operation; }
   public async prepareProducer(input: TrueForgeProducerReadinessInput): Promise<TrueForgeProducerReadinessResult> {
-    if (!isFullyQualifiedModel(input.model)) return { phase: 'alias', outcome: 'failed' };
+    const configuration = new ProducerReadinessConfiguration(input);
+    if (!configuration.hasQualifiedModel) return { phase: 'alias', outcome: 'failed' };
     try {
       const models = await this.readConfiguredModels();
-      const selected = configuredModel(models, input.model);
+      const selected = configuredModel(models, configuration.model);
       if (!selected) return { phase: 'alias', outcome: 'failed' };
-      if (!supportsReasoning(selected, input.reasoningEffort)) return { phase: 'reasoning', outcome: 'failed' };
+      if (!supportsReasoning(selected, configuration.reasoningEffort)) return { phase: 'reasoning', outcome: 'failed' };
     } catch (error) { return { phase: errorStatus(error) === 401 || errorStatus(error) === 403 ? 'authentication' : 'network', outcome: 'failed' }; }
     try {
-      if (!this.client.settings.skills.createOrUpdate) return { phase: 'skill', outcome: 'failed' };
-      await this.client.settings.skills.createOrUpdate({ manifest: codeAlongAiSkillManifest(input.skillCommit) });
+      await this.upsertCodeAlongAiSkill(configuration.skillManifest());
       const skills = await this.readConfiguredSkills();
-      if (!hasCodeAlongAiSkill(skills, input.skillCommit)) return { phase: 'skill', outcome: 'failed' };
+      if (!hasCodeAlongAiSkill(skills, configuration.skillCommit)) return { phase: 'skill', outcome: 'failed' };
     } catch { return { phase: 'skill', outcome: 'failed' }; }
     try {
-      if (!this.client.settings.mcpServers?.createOrUpdate || !this.client.mcpServers?.listTools) return { phase: 'connector', outcome: 'failed' };
-      await this.client.settings.mcpServers.createOrUpdate({ manifest: { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: input.mcpUrl } });
+      await this.upsertCodeAlongAiConnector(configuration.connectorManifest());
     } catch { return { phase: 'connector', outcome: 'failed' }; }
     try {
-      const tools = await this.client.mcpServers.listTools('codealongai-mcp');
+      const tools = await this.listCodeAlongAiMcpTools();
       if (!hasExactCatalog(tools)) return { phase: 'mcp-discovery', outcome: 'failed' };
     } catch { return { phase: 'mcp-discovery', outcome: 'failed' }; }
     let sessionId: string | undefined;
     try {
-      const session = await this.createSession({ agent: { spec: producerAgentSpec(input) } });
+      const session = await this.createSession({ agent: { spec: configuration.agentSpec() } });
       sessionId = responseId(session);
       if (!sessionId) return { phase: 'model', outcome: 'failed' };
       const turn = await this.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: 'Perform the configured-provider readiness check and reply READY.' }] } });
@@ -114,6 +113,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readConfiguredModels(): Promise<unknown> { return this.client.models.list(); }
   private readModels(): Promise<unknown> { return this.readConfiguredModels(); }
   private readSkills(): Promise<unknown> { return this.client.skills.list(); }
+  private async upsertCodeAlongAiSkill(manifest: Record<string, unknown>): Promise<void> { const upsert = this.client.settings.skills.createOrUpdate; if (!upsert) throw new Error('CodeAlongAI skill upsert is unavailable'); await upsert({ manifest }); }
+  private async upsertCodeAlongAiConnector(manifest: Record<string, unknown>): Promise<void> { const upsert = this.client.settings.mcpServers?.createOrUpdate; if (!upsert) throw new Error('CodeAlongAI connector upsert is unavailable'); await upsert({ manifest }); }
+  private async listCodeAlongAiMcpTools(): Promise<unknown> { const listTools = this.client.mcpServers?.listTools; if (!listTools) throw new Error('CodeAlongAI MCP discovery is unavailable'); return listTools('codealongai-mcp'); }
 }
 
 /** Opaque lifecycle-only state shared by replacement SDK adapters. */
@@ -137,9 +139,18 @@ function isFullyQualifiedModel(value: string): boolean { return /^[^/\s]+\/[^/\s
 function configuredModel(value: unknown, name: string): Record<string, unknown> | undefined { return sdkCollectionItems(value).map(asRecord).find((candidate) => candidate?.name === name); }
 function supportsReasoning(model: Record<string, unknown>, effort: string): boolean { const properties = asRecord(model.properties); const efforts = properties?.reasoningEfforts; return Array.isArray(efforts) && efforts.includes(effort); }
 function hasCodeAlongAiSkill(value: unknown, commit: string): boolean { return sdkCollectionItems(value).some((candidate) => { const record = asRecord(candidate); const manifest = asRecord(record?.manifest ?? record?.data); return (manifest?.name ?? record?.name) === 'codealongai' && (manifest?.type ?? record?.type) === 'git' && (manifest?.url ?? record?.url) === 'https://github.com/krishnakartik1/codealongai.git' && (manifest?.ref ?? record?.ref) === commit && (manifest?.path ?? record?.path) === 'skills/codealongai'; }); }
-function codeAlongAiSkillManifest(commit: string): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: commit }; }
+class ProducerReadinessConfiguration {
+  public constructor(private readonly input: TrueForgeProducerReadinessInput) {}
+  public get model(): string { return this.input.model; }
+  public get reasoningEffort(): string { return this.input.reasoningEffort; }
+  public get skillCommit(): string { return this.input.skillCommit; }
+  public get hasQualifiedModel(): boolean { return isFullyQualifiedModel(this.model); }
+  public skillManifest(): Record<string, unknown> { return { name: 'codealongai', description: 'Produce one grounded CodeAlongAI walkthrough transition.', type: 'git', url: 'https://github.com/krishnakartik1/codealongai.git', path: 'skills/codealongai', ref: this.skillCommit }; }
+  public connectorManifest(): Record<string, unknown> { return { name: 'codealongai-mcp', description: 'CodeAlongAI walkthrough MCP endpoint.', type: 'remote', url: this.input.mcpUrl }; }
+  public agentSpec(): TrueForgeApi.AgentSpec { return { model: { name: this.model, params: { reasoningEffort: this.reasoningEffort, parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
+}
 /** A credential-free, request-free public operation that verifies the configured provider can run the selected AgentSpec. */
-export function producerAgentSpec(input: TrueForgeProducerReadinessInput): TrueForgeApi.AgentSpec { return { model: { name: input.model, params: { reasoningEffort: input.reasoningEffort, parallelToolCalls: false } }, skills: [{ name: 'codealongai' }], mcpServers: [{ name: 'codealongai-mcp' }], config: { sandbox: { enabled: true, fileDownloads: false } }, instructions: 'This is a CodeAlongAI producer readiness check. Do not access workspace, editor, source, requests, credentials, or MCP tools.' }; }
+export function producerAgentSpec(input: TrueForgeProducerReadinessInput): TrueForgeApi.AgentSpec { return new ProducerReadinessConfiguration(input).agentSpec(); }
 const CODEALONGAI_CATALOG = ['codealongai_get_walkthrough', 'codealongai_get_walkthrough_request', 'codealongai_list_workspace_files', 'codealongai_read_workspace_file', 'codealongai_search_workspace', 'codealongai_start_walkthrough', 'codealongai_replace_walkthrough', 'codealongai_reset_walkthrough', 'codealongai_commit_question_outcome', 'codealongai_navigate_walkthrough'];
 function hasExactCatalog(value: unknown): boolean { const tools = sdkCollectionItems(value); if (tools.length !== CODEALONGAI_CATALOG.length) return false; const names: string[] = []; for (const tool of tools) { const name = asRecord(tool)?.name; if (typeof name !== 'string') return false; names.push(name); } return new Set(names).size === CODEALONGAI_CATALOG.length && JSON.stringify(names.sort()) === JSON.stringify([...CODEALONGAI_CATALOG].sort()); }
 function errorStatus(error: unknown): number | undefined { const status = asRecord(error)?.statusCode ?? asRecord(error)?.status; return typeof status === 'number' ? status : undefined; }
