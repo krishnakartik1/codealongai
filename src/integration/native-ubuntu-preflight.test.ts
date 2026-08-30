@@ -9,6 +9,7 @@ import { trueForgeCapabilitySummary } from '../trueforge-native';
 import { terminateOwnedSidecar } from '../trueforge-native';
 import { TrueForgeSidecar } from '../trueforge';
 import { emptyTrueForgeProducer } from '../test/trueforge-runtime-double';
+import { createRequire } from 'node:module';
 
 const ready = { enabled: true, ubuntuX64: true, nodeVersion: 'v22.14.0', buildCommit: '1'.repeat(40), trueforgeVersion: '0.1.4', sdkVersion: '0.1.3', mcpServerVersion: '2.0.0', dataPath: '/operator/trueforge', model: 'openai/example', reasoningEffort: 'medium', reply: 'operator input' };
 test('native acceptance preflight distinguishes skips, external blocks, and ready execution', () => {
@@ -66,4 +67,8 @@ test('one owned acceptance crash restarts through the public sidecar without a p
   const runtime = { producer: new Proxy(emptyTrueForgeProducer, { get(target, key) { if (key === 'createSession') producerReads += 1; return Reflect.get(target, key); } }), start: async () => { starts += 1; crashed = false; }, health: async () => true, verifyCapability: async () => true, hasExited: () => crashed, ownsRunningChild: async () => !crashed, open: async () => undefined, stop: async () => undefined, crashForAcceptance: async () => { crashed = true; return true; } };
   const sidecar = new TrueForgeSidecar(runtime, '/operator/store', async () => 48123 + starts);
   await sidecar.configure(); assert.equal(await sidecar.restartAfterAcceptanceCrash(), true); assert.equal(starts, 2); assert.equal(producerReads, 0);
+});
+test('TrueForge package metadata is reachable from its supported CLI seed', () => {
+  const requireFromRoot = createRequire(`${process.cwd()}/package.json`); let directory = path.dirname(requireFromRoot.resolve('@truefoundry/trueforge/dist/cli.js'));
+  while (true) { try { const manifest = require(`${directory}/package.json`) as { name?: string; version?: string }; if (manifest.name === '@truefoundry/trueforge') { assert.equal(manifest.version, '0.1.4'); return; } } catch {} const parent = path.dirname(directory); assert.notEqual(parent, directory); directory = parent; }
 });
