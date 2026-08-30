@@ -20,6 +20,7 @@ export interface TrueForgeRuntime {
 }
 
 export interface TrueForgeTurnRequest { readonly sessionId: string; readonly request: unknown; }
+export interface TrueForgeRequestOptions { readonly abortSignal?: AbortSignal; readonly timeoutInSeconds?: number; }
 
 /** Safe, credentials-free producer configuration supplied by the extension. */
 export interface TrueForgeProducerReadinessInput {
@@ -43,8 +44,8 @@ export interface TrueForgeProducerRuntime {
   events(sessionId: string, turnId: string, afterSequenceNumber?: number): AsyncIterable<unknown>;
   /** Persisted turn events reconcile a one-time stream interruption. */
   listTurnEvents(sessionId: string, turnId: string): Promise<readonly unknown[]>;
-  cancelTurn(sessionId: string): Promise<void>;
-  deleteSession(sessionId: string): Promise<void>;
+  cancelTurn(sessionId: string, options?: TrueForgeRequestOptions): Promise<void>;
+  deleteSession(sessionId: string, options?: TrueForgeRequestOptions): Promise<void>;
   /** Creates and disposes a credential-free, provider-backed readiness probe. */
   probeDaytona(): Promise<DaytonaProbeResult>;
   /** Reconciles only CodeAlongAI-owned producer configuration and proves its MCP catalog. */

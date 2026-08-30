@@ -1,5 +1,5 @@
 import type { TrueForgeApi } from '@truefoundry/trueforge-sdk';
-import type { TrueForgeProducerRuntime } from './trueforge-contract';
+import type { TrueForgeProducerRuntime, TrueForgeRequestOptions } from './trueforge-contract';
 
 /** The short-lived, receipt-only authority boundary for one start request. */
 export interface StartTurnInput {
@@ -91,7 +91,8 @@ export class ReceiptBackedStartCoordinator {
   private readonly cancelledSignal = new Promise<void>((resolve) => { this.cancelWaiter = resolve; });
   private readonly abort = new AbortController();
   private nativeCancel: Promise<void> | undefined;
-  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number, signal?: AbortSignal) => Promise<void> = gracePeriod) {}
+  private teardown: { readonly controller: AbortController; readonly timer: ReturnType<typeof setTimeout> } | undefined;
+  public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number, signal?: AbortSignal) => Promise<void> = gracePeriod, private readonly teardownTimeoutMs = 5_000) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
     const operation = this.run(input); this.active = operation;
@@ -104,7 +105,7 @@ export class ReceiptBackedStartCoordinator {
     this.cancelled = true;
     this.cancelWaiter?.();
     this.abort.abort();
-    if (this.activeSessionId) this.requestNativeCancel(this.activeSessionId);
+    if (this.activeSessionId) this.beginTeardown(this.activeSessionId);
   }
   private async run(input: StartTurnInput): Promise<StartTurnResult> {
     let sessionId: string | undefined;
@@ -193,17 +194,23 @@ export class ReceiptBackedStartCoordinator {
       if (sessionId) {
         // A session is never deleted while its one native cancellation is in
         // flight. Owner disposal therefore cannot stop its runtime early.
-        const cancellation = this.requestNativeCancel(sessionId);
-        const cancelledWithinDeadline = await beforeDeadline(cancellation, deadline);
-        // If a provider ignores the deadline, keep ownership rather than
-        // deleting under its in-flight cancellation.
-        if (!cancelledWithinDeadline.completed) await cancellation;
-        await beforeDeadline(this.runtime.deleteSession(sessionId).catch(() => undefined), deadline);
+        const teardown = this.beginTeardown(sessionId);
+        try {
+          // The pinned SDK receives this AbortSignal on its actual HTTP request.
+          // Do not start deletion when cancellation did not settle in teardown.
+          const cancelled = await untilTeardown(this.nativeCancel!, teardown.controller.signal);
+          if (cancelled && !teardown.controller.signal.aborted) await untilTeardown(this.runtime.deleteSession(sessionId, teardownOptions(teardown.controller.signal, this.teardownTimeoutMs)), teardown.controller.signal);
+        } finally { clearTimeout(teardown.timer); }
       }
     }
   }
-  private requestNativeCancel(sessionId: string): Promise<void> {
-    return this.nativeCancel ??= this.runtime.cancelTurn(sessionId).catch(() => undefined);
+  private beginTeardown(sessionId: string): { readonly controller: AbortController; readonly timer: ReturnType<typeof setTimeout> } {
+    if (this.teardown) return this.teardown;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.teardownTimeoutMs);
+    this.teardown = { controller, timer };
+    this.nativeCancel = this.runtime.cancelTurn(sessionId, teardownOptions(controller.signal, this.teardownTimeoutMs)).catch(() => undefined);
+    return this.teardown;
   }
 }
 
@@ -260,4 +267,14 @@ async function beforeDeadline<T>(operation: Promise<T>, deadline: number, cancel
     ]);
   }
   finally { if (timer) clearTimeout(timer); }
+}
+function teardownOptions(abortSignal: AbortSignal, timeoutMs: number): TrueForgeRequestOptions { return { abortSignal, timeoutInSeconds: Math.max(0.001, timeoutMs / 1_000) }; }
+async function untilTeardown(operation: Promise<unknown>, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  return new Promise<boolean>((resolve) => {
+    const finish = (value: boolean): void => { signal.removeEventListener('abort', aborted); resolve(value); };
+    const aborted = (): void => finish(false);
+    signal.addEventListener('abort', aborted, { once: true });
+    operation.then(() => finish(true), () => finish(!signal.aborted));
+  });
 }

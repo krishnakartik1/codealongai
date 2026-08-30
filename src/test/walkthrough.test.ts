@@ -1510,6 +1510,44 @@ suite('receipt-backed start producer turn', () => {
     calls.push('runtime-shutdown');
     assert.deepEqual(calls, ['cancel', 'runtime-shutdown-attempt', 'delete', 'runtime-shutdown']);
   });
+  test('uses a teardown window after the request deadline before deleting', async () => {
+    const calls: string[] = [];
+    let releaseCancel: (() => void) | undefined; const cancelHeld = new Promise<void>((resolve) => { releaseCancel = resolve; });
+    let enteredCancel: (() => void) | undefined; const cancelEntered = new Promise<void>((resolve) => { enteredCancel = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { await new Promise<never>(() => undefined); }, cancelTurn: async (_id, options) => { calls.push(`cancel:${String(options?.abortSignal?.aborted)}`); enteredCancel!(); await cancelHeld; }, deleteSession: async (_id, options) => { calls.push(`delete:${String(options?.abortSignal?.aborted)}`); } };
+    const operation = new ReceiptBackedStartCoordinator(runtime, 5, async () => undefined, 100).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await cancelEntered;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseCancel!();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(calls, ['cancel:false', 'delete:false']);
+  });
+  test('aborts a stalled native cancellation before owner disposal releases runtime shutdown', async () => {
+    const calls: string[] = [];
+    let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await new Promise<never>(() => undefined); }, cancelTurn: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('cancel'); options?.abortSignal?.addEventListener('abort', () => { calls.push('cancel-aborted'); reject(new Error('aborted')); }, { once: true }); }), deleteSession: async () => { calls.push('delete'); } };
+    const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
+    const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await enteredEvents;
+    await owner.dispose();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    assert.equal(owner.activeRequestId, undefined);
+    calls.push('runtime-shutdown');
+    assert.deepEqual(calls, ['cancel', 'cancel-aborted', 'runtime-shutdown']);
+  });
+  test('aborts a stalled deletion before owner disposal releases runtime shutdown', async () => {
+    const calls: string[] = [];
+    let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await new Promise<never>(() => undefined); }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async (_id, options) => new Promise<void>((_resolve, reject) => { calls.push('delete'); options?.abortSignal?.addEventListener('abort', () => { calls.push('delete-aborted'); reject(new Error('aborted')); }, { once: true }); }) };
+    const owner = new StartTurnOwner((activeRuntime) => new ReceiptBackedStartCoordinator(activeRuntime, 100_000, async () => undefined, 5));
+    const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await enteredEvents;
+    await owner.dispose();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    assert.equal(owner.activeRequestId, undefined);
+    calls.push('runtime-shutdown');
+    assert.deepEqual(calls, ['cancel', 'delete', 'delete-aborted', 'runtime-shutdown']);
+  });
   test('disables pinned SDK request retries and stream reconnects at client construction', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
   });
