@@ -65,8 +65,8 @@ jobs:
             if ! git cat-file -e "$commit^:package.json" 2> /dev/null; then
               continue
             fi
-            commit_version="$(git show "$commit:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
-            parent_version="$(git show "$commit^:package.json" | node -p \"JSON.parse(require('fs').readFileSync(0, 'utf8')).version\")"
+            commit_version=$(git show "$commit:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+            parent_version=$(git show "$commit^:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
             if [ "$commit_version" = "${{ steps.version.outputs.extension_version }}" ] && [ "$parent_version" != "$commit_version" ]; then
               has_version_bump=true
               break
