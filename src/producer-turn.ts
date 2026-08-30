@@ -87,6 +87,8 @@ export class ReceiptBackedStartCoordinator {
   private active: Promise<StartTurnResult> | undefined;
   private activeSessionId: string | undefined;
   private cancelled = false;
+  private cancelWaiter: (() => void) | undefined;
+  private readonly cancelledSignal = new Promise<void>((resolve) => { this.cancelWaiter = resolve; });
   public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number) => Promise<void> = gracePeriod) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
@@ -94,23 +96,30 @@ export class ReceiptBackedStartCoordinator {
     void operation.finally(() => { if (this.active === operation) this.active = undefined; });
     return operation;
   }
-  public async cancel(): Promise<void> { this.cancelled = true; if (this.activeSessionId) await this.runtime.cancelTurn(this.activeSessionId).catch(() => undefined); }
+  /** Wake every producer wait immediately. Cleanup remains owned by run(). */
+  public cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    this.cancelWaiter?.();
+    if (this.activeSessionId) void this.runtime.cancelTurn(this.activeSessionId).catch(() => undefined);
+  }
   private async run(input: StartTurnInput): Promise<StartTurnResult> {
     let sessionId: string | undefined;
     const deadline = Date.now() + this.timeoutMs;
     try {
       const creating = this.runtime.createSession({ agent: { spec: startProducerAgentSpec(input) } });
-      const session = await beforeDeadline(creating, deadline);
+      const session = await beforeDeadline(creating, deadline, this.cancelledSignal);
       if (!session.completed) {
         // A timed-out create may still succeed after the caller has gone away.
         // Dispose that late session without retaining it in extension memory.
         void creating.then((value) => { const lateId = idOf(value); return lateId ? this.runtime.deleteSession(lateId).catch(() => undefined) : undefined; }).catch(() => undefined);
-        return { status: 'failed', diagnostic: 'deadline_exceeded' };
+        return { status: 'failed', diagnostic: session.cancelled ? 'cancelled' : 'deadline_exceeded' };
       }
       sessionId = idOf(session.value); this.activeSessionId = sessionId;
+      if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
-      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start a walkthrough for request ID ${input.requestId}.` }], previousTurnId: 'none' } }), deadline);
-      if (!turn.completed) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+      const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start a walkthrough for request ID ${input.requestId}.` }], previousTurnId: 'none' } }), deadline, this.cancelledSignal);
+      if (!turn.completed) return { status: 'failed', diagnostic: turn.cancelled ? 'cancelled' : 'deadline_exceeded' };
       const turnId = idOf(turn.value);
       if (!turnId) return { status: 'failed', diagnostic: 'turn_unavailable' };
       const reducer = new StartTurnReducer(input.requestId);
@@ -124,8 +133,8 @@ export class ReceiptBackedStartCoordinator {
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           const remaining = deadline - Date.now();
           if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
-          const next = await beforeDeadline(iterator.next(), deadline);
-          if (!next.completed) return { status: 'failed', diagnostic: 'deadline_exceeded' };
+          const next = await beforeDeadline(iterator.next(), deadline, this.cancelledSignal);
+          if (!next.completed) return { status: 'failed', diagnostic: next.cancelled ? 'cancelled' : 'deadline_exceeded' };
           // Cancellation may have arrived while the native iterator was
           // blocked. Do not let its subsequently delivered receipt commit.
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
@@ -144,9 +153,14 @@ export class ReceiptBackedStartCoordinator {
         // The stream may have ended between persisted events. Reconcile once
         // before the one permitted cursor-resubscription.
         if (subscription === 0) {
-          for (const event of await this.runtime.listTurnEvents(sessionId, turnId).catch(() => [])) {
+          const persisted = await beforeDeadline(this.runtime.listTurnEvents(sessionId, turnId).catch(() => []), deadline, this.cancelledSignal);
+          if (!persisted.completed) return { status: 'failed', diagnostic: persisted.cancelled ? 'cancelled' : 'deadline_exceeded' };
+          // Persisted history is authoritative for causality, not merely a
+          // cursor continuation: it can contain a call missed before a live
+          // response with a higher sequence. Stable event ids make replay safe.
+          for (const event of [...persisted.value].sort((left, right) => (eventEnvelope(left).sequence ?? Number.MAX_SAFE_INTEGER) - (eventEnvelope(right).sequence ?? Number.MAX_SAFE_INTEGER))) {
             const envelope = eventEnvelope(event);
-            if (envelope.sequence !== undefined) { if (envelope.sequence <= lastSequence) continue; lastSequence = envelope.sequence; }
+            if (envelope.sequence !== undefined) lastSequence = Math.max(lastSequence, envelope.sequence);
             reducer.accept(envelope.event);
             const reconciled = reducer.result;
             if (reconciled?.status === 'failed') return reconciled;
@@ -165,7 +179,7 @@ export class ReceiptBackedStartCoordinator {
       if (sessionId) {
         // Start each best-effort cleanup action, but never let cleanup extend the
         // request's absolute deadline or retain the coordinator indefinitely.
-        await beforeDeadline(this.runtime.cancelTurn(sessionId).catch(() => undefined), deadline);
+        if (!this.cancelled) await beforeDeadline(this.runtime.cancelTurn(sessionId).catch(() => undefined), deadline);
         await beforeDeadline(this.runtime.deleteSession(sessionId).catch(() => undefined), deadline);
       }
     }
@@ -206,9 +220,15 @@ function terminalState(value: unknown): 'done' | 'failed' | undefined { const re
 async function gracePeriod(milliseconds: number): Promise<void> { if (milliseconds <= 0) return; await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)); }
 function jsonValue(value: string): unknown { try { return JSON.parse(value); } catch { return undefined; } }
 function jsonObject(value: unknown): Record<string, unknown> | undefined { return typeof value === 'string' ? object(jsonValue(value)) : object(value); }
-async function beforeDeadline<T>(operation: Promise<T>, deadline: number): Promise<{ completed: true; value: T } | { completed: false }> {
-  const remaining = deadline - Date.now(); if (remaining <= 0) return { completed: false };
+async function beforeDeadline<T>(operation: Promise<T>, deadline: number, cancelled?: Promise<void>): Promise<{ completed: true; value: T } | { completed: false; cancelled: boolean }> {
+  const remaining = deadline - Date.now(); if (remaining <= 0) return { completed: false, cancelled: false };
   let timer: ReturnType<typeof setTimeout> | undefined;
-  try { return await Promise.race([operation.then((value) => ({ completed: true as const, value })), new Promise<{ completed: false }>((resolve) => { timer = setTimeout(() => resolve({ completed: false }), remaining); })]); }
+  try {
+    return await Promise.race([
+      operation.then((value) => ({ completed: true as const, value })),
+      new Promise<{ completed: false; cancelled: false }>((resolve) => { timer = setTimeout(() => resolve({ completed: false, cancelled: false }), remaining); }),
+      cancelled?.then(() => ({ completed: false as const, cancelled: true })) ?? new Promise<never>(() => undefined)
+    ]);
+  }
   finally { if (timer) clearTimeout(timer); }
 }

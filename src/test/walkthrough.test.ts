@@ -85,6 +85,17 @@ async function withProducerConfigured<T>(run: () => Promise<T>): Promise<T> {
   finally { await configuration.update('model', priorModel, vscode.ConfigurationTarget.Global); await configuration.update('reasoningEffort', priorReasoning, vscode.ConfigurationTarget.Global); }
 }
 
+async function clearWalkthroughForStartTest(api: WalkthroughTestApi): Promise<void> {
+  if (!api.session) return;
+  const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+  const nativeWarning = notificationWindow.showWarningMessage;
+  notificationWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+  try {
+    await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+    await eventually(() => api.session === undefined ? true : undefined, 'the existing walkthrough should reset before a start-failure assertion');
+  } finally { notificationWindow.showWarningMessage = nativeWarning; }
+}
+
 async function writeOwnershipLock(lock: string, record: object | string): Promise<void> {
   await mkdir(lock);
   await writeFile(path.join(lock, 'ownership.json'), typeof record === 'string' ? record : JSON.stringify(record));
@@ -420,7 +431,7 @@ suite('Extension Development Host walkthrough', () => {
       const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
       const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
       const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
-      if (api.session) return; // Earlier public coverage owns the reset flow.
+      await clearWalkthroughForStartTest(api);
       const errorWindow = vscode.window as unknown as { showErrorMessage: typeof vscode.window.showErrorMessage };
       const nativeError = errorWindow.showErrorMessage;
       let select: ((action: string) => void) | undefined;
@@ -493,7 +504,7 @@ suite('Extension Development Host walkthrough', () => {
   test('shows sanitized start failure output without retrying or changing its request', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
-      if (api.session) return;
+      await clearWalkthroughForStartTest(api);
       const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
       const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
       const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
@@ -531,7 +542,7 @@ suite('Extension Development Host walkthrough', () => {
   test('a sidecar crash cancels the owned active turn without replaying it', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
-      if (api.session) return;
+      await clearWalkthroughForStartTest(api);
       const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
       const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
       const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
@@ -1458,6 +1469,35 @@ suite('receipt-backed start producer turn', () => {
     await owner.start(runtimeB, { ...input, requestId: 'request-2' });
     assert.equal(bSessions, 1);
   });
+  test('cancels a creating session before any turn and deletes its late result', async () => {
+    let resolveSession: ((value: { id: string }) => void) | undefined;
+    let turns = 0; const deleted: string[] = [];
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => new Promise<{ id: string }>((resolve) => { resolveSession = resolve; }), runTurn: async () => { turns += 1; return { id: 'turn' }; }, deleteSession: async (id) => { deleted.push(id); } };
+    const owner = new StartTurnOwner();
+    const operation = owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await eventually(() => resolveSession ? true : undefined, 'session creation should begin');
+    await owner.cancel();
+    assert.deepEqual(await operation, { status: 'failed', diagnostic: 'cancelled' });
+    resolveSession!({ id: 'late-session' });
+    await eventually(() => deleted.length === 1 ? true : undefined, 'a late session must be deleted after cancellation');
+    assert.deepEqual(deleted, ['late-session']);
+    assert.equal(turns, 0);
+  });
+  test('disposes an unresolved turn before allowing runtime shutdown', async () => {
+    const calls: string[] = [];
+    const never = new Promise<never>(() => undefined);
+    let entered: (() => void) | undefined; const enteredEvents = new Promise<void>((resolve) => { entered = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { entered!(); await never; }, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    const owner = new StartTurnOwner();
+    owner.start(runtime, { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' });
+    await eventually(() => owner.activeRequestId === 'request-1' ? true : undefined, 'the owner should retain the active turn');
+    await enteredEvents;
+    await owner.dispose();
+    assert.equal(owner.activeRequestId, undefined);
+    calls.push('runtime-shutdown');
+    assert.equal(calls.includes('cancel'), true);
+    assert.deepEqual(calls.slice(-2), ['delete', 'runtime-shutdown']);
+  });
   test('disables pinned SDK request retries and stream reconnects at client construction', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
   });
@@ -1532,6 +1572,24 @@ suite('receipt-backed start producer turn', () => {
     const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
     const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield response('start', receipt, 1); }, listTurnEvents: async () => [call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 2), response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }, 3), call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 4), { sequenceNumber: 5, event: { type: 'turn.done', state: { status: 'done' } } }] };
     assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+  });
+
+  test('restores a persisted lower-sequence call before a live higher-sequence response', async () => {
+    const subscriptions: (number | undefined)[] = [];
+    const call = (id: string, name: string, arguments_: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'model.message', id: `call-${id}`, threadId: 'main', createdAt: 'now', toolCalls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(arguments_) }, toolInfo: { type: 'mcp', serverName: 'codealongai-mcp' } }] } });
+    const response = (id: string, content: object, sequenceNumber: number) => ({ sequenceNumber, event: { type: 'tool.response', id: `response-${id}`, threadId: 'main', createdAt: 'now', toolCallId: id, content: JSON.stringify(content) } });
+    const receipt = { schemaVersion: 1, requestId: 'request-1', sessionId: 'session', revision: 1, attentionStopId: 'origin' };
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* (_s, _t, after) { subscriptions.push(after); if (after === undefined) { yield response('authority', { input: { origin: { path: 'checkout.ts', range: { start: { line: 2 }, end: { line: 2 } } } } }, 2); return; } yield call('start', 'codealongai_start_walkthrough', { requestId: 'request-1' }, 3); yield response('start', receipt, 4); yield { sequenceNumber: 5, event: { type: 'turn.done', state: { status: 'done' } } }; }, listTurnEvents: async () => [call('authority', 'codealongai_get_walkthrough_request', { requestId: 'request-1' }, 1)] };
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 100, async () => undefined).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'committed', receipt });
+    assert.deepEqual(subscriptions, [undefined, 2]);
+  });
+
+  test('bounds a stalled persisted-event reconciliation by the start deadline', async () => {
+    const never = new Promise<readonly unknown[]>(() => undefined);
+    const calls: string[] = [];
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => ({ id: 'session' }), runTurn: async () => ({ id: 'turn' }), events: async function* () { yield* []; }, listTurnEvents: async () => never, cancelTurn: async () => { calls.push('cancel'); }, deleteSession: async () => { calls.push('delete'); } };
+    assert.deepEqual(await new ReceiptBackedStartCoordinator(runtime, 5).start({ requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' }), { status: 'failed', diagnostic: 'deadline_exceeded' });
+    assert.deepEqual(calls, ['cancel', 'delete']);
   });
 
   test('reconciles an incomplete live trace then resubscribes exactly once at its numeric cursor', async () => {

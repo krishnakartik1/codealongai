@@ -18,6 +18,11 @@ export class StartTurnOwner {
   /** Cancellation is intentionally not a release. The active operation keeps
    * ownership until its cleanup has finished, so an adapter replacement cannot
    * overlap a still-running native turn. */
-  public async cancel(): Promise<void> { await this.active?.coordinator.cancel(); }
-  public async dispose(): Promise<void> { await this.cancel(); }
+  public async cancel(): Promise<void> { this.active?.coordinator.cancel(); }
+  /** Shutdown waits for the coordinator's bounded cancellation and cleanup. */
+  public async dispose(): Promise<void> {
+    const active = this.active;
+    active?.coordinator.cancel();
+    await active?.operation;
+  }
 }
