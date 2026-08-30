@@ -165,7 +165,11 @@ export class ReceiptBackedStartCoordinator {
       // A native stream can close between a persisted call and response. Subscribe
       // once more to the same turn; the reducer's sequence set makes that safe.
       for (let subscription = 0; subscription < 2; subscription += 1) {
-        const iterator = this.runtime.events(sessionId, turnId, lastSequence < 0 ? undefined : lastSequence, requestOptions(this.abort.signal, deadline))[Symbol.asyncIterator]();
+        const eventsAbort = new AbortController();
+        const abortEvents = (): void => eventsAbort.abort();
+        if (this.abort.signal.aborted) abortEvents(); else this.abort.signal.addEventListener('abort', abortEvents, { once: true });
+        const iterator = this.runtime.events(sessionId, turnId, lastSequence < 0 ? undefined : lastSequence, requestOptions(eventsAbort.signal, deadline))[Symbol.asyncIterator]();
+        let recoverableEof = false;
         try { while (true) {
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           const remaining = deadline - Date.now();
@@ -180,7 +184,7 @@ export class ReceiptBackedStartCoordinator {
           // Cancellation may have arrived while the native iterator was
           // blocked. Do not let its subsequently delivered receipt commit.
           if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
-          if (next.value.value.done) break;
+          if (next.value.value.done) { recoverableEof = true; break; }
           const envelope = eventEnvelope(next.value.value.value);
           if (envelope.sequence !== undefined) { if (seenSequences.has(envelope.sequence)) continue; seenSequences.add(envelope.sequence); lastSequence = Math.max(lastSequence, envelope.sequence); }
           reducer.accept(envelope.event);
@@ -191,9 +195,18 @@ export class ReceiptBackedStartCoordinator {
           if (terminal === 'failed' && !receipt) return { status: 'failed', diagnostic: 'terminal_error' };
           if (terminal === 'done' && receipt) return receipt;
         } } finally {
-          // EOF is recoverable. Closing this subscription must not cancel the
-          // native turn before its one reconciliation and cursor retry.
-          if (iterator.return) await iterator.return().catch(() => undefined);
+          this.abort.signal.removeEventListener('abort', abortEvents);
+          // EOF is recoverable. Final exits abort the blocked stream read and
+          // bound return() by the same teardown lease as cancel/delete.
+          if (recoverableEof) {
+            if (iterator.return) await iterator.return().catch(() => undefined);
+          } else {
+            eventsAbort.abort();
+            this.beginTeardown(sessionId);
+            // return() may be queued behind the outstanding next(). The
+            // teardown lease owns native cancel/delete; never hold it here.
+            void iterator.return?.().catch(() => undefined);
+          }
         }
         const result = reducer.result; if (result?.status === 'failed') return result; if (result?.status === 'committed') { receipt = result; publish(receipt); }
         // The stream may have ended between persisted events. Reconcile once

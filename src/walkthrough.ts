@@ -47,6 +47,7 @@ export class WalkthroughAuthority {
   private tentativeStart: StartReceipt | undefined;
   private tentativeSession: WalkthroughSession | undefined;
   private acceptedStartReceipt: StartReceipt | undefined;
+  private acceptedStartOrigin: OriginDescriptor | undefined;
   private questionRequest: QuestionRequest | undefined;
   private readonly questionRequests = new Map<string, QuestionRequest>();
   private readonly questionReceipts = new Map<string, { commit: QuestionCommit; outcome: QuestionOutcome; receipt: QuestionReceipt }>();
@@ -56,7 +57,7 @@ export class WalkthroughAuthority {
   private readonly resetRequests = new Map<string, ResetRequest>();
   private readonly sessionReceipts = new Map<string, SessionReceipt>();
   private session: WalkthroughSession | undefined;
-  public captureStart(origin: OriginAnchor): StartRequest { if (this.startRequest?.status === 'pending') return this.getStartRequest(this.startRequest.id)!; const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; this.acceptedStartReceipt = undefined; return this.getStartRequest(request.id)!; }
+  public captureStart(origin: OriginAnchor): StartRequest { if (this.startRequest?.status === 'pending') return this.getStartRequest(this.startRequest.id)!; const request: StartRequest = { id: identifier('request'), kind: 'start', origin: copyAnchor(origin), snapshot: { capturedAt: new Date().toISOString(), origin: copyAnchor(origin) }, status: 'pending' }; this.startRequest = request; this.acceptedStartReceipt = undefined; this.acceptedStartOrigin = undefined; return this.getStartRequest(request.id)!; }
   public getStartRequest(id: string): StartRequest | undefined { const request = this.startRequest?.id === id ? this.startRequest : undefined; return request && { ...request, origin: copyAnchor(request.origin), snapshot: { ...request.snapshot, origin: copyAnchor(request.snapshot.origin) } }; }
   public getSession(): WalkthroughSession | undefined { return this.session && copySession(this.session); }
   public getPendingStart(): StartRequest | undefined { return this.startRequest?.status === 'pending' ? this.getStartRequest(this.startRequest.id) : undefined; }
@@ -75,9 +76,10 @@ export class WalkthroughAuthority {
     this.tentativeStart = { schemaVersion: 1, requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
     return copySession(session);
   }
+  public cachedStartReceipt(requestId: string, origin: OriginDescriptor): StartReceipt | undefined { return this.acceptedStartReceipt?.requestId === requestId && this.acceptedStartOrigin && JSON.stringify(this.acceptedStartOrigin) === JSON.stringify(origin) ? { ...this.acceptedStartReceipt } : undefined; }
   /** Finalize only the exact receipt produced by the still-current tentative
    * session. Accepted receipts are immutable and cannot be rolled back. */
-  public acknowledgeStartReceipt(receipt: StartReceipt): boolean { const request = this.startRequest; const tentative = this.tentativeStart; const session = this.tentativeSession; if (!request || request.status !== 'pending' || !tentative || !session || JSON.stringify(tentative) !== JSON.stringify(receipt) || session.id !== receipt.sessionId || session.revision !== receipt.revision || session.attentionStopId !== receipt.attentionStopId) return false; request.status = 'consumed'; this.session = session; this.tentativeSession = undefined; this.tentativeStart = undefined; this.acceptedStartReceipt = { ...receipt }; return true; }
+  public acknowledgeStartReceipt(receipt: StartReceipt): boolean { const request = this.startRequest; const tentative = this.tentativeStart; const session = this.tentativeSession; if (!request || request.status !== 'pending' || !tentative || !session || JSON.stringify(tentative) !== JSON.stringify(receipt) || session.id !== receipt.sessionId || session.revision !== receipt.revision || session.attentionStopId !== receipt.attentionStopId) return false; request.status = 'consumed'; this.session = session; this.tentativeSession = undefined; this.tentativeStart = undefined; this.acceptedStartReceipt = { ...receipt }; this.acceptedStartOrigin = { ...session.origin, range: copyRange(session.origin.range) }; return true; }
   /** Remove only the session still owned by this exact tentative receipt.
    * The original request object was never consumed, so retry sees the same
    * immutable request identity and origin. */

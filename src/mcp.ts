@@ -88,6 +88,8 @@ export class LoopbackMcpEndpoint {
     }, (input, context) => {
       if (context.mcpReq.signal.aborted) return domainErrorResult('request_cancelled', 'The request was cancelled before commit.', true);
       try {
+        const cached = this.authority.cachedStartReceipt(input.requestId, input.origin);
+        if (cached) return { structuredContent: cached, content: [{ type: 'text', text: JSON.stringify(cached) }] };
         const session = this.authority.startTentative(input.requestId, input.origin);
         const receipt = { schemaVersion: 1, requestId: input.requestId, sessionId: session.id, revision: session.revision, attentionStopId: session.attentionStopId };
         return { structuredContent: receipt, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
