@@ -24,6 +24,7 @@ import { DaytonaProbeState, producerAgentSpec, trueForgeClientOptions } from '..
 import { ProducerReadiness } from '../producer-readiness';
 import { setBuildCommitForTests } from '../build-identity';
 import { ReceiptBackedStartCoordinator, StartTurnReducer, startProducerAgentSpec } from '../producer-turn';
+import { StartTurnOwner } from '../start-turn-owner';
 
 interface WalkthroughTestApi {
   readonly endpointState: string;
@@ -1236,6 +1237,16 @@ suite('bounded workspace context', () => {
 });
 
 suite('receipt-backed start producer turn', () => {
+  test('owns one active turn without queueing duplicates and cancels it on disposal', async () => {
+    let cancelCalls = 0;
+    const pending = new Promise<never>(() => undefined);
+    let started: (() => void) | undefined; const startedSession = new Promise<void>((resolve) => { started = resolve; });
+    const runtime: TrueForgeProducerRuntime = { ...emptyTrueForgeProducer, createSession: async () => { started!(); return { id: 'session' }; }, runTurn: async () => ({ id: 'turn' }), events: async function* () { await pending; }, cancelTurn: async () => { cancelCalls += 1; } };
+    const owner = new StartTurnOwner(); const input = { requestId: 'request-1', model: 'openai/gpt', reasoningEffort: 'medium', mcpUrl: 'unused' };
+    assert.equal(owner.start(runtime, input), owner.start(runtime, { ...input, requestId: 'request-2' }));
+    await startedSession; await new Promise<void>((resolve) => setImmediate(resolve)); await owner.dispose();
+    assert.equal(cancelCalls, 1);
+  });
   test('disables pinned SDK request retries and stream reconnects at client construction', () => {
     assert.deepEqual(trueForgeClientOptions('http://127.0.0.1:1234'), { baseUrl: 'http://127.0.0.1:1234', maxRetries: 0, stream: { reconnectionEnabled: false, maxReconnectionAttempts: 0 } });
   });

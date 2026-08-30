@@ -10,7 +10,7 @@ import type { DaytonaProbeResult, DaytonaReadinessResult } from './daytona';
 import { ProducerReadiness, type ProducerReadinessResult } from './producer-readiness';
 import { extensionBuildCommit } from './build-identity';
 import { isUbuntuX64, resolveNodeExecutable } from './trueforge-environment';
-import { ReceiptBackedStartCoordinator } from './producer-turn';
+import { StartTurnOwner } from './start-turn-owner';
 
 let disposeExtension: () => Promise<void> = async () => undefined;
 let testRuntimeFactory: ((reportUnexpectedExit: (message: string) => void) => TrueForgeRuntime) | undefined;
@@ -87,8 +87,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
   const replyTargetStopIds = new WeakMap<object, string>();
   const questionOutcomes = new Map<string, QuestionOutcome>();
   let retryStart: (() => Promise<void>) | undefined;
-  let startCoordinator: ReceiptBackedStartCoordinator | undefined;
-  let startCoordinatorProducer: TrueForgeProducerRuntime | undefined;
+  const startTurnOwner = new StartTurnOwner();
   let retryReplacement: (() => Promise<void>) | undefined;
   let retryReset: (() => Promise<void>) | undefined;
   let retryQuestion: (() => Promise<void>) | undefined;
@@ -261,8 +260,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       } else {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const producer = trueForge.producer;
-        if (!startCoordinator || startCoordinatorProducer !== producer) { startCoordinator = new ReceiptBackedStartCoordinator(producer); startCoordinatorProducer = producer; }
-        const result = await startCoordinator.start({ requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` });
+        const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
+          const cancellation = token.onCancellationRequested(() => { void startTurnOwner.dispose(); });
+          try { return await startTurnOwner.start(producer, { requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp` }); }
+          finally { cancellation.dispose(); }
+        });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
       }
       const session = authority.getSession();
@@ -406,7 +408,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     const selected = await vscode.window.showQuickPick(items, { title: 'Walkthrough graph', placeHolder: 'Select a walkthrough stop' });
     if (selected) await navigateDestination(selected.stopId);
   });
-  disposeExtension = async () => { disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
+  disposeExtension = async () => { await startTurnOwner.dispose(); authority.discardStart(); disposeThreads(); await Promise.all([lifecycle.dispose(), trueForge.dispose()]); };
   context.subscriptions.push(askWalkthroughCommand, configureTrueForgeCommand, resetWalkthroughCommand, submitCommentCommand, backCommand, nextCommand, destinationsCommand, controller, output, vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('codealongai.mcp')) void updateEndpoint().then(() => {
     if (!mcpReady()) return;
     const replacement = authority.getPendingReplacement();

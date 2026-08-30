@@ -85,6 +85,8 @@ export class StartTurnReducer {
 /** One fresh session and one unchained turn. A receipt, not terminal prose, is success. */
 export class ReceiptBackedStartCoordinator {
   private active: Promise<StartTurnResult> | undefined;
+  private activeSessionId: string | undefined;
+  private cancelled = false;
   public constructor(private readonly runtime: TrueForgeProducerRuntime, private readonly timeoutMs = 180_000, private readonly waitForGrace: (milliseconds: number) => Promise<void> = gracePeriod) {}
   public start(input: StartTurnInput): Promise<StartTurnResult> {
     if (this.active) return this.active;
@@ -92,6 +94,7 @@ export class ReceiptBackedStartCoordinator {
     void operation.finally(() => { if (this.active === operation) this.active = undefined; });
     return operation;
   }
+  public async cancel(): Promise<void> { this.cancelled = true; if (this.activeSessionId) await this.runtime.cancelTurn(this.activeSessionId).catch(() => undefined); }
   private async run(input: StartTurnInput): Promise<StartTurnResult> {
     let sessionId: string | undefined;
     const deadline = Date.now() + this.timeoutMs;
@@ -104,7 +107,7 @@ export class ReceiptBackedStartCoordinator {
         void creating.then((value) => { const lateId = idOf(value); return lateId ? this.runtime.deleteSession(lateId).catch(() => undefined) : undefined; }).catch(() => undefined);
         return { status: 'failed', diagnostic: 'deadline_exceeded' };
       }
-      sessionId = idOf(session.value);
+      sessionId = idOf(session.value); this.activeSessionId = sessionId;
       if (!sessionId) return { status: 'failed', diagnostic: 'session_unavailable' };
       const turn = await beforeDeadline(this.runtime.runTurn({ sessionId, request: { input: [{ type: 'user.message', content: `Start a walkthrough for request ID ${input.requestId}.` }], previousTurnId: 'none' } }), deadline);
       if (!turn.completed) return { status: 'failed', diagnostic: 'deadline_exceeded' };
@@ -118,6 +121,7 @@ export class ReceiptBackedStartCoordinator {
       for (let subscription = 0; subscription < 2; subscription += 1) {
         const iterator = this.runtime.events(sessionId, turnId, lastSequence < 0 ? undefined : lastSequence)[Symbol.asyncIterator]();
         while (true) {
+          if (this.cancelled) return { status: 'failed', diagnostic: 'cancelled' };
           const remaining = deadline - Date.now();
           if (remaining <= 0) return { status: 'failed', diagnostic: 'deadline_exceeded' };
           const next = await beforeDeadline(iterator.next(), deadline);
@@ -154,6 +158,7 @@ export class ReceiptBackedStartCoordinator {
       return { status: 'failed', diagnostic: 'missing_receipt' };
     } catch { return { status: 'failed', diagnostic: 'producer_error' }; }
     finally {
+      this.activeSessionId = undefined;
       if (sessionId) {
         // Start each best-effort cleanup action, but never let cleanup extend the
         // request's absolute deadline or retain the coordinator indefinitely.
