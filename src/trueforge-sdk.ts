@@ -113,9 +113,9 @@ export class SdkTrueForgeProducerRuntime implements TrueForgeProducerRuntime {
   private readConfiguredModels(): Promise<unknown> { return this.client.models.list(); }
   private readModels(): Promise<unknown> { return this.readConfiguredModels(); }
   private readSkills(): Promise<unknown> { return this.client.skills.list(); }
-  private async upsertCodeAlongAiSkill(manifest: Record<string, unknown>): Promise<void> { const upsert = this.client.settings.skills.createOrUpdate; if (!upsert) throw new Error('CodeAlongAI skill upsert is unavailable'); await upsert({ manifest }); }
-  private async upsertCodeAlongAiConnector(manifest: Record<string, unknown>): Promise<void> { const upsert = this.client.settings.mcpServers?.createOrUpdate; if (!upsert) throw new Error('CodeAlongAI connector upsert is unavailable'); await upsert({ manifest }); }
-  private async listCodeAlongAiMcpTools(): Promise<unknown> { const listTools = this.client.mcpServers?.listTools; if (!listTools) throw new Error('CodeAlongAI MCP discovery is unavailable'); return listTools('codealongai-mcp'); }
+  private async upsertCodeAlongAiSkill(manifest: Record<string, unknown>): Promise<void> { if (!this.client.settings.skills.createOrUpdate) throw new Error('CodeAlongAI skill upsert is unavailable'); await this.client.settings.skills.createOrUpdate({ manifest }); }
+  private async upsertCodeAlongAiConnector(manifest: Record<string, unknown>): Promise<void> { if (!this.client.settings.mcpServers?.createOrUpdate) throw new Error('CodeAlongAI connector upsert is unavailable'); await this.client.settings.mcpServers.createOrUpdate({ manifest }); }
+  private async listCodeAlongAiMcpTools(): Promise<unknown> { if (!this.client.mcpServers?.listTools) throw new Error('CodeAlongAI MCP discovery is unavailable'); return this.client.mcpServers.listTools('codealongai-mcp'); }
 }
 
 /** Opaque lifecycle-only state shared by replacement SDK adapters. */
@@ -169,12 +169,16 @@ async function observedSandboxCreation(runtime: TrueForgeProducerRuntime, sessio
   return 'absent';
 }
 function hasSandboxPermissionStatus(value: unknown): boolean { return typeof value === 'string' && /(^|\D)(401|403)(\D|$)/.test(value); }
-export interface TerminalTimer { waitFor<T>(operation: Promise<T>): Promise<T | undefined>; }
-const systemTerminalTimer: TerminalTimer = { waitFor: (operation) => Promise.race([operation, new Promise<undefined>((resolve) => setTimeout(resolve, 10_000))]) };
+export interface TerminalTimer { waitFor<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined>; now?(): number; }
+const systemTerminalTimer: TerminalTimer = { waitFor: (operation, timeoutMs) => Promise.race([operation, new Promise<undefined>((resolve) => setTimeout(resolve, timeoutMs))]), now: () => Date.now() };
 async function terminalReadiness(runtime: TrueForgeProducerRuntime, sessionId: string, turnId: string, timer: TerminalTimer): Promise<'ready' | 'authentication' | 'network'> {
   const iterator = runtime.events(sessionId, turnId)[Symbol.asyncIterator]();
+  const now = timer.now ?? Date.now;
+  const deadline = now() + 10_000;
   while (true) {
-    const next = await timer.waitFor(iterator.next());
+    const remaining = deadline - now();
+    if (remaining <= 0) { await runtime.cancelTurn(sessionId).catch(() => undefined); return 'network'; }
+    const next = await timer.waitFor(iterator.next(), remaining);
     if (!next) { await runtime.cancelTurn(sessionId).catch(() => undefined); return 'network'; }
     if (next.done) return 'network';
     const record = asRecord(next.value);
