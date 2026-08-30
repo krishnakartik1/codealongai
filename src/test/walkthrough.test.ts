@@ -400,6 +400,36 @@ suite('Extension Development Host walkthrough', () => {
     }));
   });
 
+  test('commits confirmed Reset while cancelled producer cleanup is still deferred', async () => {
+    const api = await activeWalkthrough();
+    await withProducerConfigured(() => withMcpEnabled(api, async () => {
+      const notificationWindow = vscode.window as unknown as { showWarningMessage: typeof vscode.window.showWarningMessage };
+      const nativeWarning = notificationWindow.showWarningMessage;
+      let releaseEvents: (() => void) | undefined; let releaseCancel: (() => void) | undefined;
+      commandRuntime.producerEventWait = new Promise<void>((resolve) => { releaseEvents = resolve; });
+      commandRuntime.producerCancelWait = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      notificationWindow.showWarningMessage = (async (message: string) => message === 'Reset this walkthrough? All walkthrough conversations will be cleared.' ? 'Reset walkthrough' : undefined) as typeof vscode.window.showWarningMessage;
+      try {
+        if (api.session) { await vscode.commands.executeCommand('codealongai.walkthrough.reset'); await eventually(() => api.session === undefined ? true : undefined, 'the prior walkthrough should reset'); }
+        const workspace = vscode.workspace.workspaceFolders?.[0]; assert.ok(workspace);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(workspace.uri, 'checkout.ts'));
+        const editor = await vscode.window.showTextDocument(document); editor.selection = new vscode.Selection(2, 0, 2, 22);
+        commandRuntime.producerEventWait = undefined;
+        await vscode.commands.executeCommand('codealongai.walkthrough.ask');
+        const session = await eventually(() => api.session, 'Ask should establish a walkthrough before Reset');
+        const target = await eventually(() => api.replyTargetAt(session.attentionStopId), 'the active stop should accept a reply');
+        commandRuntime.producerEventWait = new Promise<void>((resolve) => { releaseEvents = resolve; });
+        const producerCallsBeforeReply = commandRuntime.producerTurnCalls.length;
+        const reply = vscode.commands.executeCommand('codealongai.walkthrough.submitComment', { thread: target, text: 'Keep this pending.' });
+        await eventually(() => commandRuntime.producerTurnCalls.length === producerCallsBeforeReply + 3 ? true : undefined, 'the reply producer should be active');
+        await vscode.commands.executeCommand('codealongai.walkthrough.reset');
+        assert.equal(api.session, undefined, 'Reset must not wait for producer teardown');
+        assert.equal(commandRuntime.producerCancelCalls > 0, true);
+        releaseEvents!(); releaseCancel!(); await reply;
+      } finally { releaseEvents?.(); releaseCancel?.(); commandRuntime.producerEventWait = undefined; commandRuntime.producerCancelWait = undefined; notificationWindow.showWarningMessage = nativeWarning; }
+    }));
+  });
+
   test('does not queue duplicate public Asks and cancellation keeps the request pending', async () => {
     const api = await activeWalkthrough();
     await withProducerConfigured(() => withMcpEnabled(api, async () => {
@@ -1437,6 +1467,8 @@ suite('walkthrough replacement and reset authority', () => {
     assert.throws(() => authority.replace(request.id, before.id, before.revision, { ...newOrigin, document: 'wrong.ts' }));
     assert.deepEqual(authority.getSession(), before);
     const receipt = authority.replace(request.id, before.id, before.revision, newOrigin);
+    assert.deepEqual(authority.getSession(), before);
+    assert.equal(authority.acknowledgeReplacementReceipt(receipt), true);
     assert.deepEqual(receipt, { schemaVersion: 1, status: 'committed', requestId: request.id, sessionId: authority.getSession()!.id, revision: 1, attentionStopId: 'new' });
     assert.deepEqual(authority.replace(request.id, before.id, before.revision, newOrigin), receipt);
     assert.equal(authority.getSession()!.stops.length, 1);
@@ -2347,6 +2379,25 @@ suite('loopback endpoint traffic guard', () => {
 
 suite('replacement and reset over loopback MCP', () => {
   const origin = { stopId: 'origin', displayName: 'Origin', explanation: 'Start', document: 'checkout.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } };
+  test('keeps the old walkthrough through a lost or cancelled replacement receipt and rejects it after newer state', async () => {
+    const authority = new WalkthroughAuthority(); const start = authority.captureStart(origin); authority.start(start.id, origin);
+    const before = authority.getSession()!; const replacement = authority.captureReplacement({ document: 'pricing.ts', range: origin.range });
+    const endpoint = new LoopbackMcpEndpoint(authority); await endpoint.start(0);
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${endpoint.port}/mcp`)); const client = new Client({ name: 'replacement receipt test', version: '1' }, { versionNegotiation: { mode: 'auto' } }); await client.connect(transport);
+    const input = { schemaVersion: 1 as const, requestId: replacement.id, expectedSessionId: before.id, expectedRevision: before.revision, origin: { ...origin, stopId: 'replacement', document: 'pricing.ts' } };
+    try {
+      const lost = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: input });
+      assert.deepEqual(authority.getSession(), before);
+      authority.rollbackTentativeReplacement();
+      assert.deepEqual(authority.getSession(), before);
+      assert.deepEqual(authority.getPendingReplacement(), replacement);
+      assert.equal(authority.acknowledgeReplacementReceipt(lost.structuredContent as import('../walkthrough').SessionReceipt), false, 'a lost response cannot promote its stale candidate');
+      const retry = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: input });
+      authority.discardReplacement(replacement.id);
+      assert.equal(authority.acknowledgeReplacementReceipt(retry.structuredContent as import('../walkthrough').SessionReceipt), false, 'a cancelled replacement cannot mutate later state');
+      assert.deepEqual(authority.getSession(), before);
+    } finally { await transport.close(); await endpoint.stop(); }
+  });
   test('uses strict revisions and clears only the authorized populated walkthrough', async () => {
     const authority = new WalkthroughAuthority();
     const start = authority.captureStart(origin);
@@ -2364,6 +2415,11 @@ suite('replacement and reset over loopback MCP', () => {
       assert.deepEqual(authority.getSession(), old);
       const replaced = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId: replacement.id, expectedSessionId: old.id, expectedRevision: old.revision, origin: { ...origin, stopId: 'replacement', document: 'pricing.ts' } } });
       assert.equal(replaced.isError, undefined);
+      assert.deepEqual(authority.getSession(), old, 'a replacement remains private until its exact producer receipt is acknowledged');
+      assert.deepEqual(authority.getPendingReplacement(), replacement);
+      const repeated = await client.callTool({ name: 'codealongai_replace_walkthrough', arguments: { schemaVersion: 1, requestId: replacement.id, expectedSessionId: old.id, expectedRevision: old.revision, origin: { ...origin, stopId: 'replacement', document: 'pricing.ts' } } });
+      assert.deepEqual(repeated.structuredContent, replaced.structuredContent, 'an exact retry receives the staged receipt');
+      assert.equal((authority as unknown as { acknowledgeReplacementReceipt(receipt: unknown): boolean }).acknowledgeReplacementReceipt(replaced.structuredContent), true);
       const current = authority.getSession()!;
       const reset = authority.captureReset();
       const cleared = await client.callTool({ name: 'codealongai_reset_walkthrough', arguments: { schemaVersion: 1, requestId: reset.id, expectedSessionId: current.id, expectedRevision: current.revision } });

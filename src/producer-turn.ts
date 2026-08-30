@@ -14,6 +14,7 @@ export interface ProducerTurnInput {
    * coordinators may omit it. */
   readonly acceptReceipt?: (receipt: ProducerReceipt) => boolean;
   readonly rollbackTentativeStart?: () => void;
+  readonly rollbackTentativeReplacement?: () => void;
   readonly rollbackTentativeQuestion?: () => void;
 }
 
@@ -291,7 +292,7 @@ export class ReceiptBackedProducerCoordinator {
       // The MCP command may have committed just before a lost response,
       // cancellation, or malformed receipt. The authority itself decides
       // whether this request still owns a tentative session.
-      if (input.kind === 'question') input.rollbackTentativeQuestion?.(); else input.rollbackTentativeStart?.();
+      if (input.kind === 'question') input.rollbackTentativeQuestion?.(); else if (input.kind === 'replacement') input.rollbackTentativeReplacement?.(); else input.rollbackTentativeStart?.();
       this.activeSessionId = undefined;
       if (sessionId) {
         // A session is never deleted while its one native cancellation is in

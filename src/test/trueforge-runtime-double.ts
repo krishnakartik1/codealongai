@@ -27,6 +27,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
   /** Deferred only by Extension Host ownership tests; production-shaped events
    * still follow once it is released. */
   public producerEventWait: Promise<void> | undefined;
+  public producerCancelWait: Promise<void> | undefined;
   public producerCancelCalls = 0;
   public producerCancelled = false;
   public producerEventError: Error | undefined;
@@ -105,7 +106,7 @@ export class TrueForgeRuntimeDouble implements TrueForgeRuntime {
           yield { type: 'turn.done', id: 'done', state: { status: 'done' } };
         } finally { await transport.close(); }
       },
-      cancelTurn: async () => { runtime.producerCancelCalls += 1; runtime.producerCancelled = true; },
+      cancelTurn: async () => { runtime.producerCancelCalls += 1; runtime.producerCancelled = true; await runtime.producerCancelWait; },
       probeDaytona: async () => { this.probeCalls += 1; return this.daytonaProbe; }, prepareProducer: async () => { this.prepareCalls += 1; this.concurrentPrepares += 1; this.maximumConcurrentPrepares = Math.max(this.maximumConcurrentPrepares, this.concurrentPrepares); try { await this.prepareWait; return this.producerReadiness; } finally { this.concurrentPrepares -= 1; } }
     };
     return this.producerIdentity ??= producer;

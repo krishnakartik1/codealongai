@@ -133,11 +133,15 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (authority.getPendingQuestion()?.id === requestId) { authority.discardQuestion(requestId); void questionTurnOwner.cancel(); }
     if (retryQuestionRequest?.id === requestId) { retryQuestion = undefined; retryQuestionRequest = undefined; }
   };
-  const cancelActiveProducerWork = async (): Promise<void> => {
+  const revokeActiveProducerWork = (): void => {
     authority.discardStart();
     authority.discardReplacement();
     authority.discardQuestion();
-    await Promise.all([startTurnOwner.cancel(), questionTurnOwner.cancel()]);
+    void startTurnOwner.cancel();
+    void questionTurnOwner.cancel();
+  };
+  const cancelActiveProducerWork = async (): Promise<void> => {
+    revokeActiveProducerWork();
     await Promise.all([startTurnOwner.settled?.catch(() => undefined), questionTurnOwner.settled?.catch(() => undefined)]);
   };
   const clearStartRetry = (): void => { retryStart = undefined; };
@@ -305,7 +309,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void startTurnOwner.cancel(); });
-          try { return await startTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`, acceptReceipt: (receipt) => { const session = authority.getSession(); return authority.getReplacementRequest(request.id)?.status === 'consumed' && session?.id === receipt.sessionId && session.revision === receipt.revision && session.attentionStopId === receipt.attentionStopId; } }); }
+          try { return await startTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); } }); }
           finally { cancellation.dispose(); }
         });
         if (result.status !== 'committed') throw new Error(result.diagnostic);
@@ -335,7 +339,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
             await startTurnOwner.settled?.catch(() => undefined);
             const pending = authority.getPendingReplacement();
             const active = authority.getSession();
-            if (!pending || pending.id !== request.id || !active || active.id !== pending.expectedSessionId || active.revision !== pending.expectedRevision) return;
+            if (!pending || pending.id !== request.id || !active || active.id !== pending.expectedSessionId || active.revision !== pending.expectedRevision) { authority.discardReplacement(request.id); retryReplacement = undefined; void vscode.window.showWarningMessage('That replacement is no longer current. Start a new walkthrough again to confirm a replacement.'); return; }
             await commitAuthorizedOrigin();
           } catch { showReplacementFailure(request.id); }
         };
@@ -384,7 +388,7 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (!current) return;
     const confirmation = await vscode.window.showWarningMessage('Reset this walkthrough? All walkthrough conversations will be cleared.', { modal: true }, 'Reset walkthrough', 'Cancel');
     if (confirmation !== 'Reset walkthrough') return;
-    await cancelActiveProducerWork();
+    revokeActiveProducerWork();
     const active = authority.getSession();
     if (!active) return;
     const request = authority.getPendingReset() ?? authority.captureReset();
