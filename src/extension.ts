@@ -137,8 +137,19 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     authority.discardStart();
     authority.discardReplacement();
     authority.discardQuestion();
+    retryQuestion = undefined;
+    retryQuestionRequest = undefined;
     void startTurnOwner.cancel();
     void questionTurnOwner.cancel();
+  };
+  const requireCurrentReplacement = (requestId: string): boolean => {
+    const pending = authority.getPendingReplacement();
+    const active = authority.getSession();
+    if (pending?.id === requestId && active?.id === pending.expectedSessionId && active.revision === pending.expectedRevision) return true;
+    authority.discardReplacement(requestId);
+    retryReplacement = undefined;
+    void vscode.window.showWarningMessage('That replacement is no longer current. Start a new walkthrough again to confirm a replacement.');
+    return false;
   };
   const cancelActiveProducerWork = async (): Promise<void> => {
     revokeActiveProducerWork();
@@ -298,21 +309,24 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
     if (!current && startPreparation) return startPreparation;
     const commitAuthorizedOrigin = async (): Promise<{ endpointState: string; session: WalkthroughSession } | undefined> => {
       if (!await daytonaReadyForWalkthrough(commitAuthorizedOrigin)) return undefined;
-      const active = authority.getSession();
-      if (current && (!active || active.id !== current.id || active.revision !== current.revision)) return undefined;
       const replacement = authority.getPendingReplacement();
+      const active = authority.getSession();
+      if (current && (!active || active.id !== current.id || active.revision !== current.revision)) {
+        if (replacement) requireCurrentReplacement(replacement.id);
+        return undefined;
+      }
       const request = current ? (replacement ?? authority.captureReplacement(origin)) : authority.captureStart(origin);
       const descriptor: OriginDescriptor = { ...origin, stopId: 'checkout-origin', displayName: 'Origin', explanation: invitation };
       try {
       if (current) {
         if (!mcpReady()) throw new Error('the MCP endpoint is disabled');
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
-        const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
+        const replacementTurnResult = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'CodeAlongAI is preparing your walkthrough', cancellable: true }, async (_progress, token) => {
           const cancellation = token.onCancellationRequested(() => { void startTurnOwner.cancel(); });
           try { return await startTurnOwner.start(trueForge.producer, { kind: 'replacement', requestId: request.id, model: configuration.get<string>('model')!.trim(), reasoningEffort: configuration.get<string>('reasoningEffort')!.trim(), mcpUrl: `http://127.0.0.1:${lifecycle.port}/mcp`, acceptReceipt: (receipt) => authority.acknowledgeReplacementReceipt(receipt as import('./walkthrough').SessionReceipt), rollbackTentativeReplacement: () => { authority.rollbackTentativeReplacement(); } }); }
           finally { cancellation.dispose(); }
         });
-        if (result.status !== 'committed') throw new Error(result.diagnostic);
+        if (replacementTurnResult.status !== 'committed') throw new Error(replacementTurnResult.diagnostic);
       } else {
         const configuration = vscode.workspace.getConfiguration('codealongai.trueforge');
         const producer = trueForge.producer;
@@ -334,20 +348,11 @@ export function activate(context: vscode.ExtensionContext): WalkthroughTestApi {
       return { endpointState, session };
     } catch (error) {
       if (current) {
-        const pending = authority.getPendingReplacement();
-        const active = authority.getSession();
-        if (!pending || pending.id !== request.id || !active || active.id !== pending.expectedSessionId || active.revision !== pending.expectedRevision) {
-          authority.discardReplacement(request.id);
-          retryReplacement = undefined;
-          void vscode.window.showWarningMessage('That replacement is no longer current. Start a new walkthrough again to confirm a replacement.');
-          return undefined;
-        }
+        if (!requireCurrentReplacement(request.id)) return undefined;
         retryReplacement = async () => {
           try {
             await startTurnOwner.settled?.catch(() => undefined);
-            const pending = authority.getPendingReplacement();
-            const active = authority.getSession();
-            if (!pending || pending.id !== request.id || !active || active.id !== pending.expectedSessionId || active.revision !== pending.expectedRevision) { authority.discardReplacement(request.id); retryReplacement = undefined; void vscode.window.showWarningMessage('That replacement is no longer current. Start a new walkthrough again to confirm a replacement.'); return; }
+            if (!requireCurrentReplacement(request.id)) return;
             await commitAuthorizedOrigin();
           } catch { showReplacementFailure(request.id); }
         };
